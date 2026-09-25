@@ -1,0 +1,305 @@
+================================================================================
+AI Code Editor — Phase 2: Real Local File System Access
+================================================================================
+
+STATUS: complete. `cd client && npm run dev`, then open http://localhost:5173
+        in Chrome / Edge / Brave and click "Open Folder".
+
+--------------------------------------------------------------------------------
+WHAT CHANGED (high level)
+--------------------------------------------------------------------------------
+Phase 1 read from a hard-coded dummy tree. This phase replaces that with the
+browser's File System Access API, so clicking "Open Folder" gives the editor
+real read/write access to a folder on the user's laptop.
+
+The dummy tree was NOT deleted. It now acts as an offline fallback: it is shown
+until a real folder is opened, and the explorer displays a notice telling the
+user to click "Open Folder". Once a folder is opened, the dummy tree is
+discarded permanently for that session.
+
+--------------------------------------------------------------------------------
+NEW FILES
+--------------------------------------------------------------------------------
+
+1. client/src/services/fileSystemAccess.js
+   The only module that touches the File System Access API.
+
+   HANDLE REGISTRY
+   FileSystemHandle objects are not serializable, so they are never put in
+   Redux. They live in a module-level Map:
+
+       registry: id -> { handle, parentId, name, type }
+
+   Redux only ever stores plain data: { id, name, type, children, isOpen }.
+
+   - isFileSystemAccessSupported()  -> true when 'showDirectoryPicker' in window
+   - getHandleById(id)              -> the FileSystemHandle for a node id
+   - getRegistryEntry(id)           -> { handle, parentId, name, type } or null
+   - getParentHandle(id)            -> parent directory handle (null for root)
+   - registerHandle(handle, meta)   -> stores a handle under a new uuid and
+                                       returns the plain Redux node. Passing an
+                                       existing `id` rebinds that slot, which is
+                                       how a rename keeps its open tab.
+   - forgetHandles(ids)             -> drops stale registry entries
+
+   PERMISSIONS
+   - requirePermission(handle, mode = 'readwrite')
+       queryPermission() first, then requestPermission() if not granted, and
+       throws if the user declines. Called before every write operation.
+       Must run from a user gesture for the browser to show its prompt.
+
+   READING
+   - openFolder()
+       window.showDirectoryPicker({ id: 'code-matrix' }), stores and returns the
+       root DirectoryHandle. Called with no arguments before any other await so
+       the picker keeps its user activation.
+   - readDirectoryTree(directoryHandle)
+       Recursively walks a directory with its async iterator
+       (for await (const [name, handle] of directoryHandle.entries())), returning
+       a nested node { id: crypto.randomUUID(), name, type, isOpen, children }.
+       Resets the registry. The root is returned expanded. Entries are sorted
+       folders-first, then alphabetically by name.
+   - reindexDirectory(directoryHandle, previousNode)
+       Re-reads a directory that was just renamed, reusing the ids of entries
+       that still exist so open tabs and unsaved buffers survive the rename.
+   - readFileContent(fileHandle)
+       fileHandle.getFile(), then .text().
+
+   WRITING
+   - writeFileContent(fileHandle, content)
+       createWritable(), write(content), close() (close runs in a finally block
+       so a failed write cannot leave the stream open).
+   - createNewFile(parentDirectoryHandle, fileName)
+       parentDirectoryHandle.getFileHandle(fileName, { create: true })
+   - createNewFolder(parentDirectoryHandle, folderName)
+       parentDirectoryHandle.getDirectoryHandle(folderName, { create: true })
+   - deleteEntry(parentDirectoryHandle, name, type)
+       parentDirectoryHandle.removeEntry(name, { recursive: type === 'folder' })
+       (`recursive` is only passed for folders, matching the API's contract.)
+   - renameEntry(parentDirectoryHandle, oldName, newName, type)
+       The API has no atomic rename, so this is copy + delete:
+         * file   -> read the source File blob, write it to the new entry, then
+                     remove the old entry. Writing the blob (not text) keeps
+                     binary files byte-for-byte intact.
+         * folder -> copyDirectory() recurses through every entry, then removes
+                     the original directory with { recursive: true }.
+       Returns the handle of the new entry.
+
+   SCAN SCOPE
+   - SKIP_DIRECTORIES = new Set(['node_modules', '.git'])
+     These are skipped at every level while walking. Without this, opening a
+     typical JS project freezes the tab and produces an unusable tree. Delete or
+     extend this constant to change the behaviour.
+
+2. client/src/hooks/useOpenFolder.js
+   - openLocalFolder(): support check -> openFolder() -> readDirectoryTree() ->
+     dispatch(loadWorkspace) -> success toast. A cancelled picker (AbortError) is
+     ignored silently; anything else becomes an error toast.
+   - returns { openLocalFolder, isOpening, isSupported } so the button can show a
+     spinner and disable itself while a large folder is being walked.
+   - exports UNSUPPORTED_MESSAGE:
+     "Your browser doesn't support local folder access. Please use Chrome, Edge,
+      or Brave."
+
+3. client/src/hooks/useSaveActiveFile.js
+   Writes the active editor buffer back to disk. Shared by the Topbar Save button
+   and Ctrl/Cmd+S so both behave identically.
+   - no file open            -> info toast
+   - demo workspace          -> info toast explaining to open a folder first
+   - handle missing          -> error toast ("Lost access to <file>...")
+   - writeFileContent fails  -> error toast with the underlying message
+   - success                 -> markSaved() + "Saved <name>" toast
+
+4. client/src/components/Toast/Toast.jsx + Toast.css
+   Renders ui.toast in the top-right, with auto-dismiss timers per type
+   (success 2.6s, info 3.6s, error 6s) and a manual close button.
+
+--------------------------------------------------------------------------------
+MODIFIED FILES
+--------------------------------------------------------------------------------
+
+client/src/features/fileSystemSlice.js
+  - state gained `workspace: { name, source }` where source is 'demo' | 'local'.
+  - `tree` holds plain nodes only; handle creation moved to the service.
+  - loadWorkspace({ tree, name })  replaces the tree, clears openTabs and
+    activeFileId, and flips workspace.source to 'local'.
+  - addNode({ parentId, node })    now takes a fully built node instead of
+    generating one with nanoid, because the service owns id creation.
+  - replaceSubtree({ id, name, children, removedFileIds })  used after a folder
+    rename: the folder keeps its id, its children are swapped for the re-read
+    subtree, and any file ids that vanished are pruned from openTabs.
+  - pruneTabs() helper shared by deleteNode and replaceSubtree.
+  - renameNode / toggleFolder / setFolderOpen / collapseAll / addTab / closeTab
+    unchanged in behaviour.
+
+client/src/features/editorSlice.js
+  - contentByFileId starts seeded from the dummy tree, so demo files still open
+    instantly; loadWorkspace clears it.
+  - NEW setContent({ fileId, content }): buffers content read from disk without
+    flagging the file as unsaved.
+  - updateContent() still marks a file unsaved.
+  - extraReducers now also prune content on replaceSubtree and reset everything
+    on loadWorkspace.
+
+client/src/features/uiSlice.js
+  - added `toast` state plus showToast (with a nanoid via prepare) and hideToast.
+
+client/src/components/Topbar/Topbar.jsx + Topbar.css
+  - NEW "Open Folder" button (FolderOpen icon) with a loading spinner.
+  - NEW workspace chip next to the logo showing the demo workspace name or the
+    real folder name (accent-coloured when a local folder is open).
+  - Save button now calls useSaveActiveFile() instead of just clearing the
+    unsaved flag.
+
+client/src/components/Sidebar/Sidebar.jsx
+  - Owns all disk I/O for the explorer and passes handlers down to FileTree.
+  - startCreating / submitCreate: resolves the target parent from the last
+    selected row (selected folder -> itself, selected file -> its parent, nothing
+    selected -> workspace root) and calls createNewFile / createNewFolder.
+  - handleRename: renameEntry() on disk. A file rename rebinds the handle under
+    the same node id, so the open tab and its buffer survive. A folder rename
+    re-reads the new folder (reindexDirectory) and dispatches replaceSubtree.
+  - handleDelete: deleteEntry() then deleteNode + forgetHandles for the subtree.
+  - Demo workspace: all four actions fall back to pure Redux updates.
+  - Shows the unsupported-browser banner, and the "No folder opened" notice while
+    the demo tree is in use.
+
+client/src/components/Sidebar/FileTree.jsx
+  - Now purely presentational for disk operations: calls onRename / onDelete
+    passed down from the Sidebar instead of dispatching rename/delete itself.
+  - `lockedId` hides the rename/delete actions for the workspace root.
+  - Row click still opens a file as a tab in Redux; content is fetched later by
+    the editor.
+
+client/src/components/Editor/EditorArea.jsx
+  - Lazily loads real content: when a file becomes active and is not already in
+    contentByFileId, it looks up the handle and calls readFileContent(), then
+    dispatches setContent. Tabs already loaded are never re-read.
+  - Renders three distinct states: a loading placeholder ("Opening <file>…"), an
+    error panel if the read fails, and Monaco once content is ready.
+  - Failure state is keyed by file id, so switching tabs needs no reset effect.
+  - Monaco keeps `keepCurrentModel`, so undo history and scroll position survive
+    tab switches.
+
+client/src/components/Editor/EmptyState.jsx
+  - Workspace-aware: explains "No folder opened. Click Open Folder in the top bar
+    to edit real files from your laptop" in demo mode, shows the unsupported
+    browser warning when showDirectoryPicker is missing, and names the open local
+    folder in the footer.
+
+client/src/hooks/useGlobalShortcuts.js
+  - Ctrl/Cmd+S now routes through useSaveActiveFile(), writing to the real file.
+
+client/src/utils/tree.js
+  - NEW collectAllIds(node)             every id in a subtree
+  - NEW newNodeFileIds(previous, next)  file ids that disappeared between two
+                                        versions of a subtree
+  - buildContentMap() is still used to seed the demo buffers.
+
+client/src/App.jsx           renders <Toast />.
+client/src/index.css         shared .spin animation moved here from Topbar.css.
+client/src/components/Editor/Editor.css   styles for .editor-status and the
+                                          empty-state banner.
+client/src/components/Sidebar/Sidebar.css styles for .sidebar-notice.
+client/src/components/Topbar/Topbar.css   styles for .text-btn, .workspace-chip.
+
+--------------------------------------------------------------------------------
+HOW THE PIECES CONNECT NOW
+--------------------------------------------------------------------------------
+Topbar
+  "Open Folder" -> useOpenFolder -> showDirectoryPicker -> readDirectoryTree ->
+  loadWorkspace(tree). Save -> useSaveActiveFile -> writeFileContent(handle).
+
+Sidebar
+  Clicking a row -> Redux only (selection + expand/collapse + open tab).
+  New / Rename / Delete -> real API calls -> Redux updated with the result.
+  Every mutation is "disk first, then Redux", so the tree can never claim a file
+  exists when it does not.
+
+Editor
+  Opening a tab -> getHandleById -> readFileContent -> setContent (clean buffer).
+  Typing -> updateContent (marks unsaved).
+  Ctrl+S / Save -> writeFileContent -> markSaved + toast.
+
+Redux
+  Holds serializable tree data, tab state and buffers. The handle registry lives
+  outside Redux, keyed by the same node ids.
+
+--------------------------------------------------------------------------------
+LIMITATIONS
+--------------------------------------------------------------------------------
+
+BROWSER SUPPORT
+  Requires a Chromium browser (Chrome, Edge, Brave) on https or localhost.
+  Firefox and Safari do not implement showDirectoryPicker. The app detects this
+  and shows "Your browser doesn't support local folder access. Please use Chrome,
+  Edge, or Brave." in both the explorer and the welcome screen. Everything still
+  works in demo mode on those browsers.
+
+SECURE CONTEXT
+  crypto.randomUUID() and the File System Access API both need a secure context.
+  The Vite dev server runs on http://localhost, which counts as secure, so this
+  works out of the box in development. A production build must be served over
+  HTTPS.
+
+NO NATIVE RENAME
+  The File System Access API has no rename/move operation. renameEntry() copies
+  the entry and deletes the original, which means:
+    - Renaming a large file or a folder with many files blocks the UI until the
+      copy finishes; there is no progress indicator.
+    - A rename is not atomic. If the tab is closed mid-copy, both the old and the
+      new entry can exist on disk.
+    - Metadata (timestamps) is not preserved. File contents are, including
+      binary data.
+
+PERMISSIONS ARE PER SESSION
+  Write permission is granted per folder and is dropped on every page reload.
+  Handles are intentionally kept in memory only and are never persisted to
+  IndexedDB, so a refresh always requires picking the folder and granting access
+  again. The first write to a folder triggers the browser's permission prompt.
+
+SCAN SCOPE
+  node_modules and .git are skipped at every level. Everything else is walked
+  eagerly and fully on "Open Folder", so a very large or deeply nested directory
+  can still take a while. There is also no file watcher: changes made to the
+  folder by another program will not show up until the folder is reopened.
+
+DEMO WORKSPACE
+  Save, create, rename and delete in the demo workspace only touch Redux. Nothing
+  is written to disk, and the changes are lost on refresh.
+
+BUFFERS AND UNSUPPORTED FILES
+  readFileContent() decodes files as UTF-8 text. Opening a binary file (image,
+  archive, compiled artefact) will show mojibake; it will not be corrupted unless
+  you save it, which would replace the binary with text.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors across 22 files.
+  - vite build: succeeds.
+  - 36 checks against services/fileSystemAccess.js driven in Chromium against the
+    Origin Private File System (same FileSystemHandle API): create, write, read,
+    rename file (incl. binary round trip), rename folder recursively, reindex
+    id reuse, delete file/folder, registry helpers, sorted tree output, and proof
+    that tree nodes carry no handle.
+  - 40 end-to-end checks driving the real UI over such a workspace: opening a
+    folder, expanding folders, lazy content load, edit -> unsaved dot, save ->
+    bytes changed on disk, create file/folder on disk, rename file (tab survives),
+    rename folder (contents and tabs survive), delete file/folder, toast
+    lifecycle, and zero page errors.
+  - 14 checks covering the demo fallback: tree, notice, seeded content, save
+    refusal message, and local-only create/rename/delete.
+  - Bug found and fixed during testing: after opening a folder the root row was
+    collapsed, so the explorer appeared empty. readDirectoryTree() now returns
+    the root expanded.
+
+--------------------------------------------------------------------------------
+NEXT STEPS / IDEAS
+--------------------------------------------------------------------------------
+  - Persist handles in IndexedDB so a refresh can reuse the last folder after a
+    single permission re-grant.
+  - Add a "Refresh" action that re-runs reindexDirectory on the root (the id
+    reuse is already in place for it).
+  - Add a file watcher via FileSystemObserver where supported.
+  - Warn before overwriting a binary file opened as text.

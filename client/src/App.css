@@ -1,0 +1,44 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-editor);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.app-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Sidebar and AI panel collapse by animating their wrapper width, so the
+   editor area expands to fill the freed space. */
+.panel-slot {
+  flex: 0 0 auto;
+  height: 100%;
+  overflow: hidden;
+  transition: width 0.18s ease, border-color 0.18s ease;
+}
+
+.panel-slot-sidebar {
+  width: 0;
+  border-right: 1px solid transparent;
+}
+
+.panel-slot-sidebar.is-open {
+  width: 250px;
+  border-right-color: var(--border);
+}
+
+.panel-slot-ai {
+  width: 0;
+  border-left: 1px solid transparent;
+}
+
+.panel-slot-ai.is-open {
+  width: 320px;
+  border-left-color: var(--border);
+}

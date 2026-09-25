@@ -6,32 +6,18 @@ import {
   collapseAll,
   deleteNode,
   renameNode,
-  replaceSubtree,
   setFolderOpen,
 } from '../../features/fileSystemSlice'
 import { showToast } from '../../features/uiSlice'
+import {
+  createWorkspaceEntry,
+  deleteWorkspaceEntry,
+  renameWorkspaceEntry,
+} from '../../features/workspaceThunks'
 import { UNSUPPORTED_MESSAGE } from '../../hooks/useOpenFolder'
-import {
-  ROOT_ID,
-  createNewFile,
-  createNewFolder,
-  deleteEntry,
-  forgetHandles,
-  getHandleById,
-  getParentHandle,
-  getRegistryEntry,
-  isFileSystemAccessSupported,
-  reindexDirectory,
-  registerHandle,
-  renameEntry,
-} from '../../services/fileSystemAccess'
-import {
-  collectAllIds,
-  collectFileIds,
-  findNode,
-  findParentId,
-  newNodeFileIds,
-} from '../../utils/tree'
+import { ROOT_ID, isFileSystemAccessSupported } from '../../services/fileSystemAccess'
+import { joinPath, parentPathOf } from '../../utils/cloudTree'
+import { collectFileIds, findNode, findParentId } from '../../utils/tree'
 import FileTree from './FileTree'
 import './Sidebar.css'
 
@@ -40,7 +26,7 @@ export default function Sidebar() {
   const tree = useSelector((state) => state.fileSystem.tree)
   const workspace = useSelector((state) => state.fileSystem.workspace)
 
-  const isLocal = workspace.source === 'local'
+  const isCloud = workspace.source === 'cloud'
   const isSupported = isFileSystemAccessSupported()
 
   // The row the user last clicked drives where new nodes get created.
@@ -54,7 +40,7 @@ export default function Sidebar() {
   // New nodes land in the selected folder, in the selected file's folder, or at
   // the workspace root when nothing is selected.
   function resolveTargetParentId() {
-    const rootId = isLocal ? ROOT_ID : null
+    const rootId = isCloud ? ROOT_ID : null
     if (!selectedId) return rootId
     const selected = findNode(tree, selectedId)
     if (!selected) return rootId
@@ -76,8 +62,8 @@ export default function Sidebar() {
     const name = rawName.trim()
     if (!name) return
 
-    // Demo workspace has no handles — keep the change in Redux only.
-    if (!isLocal) {
+    // Demo workspace: keep the change in Redux only.
+    if (!isCloud) {
       dispatch(
         addNode({
           parentId,
@@ -90,83 +76,51 @@ export default function Sidebar() {
       return
     }
 
-    const parentHandle = getHandleById(parentId)
-    if (!parentHandle) {
-      reportError('That folder is no longer available. Reopen the folder to continue.')
-      return
-    }
-
+    // Cloud node ids are relative paths; the root's id is ROOT_ID, i.e. path ''.
+    const parentPath = parentId === ROOT_ID ? '' : parentId
     try {
-      const handle =
-        type === 'folder'
-          ? await createNewFolder(parentHandle, name)
-          : await createNewFile(parentHandle, name)
-      dispatch(addNode({ parentId, node: registerHandle(handle, { parentId, name, type }) }))
+      await dispatch(
+        createWorkspaceEntry({
+          projectId: workspace.projectId,
+          path: joinPath(parentPath, name),
+          type,
+        }),
+      ).unwrap()
     } catch (error) {
       reportError(`Could not create ${name}: ${error.message}`)
     }
   }
 
   async function handleRename(node, nextName) {
-    if (!isLocal || node.id === ROOT_ID) {
+    // Demo tree, or the immutable workspace root: Redux only.
+    if (!isCloud || node.id === ROOT_ID) {
       dispatch(renameNode({ id: node.id, name: nextName }))
       return
     }
 
-    const entry = getRegistryEntry(node.id)
-    const parentHandle = getParentHandle(node.id)
-    if (!entry || !parentHandle) {
-      reportError(`Lost access to ${node.name}. Reopen the folder to continue.`)
-      return
-    }
-
     try {
-      const renamedHandle = await renameEntry(parentHandle, node.name, nextName, node.type)
-
-      if (node.type === 'file') {
-        // Same node id means the open tab and its buffer survive the rename.
-        registerHandle(renamedHandle, {
-          id: node.id,
-          parentId: entry.parentId,
-          name: nextName,
-          type: 'file',
-        })
-        dispatch(renameNode({ id: node.id, name: nextName }))
-        return
-      }
-
-      // Folders are copy + delete on disk, so re-read the new folder and keep
-      // the ids of every entry that came across.
-      const nextSubtree = await reindexDirectory(renamedHandle, node)
-      dispatch(
-        replaceSubtree({
-          id: node.id,
-          name: nextSubtree.name,
-          children: nextSubtree.children,
-          removedFileIds: newNodeFileIds(node, nextSubtree),
+      await dispatch(
+        renameWorkspaceEntry({
+          projectId: workspace.projectId,
+          oldPath: node.id,
+          newPath: joinPath(parentPathOf(node.id), nextName),
         }),
-      )
+      ).unwrap()
     } catch (error) {
       reportError(`Could not rename ${node.name}: ${error.message}`)
     }
   }
 
   async function handleDelete(node) {
-    if (!isLocal || node.id === ROOT_ID) {
+    if (!isCloud || node.id === ROOT_ID) {
       dispatch(deleteNode({ id: node.id, removedFileIds: collectFileIds(node) }))
-      return
-    }
-
-    const parentHandle = getParentHandle(node.id)
-    if (!parentHandle) {
-      reportError(`Lost access to ${node.name}. Reopen the folder to continue.`)
       return
     }
 
     try {
-      await deleteEntry(parentHandle, node.name, node.type)
-      dispatch(deleteNode({ id: node.id, removedFileIds: collectFileIds(node) }))
-      forgetHandles(collectAllIds(node))
+      await dispatch(
+        deleteWorkspaceEntry({ projectId: workspace.projectId, path: node.id }),
+      ).unwrap()
     } catch (error) {
       reportError(`Could not delete ${node.name}: ${error.message}`)
     }
@@ -214,11 +168,11 @@ export default function Sidebar() {
         </div>
       )}
 
-      {isSupported && !isLocal && (
+      {isSupported && !isCloud && (
         <div className="sidebar-notice">
           <Info size={14} />
           <span>
-            No folder opened — click <strong>Open Folder</strong> to get started. Showing demo
+            No project imported — click <strong>Open Folder</strong> to import one. Showing demo
             files for now.
           </span>
         </div>
@@ -234,7 +188,7 @@ export default function Sidebar() {
           onCancelCreate={() => setCreating(null)}
           onRename={handleRename}
           onDelete={handleDelete}
-          lockedId={isLocal ? ROOT_ID : null}
+          lockedId={isCloud ? ROOT_ID : null}
         />
       </div>
     </aside>

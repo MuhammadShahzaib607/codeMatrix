@@ -170,6 +170,29 @@ export async function readFileContent(fileHandle) {
   return file.text()
 }
 
+/**
+ * Walks a directory and returns every file as { relativePath, content }.
+ * Used by the import flow, which sends the whole project to the server in one
+ * request. SKIP_DIRECTORIES is honoured so node_modules/.git never upload.
+ */
+export async function readAllFilesFromDirectory(directoryHandle, basePath = '') {
+  const files = []
+
+  for await (const [name, handle] of directoryHandle.entries()) {
+    const relativePath = basePath ? `${basePath}/${name}` : name
+
+    if (handle.kind === 'directory') {
+      if (SKIP_DIRECTORIES.has(name)) continue
+      files.push(...(await readAllFilesFromDirectory(handle, relativePath)))
+    } else {
+      const file = await handle.getFile()
+      files.push({ relativePath, content: await file.text() })
+    }
+  }
+
+  return files
+}
+
 /* ------------------------------------------------------------------ *
  * Writing
  * ------------------------------------------------------------------ */
@@ -181,6 +204,38 @@ export async function writeFileContent(fileHandle, content) {
     await writable.write(content)
   } finally {
     await writable.close()
+  }
+}
+
+/**
+ * Writes a flat list of { relativePath, content } into a directory handle,
+ * creating any missing folders on the way.
+ *
+ * NOTE: unlike renameEntry(), this writes text, so binary files synced from the
+ * server will be re-encoded as UTF-8. The server workspace only stores text.
+ */
+export async function writeFilesToDirectory(directoryHandle, files) {
+  await requirePermission(directoryHandle)
+
+  for (const file of files) {
+    const segments = String(file.relativePath ?? '')
+      .split('/')
+      .filter(Boolean)
+    const fileName = segments.pop()
+    if (!fileName) continue
+
+    let directory = directoryHandle
+    for (const segment of segments) {
+      directory = await directory.getDirectoryHandle(segment, { create: true })
+    }
+
+    const fileHandle = await directory.getFileHandle(fileName, { create: true })
+    const writable = await fileHandle.createWritable()
+    try {
+      await writable.write(file.content ?? '')
+    } finally {
+      await writable.close()
+    }
   }
 }
 

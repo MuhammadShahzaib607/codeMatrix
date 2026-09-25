@@ -3,7 +3,7 @@ import { AlertTriangle, Loader2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { setContent, updateContent } from '../../features/editorSlice'
-import { getHandleById, readFileContent } from '../../services/fileSystemAccess'
+import { readWorkspaceFile } from '../../features/workspaceThunks'
 import { getLanguageFromFilename } from '../../utils/language'
 import { findNode } from '../../utils/tree'
 import EmptyState from './EmptyState'
@@ -12,14 +12,14 @@ import './Editor.css'
 
 export default function EditorArea() {
   const dispatch = useDispatch()
-  const { tree, activeFileId } = useSelector((state) => state.fileSystem)
+  const { tree, activeFileId, workspace } = useSelector((state) => state.fileSystem)
   const contentByFileId = useSelector((state) => state.editor.contentByFileId)
   // Kept per file id so switching tabs does not need a state reset in an effect.
   const [failure, setFailure] = useState(null) // { fileId, message }
 
   const activeNode = activeFileId ? findNode(tree, activeFileId) : null
-  // A file already present in the buffer map has been loaded (from disk or from
-  // the demo tree) and does not need reading again.
+  // A file already present in the buffer map has been loaded (from the server or
+  // from the demo tree) and does not need reading again.
   const isLoaded = activeFileId ? Object.hasOwn(contentByFileId, activeFileId) : false
   const content = isLoaded ? contentByFileId[activeFileId] : ''
   const loadError = failure?.fileId === activeFileId ? failure.message : null
@@ -27,18 +27,21 @@ export default function EditorArea() {
   useEffect(() => {
     if (!activeNode || activeNode.type !== 'file' || isLoaded) return undefined
 
-    const handle = getHandleById(activeNode.id)
-    if (!handle) {
-      // Demo tree or a stale handle — there is nothing to read from disk.
+    // Demo tree: there is nothing to fetch, seed an empty buffer.
+    if (workspace.source !== 'cloud' || !workspace.projectId) {
       dispatch(setContent({ fileId: activeNode.id, content: '' }))
       return undefined
     }
 
     let cancelled = false
-    readFileContent(handle)
-      .then((text) => {
-        if (!cancelled) dispatch(setContent({ fileId: activeNode.id, content: text }))
-      })
+    dispatch(
+      readWorkspaceFile({
+        projectId: workspace.projectId,
+        path: activeNode.id,
+        fileId: activeNode.id,
+      }),
+    )
+      .unwrap()
       .catch((error) => {
         if (!cancelled) {
           setFailure({
@@ -51,7 +54,7 @@ export default function EditorArea() {
     return () => {
       cancelled = true
     }
-  }, [activeNode, isLoaded, dispatch])
+  }, [activeNode, isLoaded, workspace, dispatch])
 
   return (
     <section className="editor-area">

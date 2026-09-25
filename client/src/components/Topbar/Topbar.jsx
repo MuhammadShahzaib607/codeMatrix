@@ -1,22 +1,41 @@
-import { Bot, FolderOpen, Loader2, PanelLeft, Save, Settings, Sparkles } from 'lucide-react'
+import {
+  Bot,
+  Download,
+  FolderOpen,
+  FolderSync,
+  Loader2,
+  PanelLeft,
+  Save,
+  Settings,
+  Sparkles,
+  TerminalSquare,
+} from 'lucide-react'
 import { useDispatch, useSelector } from 'react-redux'
-import { toggleAIPanel, toggleSidebar } from '../../features/uiSlice'
+import { showToast, toggleAIPanel, toggleSidebar } from '../../features/uiSlice'
+import { togglePanel } from '../../features/terminalSlice'
+import useExportWorkspace from '../../hooks/useExportWorkspace'
 import useOpenFolder from '../../hooks/useOpenFolder'
 import useSaveActiveFile from '../../hooks/useSaveActiveFile'
+import useSyncToLaptop from '../../hooks/useSyncToLaptop'
 import './Topbar.css'
 
 export default function Topbar() {
   const dispatch = useDispatch()
   const saveActiveFile = useSaveActiveFile()
+  const exportWorkspace = useExportWorkspace()
+  const { syncToLaptop, isSyncing } = useSyncToLaptop()
   const { openLocalFolder, isOpening, isSupported } = useOpenFolder()
 
   const isSidebarOpen = useSelector((state) => state.ui.isSidebarOpen)
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
+  const isTerminalOpen = useSelector((state) => state.terminal.isTerminalPanelOpen)
   const activeFileId = useSelector((state) => state.fileSystem.activeFileId)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const hasUnsavedChanges = useSelector(
     (state) => !!activeFileId && state.editor.unsavedFileIds.includes(activeFileId),
   )
+
+  const isCloud = workspace.source === 'cloud' && Boolean(workspace.projectId)
 
   return (
     <header className="topbar">
@@ -39,9 +58,9 @@ export default function Topbar() {
         <span
           className={`workspace-chip is-${workspace.source}`}
           title={
-            workspace.source === 'local'
-              ? `Local folder: ${workspace.name}`
-              : 'Demo workspace — no real folder opened yet'
+            isCloud
+              ? `Cloud workspace: ${workspace.name}`
+              : 'Demo workspace — no project imported yet'
           }
         >
           {workspace.name}
@@ -54,14 +73,40 @@ export default function Topbar() {
           className="text-btn"
           title={
             isSupported
-              ? "Open Folder — pick a folder from your computer"
+              ? 'Import Folder — pick a folder from your computer'
               : "Your browser doesn't support local folder access. Please use Chrome, Edge, or Brave."
           }
           disabled={isOpening}
           onClick={openLocalFolder}
         >
           {isOpening ? <Loader2 size={16} className="spin" /> : <FolderOpen size={16} />}
-          <span>{isOpening ? 'Opening…' : 'Open Folder'}</span>
+          <span>{isOpening ? 'Importing…' : 'Open Folder'}</span>
+        </button>
+
+        <button
+          type="button"
+          className="icon-btn"
+          title={isCloud ? 'Export project as .zip' : 'Import a project to export it'}
+          aria-label="Export ZIP"
+          disabled={!isCloud}
+          onClick={exportWorkspace}
+        >
+          <Download size={18} />
+        </button>
+
+        <button
+          type="button"
+          className="icon-btn"
+          title={
+            isCloud
+              ? 'Sync the workspace back to the imported laptop folder'
+              : 'Import a project to sync it to a laptop folder'
+          }
+          aria-label="Sync to laptop folder"
+          disabled={!isCloud || isSyncing}
+          onClick={syncToLaptop}
+        >
+          {isSyncing ? <Loader2 size={18} className="spin" /> : <FolderSync size={18} />}
         </button>
 
         <button
@@ -75,6 +120,23 @@ export default function Topbar() {
           <Save size={18} />
         </button>
 
+        <span className="topbar-divider" />
+
+        <button
+          type="button"
+          className={`icon-btn ${isTerminalOpen ? 'is-active' : ''}`}
+          title={
+            isCloud
+              ? 'Toggle terminal'
+              : 'The terminal needs a cloud project — import a folder first'
+          }
+          aria-label="Toggle terminal"
+          disabled={!isCloud}
+          onClick={() => dispatch(togglePanel())}
+        >
+          <TerminalSquare size={18} />
+        </button>
+
         <button
           type="button"
           className={`icon-btn ${isAIPanelOpen ? 'is-active' : ''}`}
@@ -85,7 +147,13 @@ export default function Topbar() {
           <Bot size={18} />
         </button>
 
-        <button type="button" className="icon-btn" title="Settings" aria-label="Settings">
+        <button
+          type="button"
+          className="icon-btn"
+          title="Settings"
+          aria-label="Settings"
+          onClick={() => dispatch(showToast({ message: 'Settings are coming soon.', type: 'info' }))}
+        >
           <Settings size={18} />
         </button>
       </div>

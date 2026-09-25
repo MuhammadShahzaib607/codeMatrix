@@ -82,7 +82,7 @@
   white-space: nowrap;
 }
 
-.workspace-chip.is-local {
+.workspace-chip.is-cloud {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: #d7c9fd;
@@ -113,5 +113,13 @@
 .text-btn:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* Separates editing actions from panel toggles. */
+.topbar-divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--border);
 }
 

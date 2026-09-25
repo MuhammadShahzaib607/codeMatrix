@@ -4,6 +4,9 @@ const initialState = {
   isSidebarOpen: true,
   isAIPanelOpen: true,
   toast: null, // { id, message, type: 'success' | 'error' | 'info' }
+  // In-memory only: the temporary-storage warning comes back on every reload,
+  // i.e. once per session, even after the user dismisses it.
+  isStorageNoticeDismissed: false,
 }
 
 const uiSlice = createSlice({
@@ -27,9 +30,18 @@ const uiSlice = createSlice({
     hideToast(state) {
       state.toast = null
     },
+    dismissStorageNotice(state) {
+      state.isStorageNoticeDismissed = true
+    },
   },
 })
 
-export const { toggleSidebar, toggleAIPanel, showToast, hideToast } = uiSlice.actions
+export const {
+  toggleSidebar,
+  toggleAIPanel,
+  showToast,
+  hideToast,
+  dismissStorageNotice,
+} = uiSlice.actions
 
 export default uiSlice.reducer

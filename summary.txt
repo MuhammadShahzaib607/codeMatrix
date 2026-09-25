@@ -303,3 +303,227 @@ NEXT STEPS / IDEAS
     reuse is already in place for it).
   - Add a file watcher via FileSystemObserver where supported.
   - Warn before overwriting a binary file opened as text.
+
+
+================================================================================
+AI Code Editor — Phase 3: Cloud Workspace + Real Terminal
+================================================================================
+
+STATUS: complete. Start the API first (`cd server && node server.js`) and the
+        client (`cd client && npm run dev`), open http://localhost:5173 in a
+        Chromium browser, then click "Open Folder" to import a project.
+
+The editor no longer edits the laptop folder directly. "Open Folder" now copies
+the whole folder up to a server-side workspace, and every later file operation
+goes through the workspace API. The only time the laptop is touched again is the
+one-off import and the explicit "Sync to Laptop" action.
+
+NOTE ON PRE-EXISTING WORK: the entire server side (Parts 1 and 3) already
+existed and was verified working; this entry was primarily wiring the client
+(Part 2 and Part 4) to it. No server source file was changed in this entry.
+
+--------------------------------------------------------------------------------
+ARCHITECTURE / WHY IT IS SHAPED THIS WAY
+--------------------------------------------------------------------------------
+Replit free-tier Autoscale has an EPHEMERAL disk: server/workspaces is wiped
+whenever the server sleeps or restarts. Consequences baked into the design:
+  - MongoDB stores ONLY metadata (Project.model.js: projectId, name, ownerId,
+    diskPath, lastAccessedAt). Never file contents.
+  - Files live temporarily at server/workspaces/<projectId>/ on disk.
+  - The UI warns the user repeatedly and pushes them to export.
+  - Every workspace route checks the folder exists and answers 404
+    WORKSPACE_MISSING when it does not.
+
+REDUX TREE IDS ARE PATHS
+For a cloud project every tree node's `id` is its workspace-relative path (the
+root keeps the literal id "root"). This means tab ids, editor buffer keys and API
+arguments are all the same string, so no id<->path map is needed. Demo-mode nodes
+keep their old random ids.
+
+--------------------------------------------------------------------------------
+SERVER (unchanged this entry, documented for completeness)
+--------------------------------------------------------------------------------
+server/src/models/Project.model.js       metadata-only mongoose schema
+server/src/models/project.repository.js  degradable DB helpers (no-op if no DB)
+server/src/utils/workspaceManager.js     all disk I/O + path-traversal guards
+server/src/utils/terminalManager.js      node-pty session Map (optional dependency)
+server/src/socket/terminalSocket.js      Socket.IO event handlers
+server/src/controllers/workspace.controller.js
+server/src/routes/workspace.routes.js    mounted at /api/workspace
+server/src/middlewares/ensureWorkspace.js  404 WORKSPACE_MISSING guard
+server/src/middlewares/validateProjectId.js rejects unsafe project ids
+server/server.js                         http.createServer + Socket.IO shared
+
+Deployed packages (server): archiver, socket.io, node-pty (optionalDependency;
+terminal degrades to a clear error if the native module cannot load).
+
+--------------------------------------------------------------------------------
+API ROUTES (all under /api)
+--------------------------------------------------------------------------------
+GET    /api/health                       health/uptime/db/terminal status
+POST   /api/workspace/:projectId/import  { name?, files:[{relativePath,content}] }
+                                         -> creates folder + writes files + upserts
+                                            Project, returns { fileCount, tree }
+                                         (max 5000 files; body limit 50mb)
+GET    /api/workspace/:projectId/tree    nested tree; 404 WORKSPACE_MISSING if gone
+GET    /api/workspace/:projectId/file?path=...
+PUT    /api/workspace/:projectId/file    { path, content }
+POST   /api/workspace/:projectId/create  { path, type:'file'|'folder' }
+DELETE /api/workspace/:projectId/delete  { path }
+PATCH  /api/workspace/:projectId/rename  { oldPath, newPath }
+GET    /api/workspace/:projectId/export  streams a .zip (archiver)
+
+Error shape: { error: { message, code? } }. Codes used by the client:
+WORKSPACE_MISSING, FILE_MISSING, ALREADY_EXISTS, INVALID_PATH, INVALID_PROJECT_ID.
+
+--------------------------------------------------------------------------------
+SOCKET EVENTS (Socket.IO)
+--------------------------------------------------------------------------------
+client -> server:  terminal:create { terminalId, projectId, cols?, rows? }
+                   terminal:input  { terminalId, data }
+                   terminal:resize { terminalId, cols, rows }
+                   terminal:close  { terminalId }
+server -> client:  terminal:ready  { terminalId, cwd, shell, pid }
+                   terminal:output { terminalId, data }
+                   terminal:exit   { terminalId, exitCode, signal }
+                   terminal:error  { terminalId, message }
+On socket disconnect the server kills every pty that socket owns. Production
+(Replit/Linux) uses bash; Windows dev falls back to $COMSPEC (cmd.exe).
+
+--------------------------------------------------------------------------------
+CLIENT — FILES CREATED
+--------------------------------------------------------------------------------
+client/src/services/api.js              fetch wrapper + workspaceApi + ApiError
+                                        (isWorkspaceMissingError helper)
+client/src/services/socket.js           one shared socket.io-client connection
+client/src/services/workspaceStorage.js remembers { projectId, name } in
+                                        localStorage for session restore
+client/src/features/terminalSlice.js    terminal tabs / active / open / minimized
+                                        / panelHeight state
+client/src/features/workspaceThunks.js  all workspace async thunks
+client/src/utils/cloudTree.js           server-tree <-> Redux-tree mapping,
+                                        path helpers, remapTreeIds
+client/src/utils/messages.js            shared user-facing strings
+client/src/hooks/useExportWorkspace.js  downloads the .zip via blob + <a download>
+client/src/hooks/useSyncToLaptop.js     pulls tree + all files and writes them
+                                        back into the imported folder handle
+client/src/hooks/useRestoreWorkspace.js reopens the last project on reload
+client/src/components/Terminal/TerminalPanel.jsx  docked panel, tabs, +, resize,
+                                                  minimize
+client/src/components/Terminal/TerminalView.jsx   one xterm.js <-> one pty
+client/src/components/Terminal/TerminalPanel.css
+client/src/components/Notices/StorageNotice.jsx         temp-storage banner
+client/src/components/Notices/WorkspaceMissingNotice.jsx recovery banner
+client/src/components/Notices/Notices.css
+
+CLIENT — FILES MODIFIED
+  features/fileSystemSlice.js  now models source 'demo' | 'cloud'; added
+    setCloudWorkspace, refreshTree, remapPaths, markWorkspaceMissing,
+    clearWorkspaceMissing, resetToDemo; refreshTree prunes dead tabs.
+  features/editorSlice.js      added removeContent; resets on setCloudWorkspace,
+    remaps buffers on remapPaths, prunes buffers for vanished files.
+  features/uiSlice.js          isStorageNoticeDismissed + dismissStorageNotice.
+  app/store.js                 registered the terminal reducer.
+  App.jsx                      renders notices + TerminalPanel, resets terminals
+    when the project changes, calls useRestoreWorkspace.
+  components/Topbar/Topbar.jsx Download, FolderSync and TerminalSquare buttons;
+    terminal + export + sync are disabled unless a cloud project is loaded.
+  components/Topbar/Topbar.css workspace-chip.is-cloud + .topbar-divider.
+  components/Sidebar/Sidebar.jsx  all new/rename/delete go through the workspace
+    thunks when source is 'cloud'; demo behaviour kept for 'demo'.
+  components/Editor/EditorArea.jsx  lazily loads cloud files via readWorkspaceFile.
+  components/Editor/EmptyState.jsx  copy updated for the cloud workflow.
+  hooks/useOpenFolder.js        picks a folder, reads ALL files, generates a
+    crypto.randomUUID() projectId, POSTs /import, loads the returned tree.
+  hooks/useSaveActiveFile.js    saves through saveWorkspaceFile (defaults to the
+    cloud project); demo mode still refuses with an info toast.
+  App.css                       .editor-column (editor + terminal stacked).
+
+Client dependencies already present: @xterm/xterm, @xterm/addon-fit,
+socket.io-client, lucide-react.
+
+HOW THE PIECES CONNECT
+  Topbar "Open Folder" -> openFolder() -> readAllFilesFromDirectory() ->
+    importWorkspace thunk -> POST /import -> setCloudWorkspace(tree) ->
+    saveWorkspaceRef().
+  Explorer row click -> Redux only (open tab / expand).
+  New/Rename/Delete -> createWorkspaceEntry / renameWorkspaceEntry /
+    deleteWorkspaceEntry -> API -> refreshWorkspaceTree -> Redux.
+  Editor open -> readWorkspaceFile -> setContent. Edit -> updateContent.
+    Ctrl+S / Save -> saveWorkspaceFile -> markSaved.
+  Topbar Download -> GET /export -> blob download.
+  Topbar FolderSync -> GET /tree + GET /file for each path ->
+    writeFilesToDirectory(original handle).
+  Topbar TerminalSquare -> shows the docked panel. Each tab = one TerminalView =
+    one xterm.js instance = one server pty.
+
+--------------------------------------------------------------------------------
+THE TWO IMPORTANT LIMITATION BEHAVIOURS
+--------------------------------------------------------------------------------
+1. TEMPORARY STORAGE:
+   StorageNotice.jsx shows a dismissible amber banner ("This is temporary cloud
+   storage. Export your project regularly to avoid losing work.") whenever a
+   cloud project is open. Dismissal lives only in Redux, so it returns on reload
+   — i.e. it is re-shown once per session, never permanently silenced.
+
+2. LOST WORKSPACE (free-tier restart):
+   The API answers 404 code WORKSPACE_MISSING whenever the folder is gone.
+   api.js turns that into ApiError.isWorkspaceMissing, every thunk calls
+   handleFailure() which dispatches markWorkspaceMissing(), and
+   WorkspaceMissingNotice.jsx then shows:
+     "This project's files were lost due to server restart (free tier
+      limitation). Please re-import from your last exported backup."
+   with a "Re-import project" button that resets to demo and reopens the import
+   picker. This also covers the reload path: useRestoreWorkspace() reopens the
+   saved project and a 404 there shows the same recovery banner.
+
+--------------------------------------------------------------------------------
+TERMINAL PANEL DETAILS
+--------------------------------------------------------------------------------
+  - Docked at the bottom of the editor column; height is draggable via the thin
+    bar at its top, clamped to [100px, 70% of viewport].
+  - Minimize collapses it to the 32px tab bar (ChevronDown/ChevronUp).
+  - Individual tabs close with their X (emits terminal:close and kills the pty).
+  - + opens a new tab (crypto.randomUUID id, title "bash N").
+  - All TerminalView instances stay mounted (hidden via visibility), so switching
+    or minimizing never kills a shell.
+  - xterm theme matches #1e1e1e / #cccccc / cursor #ffffff.
+  - The Topbar toggle is disabled (with an explanatory tooltip) unless a cloud
+    project is loaded — there is no server process for laptop-only files.
+  - FitAddon + a ResizeObserver keep the pty cols/rows in sync; term.onData
+    emits terminal:input.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (36 files).
+  - vite build: succeeds.
+  - node --check on every server source file: passes.
+  - Live API run (node server.js, no MongoDB): health ok; import wrote 2 files;
+    tree, read, save, create, rename, delete all returned the expected JSON; a
+    missing workspace returned 404; export returned Content-Type application/zip
+    with an attachment filename and a valid zip body.
+  - Live Socket.IO run: connect -> terminal:create ack { ok: true }, server
+    emitted terminal:ready with cwd = workspaces/<projectId> and shell cmd.exe
+    (Windows), sent `echo HELLO_PTY`, and terminal:output streamed the echoed
+    text back -> OUTPUT_OK.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - Do NOT store file contents in MongoDB. Metadata only, always.
+  - Any new workspace route must run ensureWorkspace (or explicitly check
+    workspaceExists) and must never trust a path — use the resolveInsideWorkspace
+    guard in workspaceManager.js so traversal cannot escape the folder.
+  - To run the UI you need BOTH processes: server on :4000 and vite on :5173.
+    VITE_API_URL / VITE_SOCKET_URL override the API/socket base URL.
+  - node-pty is an optionalDependency and is imported dynamically; if it fails
+    to load the server still boots and terminal:create answers with a clear error
+    (health reports terminal: "unavailable").
+  - node_modules and .git are skipped during import (SKIP_DIRECTORIES in
+    fileSystemAccess.js) — a normal JS project still imports fine.
+  - The client still has the older handle-registry helpers in
+    services/fileSystemAccess.js (create/rename/delete on a live laptop folder).
+    They are no longer used by the editor (cloud thunks replaced them) but are
+    kept because they are harmless and may return for a future sandbox mode.
+  - Binary files are imported/exported as UTF-8 text; the workspace is text-only.

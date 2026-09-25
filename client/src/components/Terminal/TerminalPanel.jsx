@@ -77,37 +77,20 @@ export default function TerminalPanel() {
     )
   }
 
-  /**
-   * Numbers are per SHELL TYPE and reuse freed slots. The new terminal gets the
-   * lowest positive integer that no currently-open terminal of that same shell
-   * is using — so closing "PowerShell 1" and "PowerShell 2" makes the next
-   * PowerShell terminal "PowerShell 1" again, instead of ever increasing.
-   * PowerShell, CMD and bash each have their own independent sequence.
-   */
-  function lowestFreeSeq(shell) {
-    const used = new Set()
-    for (const group of groups) {
-      for (const pane of group.panes) {
-        if (pane.shell === shell && Number.isInteger(pane.seq)) used.add(pane.seq)
-      }
-    }
-    let seq = 1
-    while (used.has(seq)) seq += 1
-    return seq
-  }
-
-  // seq is the stable "1, 2, 3" in the title; the label half is replaced with
-  // the real shell as soon as the server reports it.
+  // A terminal is NOT numbered: its title is just its shell's label (and the
+  // server corrects it to the shell it really spawned). Two terminals of the
+  // same shell therefore show the same label — that is expected. They stay
+  // distinct because every pane carries a unique `terminalId` (crypto.randomUUID),
+  // which is what React keys, the xterm instances and the socket messages use.
   function nextPane(requestedShell) {
     const shell = requestedShell ?? defaultShell ?? null
-    const seq = lowestFreeSeq(shell)
-    return { seq, shell, title: `${shellLabel(shell)} ${seq}` }
+    return { shell, title: shellLabel(shell) }
   }
 
   function createTerminal(shellId) {
     const id = crypto.randomUUID()
     const pane = nextPane(shellId)
-    dispatch(addTerminal({ id, title: pane.title, shell: pane.shell, seq: pane.seq }))
+    dispatch(addTerminal({ id, title: pane.title, shell: pane.shell }))
     setIsShellMenuOpen(false)
     if (isMinimized) dispatch(toggleMinimize())
   }
@@ -124,7 +107,6 @@ export default function TerminalPanel() {
         terminalId: id,
         title: pane.title,
         shell: pane.shell,
-        seq: pane.seq,
       }),
     )
     if (isMinimized) dispatch(toggleMinimize())

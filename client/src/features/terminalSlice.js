@@ -14,7 +14,7 @@ export const TERMINAL_PANE_MIN_SHARE = 0.15
  * Terminal state is a list of tab GROUPS, not a flat list of terminals.
  *
  *   groups: [
- *     { groupId, sizes: [1], panes: [{ terminalId, title, shell, seq }] }
+ *     { groupId, sizes: [1], panes: [{ terminalId, title, shell }] }
  *   ]
  *
  * A group with one pane is a normal, full-width terminal. A group with two or
@@ -25,6 +25,11 @@ export const TERMINAL_PANE_MIN_SHARE = 0.15
  * `shell` is the REQUESTED shell id at first and is corrected with the shell
  * the server actually spawned when terminal:ready arrives (see
  * setTerminalShell), so a tab never claims to be bash while running PowerShell.
+ *
+ * A terminal has NO number: `title` is simply the shell's label, so several
+ * terminals of one shell all read "PowerShell". They are kept apart by the
+ * unique `terminalId` (used for React keys, xterm instances and socket
+ * messages) — nothing in the UI derives a number from it.
  */
 const initialState = {
   groups: [],
@@ -54,25 +59,6 @@ function clampSizes(sizes) {
   return sizes.map((size) => (Number.isFinite(size) && size > 0 ? size : 1))
 }
 
-/**
- * Lowest positive integer not used by another OPEN pane of the same shell.
- * The component uses the same rule when creating a terminal; this copy exists
- * so a pane whose shell gets corrected by the server (requested -> really
- * spawned) can be renumbered instead of colliding with an existing title.
- */
-function lowestFreeSeq(groups, shell, excludeTerminalId = null) {
-  const used = new Set()
-  for (const group of groups) {
-    for (const pane of group.panes) {
-      if (pane.terminalId === excludeTerminalId) continue
-      if (pane.shell === shell && Number.isInteger(pane.seq)) used.add(pane.seq)
-    }
-  }
-  let seq = 1
-  while (used.has(seq)) seq += 1
-  return seq
-}
-
 export const fetchAvailableShells = createAsyncThunk(
   'terminal/fetchAvailableShells',
   async () => {
@@ -90,11 +76,11 @@ const terminalSlice = createSlice({
   reducers: {
     /** Opens a new top-level tab group holding a single terminal pane. */
     addTerminal(state, action) {
-      const { id, title, shell, seq } = action.payload
+      const { id, title, shell } = action.payload
       state.groups.push({
         groupId: id,
         sizes: [1],
-        panes: [{ terminalId: id, title, shell, seq }],
+        panes: [{ terminalId: id, title, shell }],
       })
       state.activeGroupId = id
       state.activePaneId = id
@@ -102,11 +88,11 @@ const terminalSlice = createSlice({
 
     /** Adds another pane to an existing group (the "Split Terminal" action). */
     splitActiveGroup(state, action) {
-      const { terminalId, title, shell, seq } = action.payload
+      const { terminalId, title, shell } = action.payload
       const groupId = action.payload.groupId ?? state.activeGroupId
       const group = state.groups.find((candidate) => candidate.groupId === groupId)
       if (!group) return
-      group.panes.push({ terminalId, title, shell, seq })
+      group.panes.push({ terminalId, title, shell })
       group.sizes.push(group.sizes[group.sizes.length - 1] ?? 1)
       state.activeGroupId = group.groupId
       state.activePaneId = terminalId
@@ -117,6 +103,9 @@ const terminalSlice = createSlice({
      * retitles the tab/pane from it. This is the source of truth: the requested
      * shell can differ from the spawned one (fallback for an unavailable shell,
      * or the server's platform default when the client had no shell list yet).
+     *
+     * The title is just the shell's label — no number is appended, so panes of
+     * the same shell are allowed to share a title.
      */
     setTerminalShell(state, action) {
       const { terminalId, shellId, label } = action.payload ?? {}
@@ -124,18 +113,8 @@ const terminalSlice = createSlice({
       const pane = group?.panes.find((candidate) => candidate.terminalId === terminalId)
       if (!pane) return
 
-      // The number was allocated against the REQUESTED shell. If the server
-      // reports a different one (a fallback, or the client had no shell list
-      // yet), re-allocate inside the real shell's numbering so two panes can
-      // never share a label like "PowerShell 1".
-      if (shellId && shellId !== pane.shell) {
-        pane.shell = shellId
-        pane.seq = lowestFreeSeq(state.groups, shellId, terminalId)
-      } else if (shellId) {
-        pane.shell = shellId
-      }
-
-      if (label) pane.title = pane.seq ? `${label} ${pane.seq}` : label
+      if (shellId) pane.shell = shellId
+      if (label) pane.title = label
     },
 
     /**

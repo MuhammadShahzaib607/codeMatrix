@@ -2,7 +2,13 @@ import { createAsyncThunk } from '@reduxjs/toolkit'
 import { isWorkspaceMissingError, workspaceApi } from '../services/api'
 import { setCachedFileContent } from '../services/fileContentCache'
 import { toReduxTree } from '../utils/cloudTree'
+import {
+  TS_CONFIG_FILENAMES,
+  extractCompilerOptions,
+  parseTsconfigJson,
+} from '../utils/monacoTsconfig'
 import { markSaved, removeContent, setContent } from './editorSlice'
+import { clearTsConfig, setTsConfig } from './tsconfigSlice'
 import {
   addTab,
   markWorkspaceMissing,
@@ -158,6 +164,35 @@ export const duplicateWorkspaceEntry = createAsyncThunk(
     } catch (error) {
       throw handleFailure(error, dispatch)
     }
+  },
+)
+
+/**
+ * Reads the project's tsconfig.json / jsconfig.json (the first one that exists)
+ * and stores its compiler options so Monaco can resolve "@/…" style aliases and
+ * type-check JSX. A project without either file simply clears the config and
+ * falls back to Monaco's modern React defaults.
+ */
+export const loadWorkspaceTsConfig = createAsyncThunk(
+  'workspace/loadTsConfig',
+  async ({ projectId }, { dispatch }) => {
+    for (const fileName of TS_CONFIG_FILENAMES) {
+      try {
+        const data = await workspaceApi.getFile(projectId, fileName)
+        const parsed = parseTsconfigJson(data?.content)
+        dispatch(
+          setTsConfig({ fileName, compilerOptions: extractCompilerOptions(parsed) }),
+        )
+        return { fileName }
+      } catch (error) {
+        // 404 just means this project uses the other config name (or none);
+        // anything else (workspace gone, network) is handled elsewhere and must
+        // not block the editor, so keep trying the next candidate.
+        if (error?.status === 404) continue
+      }
+    }
+    dispatch(clearTsConfig())
+    return null
   },
 )
 

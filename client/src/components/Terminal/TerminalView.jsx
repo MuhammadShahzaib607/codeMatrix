@@ -1,7 +1,7 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useDispatch } from 'react-redux'
 import { setTerminalShell } from '../../features/terminalSlice'
 import { getSocket } from '../../services/socket'
@@ -18,11 +18,25 @@ const THEME = {
 
 const FONT_FAMILY = "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace"
 
+const CLIPBOARD_DENIED_MESSAGE = 'Clipboard access denied — check browser permissions'
+const NOTICE_TIMEOUT_MS = 4000
+
 export default function TerminalView({ terminalId, projectId, shell, isActive, autoFocus = true }) {
   const dispatch = useDispatch()
   const containerRef = useRef(null)
   const termRef = useRef(null)
   const fitRef = useRef(null)
+  // Small transient overlay for clipboard errors / confirmations, scoped to
+  // THIS terminal instance.
+  const [notice, setNotice] = useState(null)
+  const noticeTimerRef = useRef(null)
+
+  useEffect(
+    () => () => {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+    },
+    [],
+  )
 
   useEffect(() => {
     const container = containerRef.current
@@ -43,12 +57,88 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     const socket = getSocket()
     let created = false
 
+    function showNotice(message) {
+      setNotice(message)
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+      noticeTimerRef.current = setTimeout(() => setNotice(null), NOTICE_TIMEOUT_MS)
+    }
+
+    // Copy the xterm selection to the system clipboard. Used by Ctrl/Cmd+C
+    // (when something is selected) and by right-click.
+    async function copySelection() {
+      const selection = term.getSelection()
+      if (!selection) return
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
+        await navigator.clipboard.writeText(selection)
+        showNotice(`Copied ${selection.length} character${selection.length === 1 ? '' : 's'}`)
+      } catch {
+        showNotice(CLIPBOARD_DENIED_MESSAGE)
+      }
+    }
+
+    // Paste the system clipboard straight into the pty, as if it were typed.
+    async function pasteFromClipboard() {
+      try {
+        if (!navigator.clipboard?.readText) throw new Error('Clipboard API unavailable')
+        const text = await navigator.clipboard.readText()
+        if (text) socket.emit('terminal:input', { terminalId, data: text })
+      } catch {
+        showNotice(CLIPBOARD_DENIED_MESSAGE)
+      }
+    }
+
+    // Ctrl+C must COPY when there is a selection, but still send SIGINT (\x03)
+    // when there is none — so process-killing Ctrl+C keeps working. Ctrl/Cmd+V
+    // pastes. Both are scoped to this xterm instance (attachCustomKeyEventHandler
+    // only fires for keystrokes that reach the terminal), so the Explorer's own
+    // Ctrl+C/X/V shortcuts are completely unaffected.
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return true
+
+      const key = event.key.toLowerCase()
+
+      if (key === 'c' && !event.shiftKey) {
+        if (term.hasSelection()) {
+          event.preventDefault()
+          void copySelection()
+          return false
+        }
+        return true
+      }
+
+      if (key === 'v') {
+        event.preventDefault()
+        void pasteFromClipboard()
+        return false
+      }
+
+      return true
+    })
+
+    // Right-click copies an active selection (common terminal UX), otherwise it
+    // falls through to the browser.
+    function handleContextMenu(event) {
+      if (!term.hasSelection()) return
+      event.preventDefault()
+      void copySelection()
+    }
+    container.addEventListener('contextmenu', handleContextMenu)
+
     const handleOutput = (payload) => {
       if (payload?.terminalId === terminalId) term.write(payload.data)
     }
     const handleReady = (payload) => {
       if (payload?.terminalId !== terminalId) return
       term.write(`\r\n\x1b[90m${payload.shell} · ${payload.cwd}\x1b[0m\r\n`)
+      // The terminal starts ONE LEVEL ABOVE the project folder, so point the
+      // user at the exact `cd` that enters the project the Explorer shows.
+      if (payload.folderName) {
+        term.write(
+          `\x1b[90mProject folder: ${payload.folderName} — run  cd ${payload.folderName}\x1b[0m\r\n`,
+        )
+      }
       // Trust the server over the request: label the tab with what actually
       // got spawned (it may differ if the requested shell was unavailable).
       dispatch(
@@ -118,6 +208,7 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     return () => {
       cancelAnimationFrame(raf)
       observer.disconnect()
+      container.removeEventListener('contextmenu', handleContextMenu)
       dataSubscription.dispose()
       socket.off('terminal:output', handleOutput)
       socket.off('terminal:ready', handleReady)
@@ -148,5 +239,14 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     return () => cancelAnimationFrame(raf)
   }, [isActive, autoFocus, terminalId])
 
-  return <div className="terminal-view" ref={containerRef} />
+  return (
+    <>
+      <div className="terminal-view" ref={containerRef} />
+      {notice && (
+        <div className="terminal-notice" role="status">
+          {notice}
+        </div>
+      )}
+    </>
+  )
 }

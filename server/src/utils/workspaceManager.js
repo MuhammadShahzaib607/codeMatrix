@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,6 +22,181 @@ const SCRATCH_ID_PATTERN = /^scratch-[A-Za-z0-9_-]{1,100}$/
 
 const SKIP_DIRECTORIES = new Set(['node_modules', '.git'])
 
+// ---------------------------------------------------------------------------
+// On-disk workspace registry
+// ---------------------------------------------------------------------------
+// A project's folder on disk is named after its DISPLAY name (sanitized, plus a
+// short unique suffix) instead of its internal projectId, so the folder is
+// something a user can actually `cd` into from the terminal. The mapping
+//
+//     projectId -> { container, folderName }
+//
+// is kept in a small JSON file next to the folders, so every path builder below
+// can resolve the real folder from a projectId alone. MongoDB's `diskFolderName`
+// is the durable copy of the same value. Every path here is built with path.join
+// / path.resolve — never string concatenation — so it behaves identically on
+// Linux (production) and Windows (dev).
+const REGISTRY_FILE_NAME = '.workspaces.json'
+const FOLDER_NAME_MAX_LENGTH = 48
+const OWNER_CONTAINER_PREFIX = 'u-'
+
+let registryCache = null
+
+function registryFilePath() {
+  return path.join(WORKSPACES_ROOT, REGISTRY_FILE_NAME)
+}
+
+function loadRegistry() {
+  if (registryCache) return registryCache
+  try {
+    const parsed = JSON.parse(fs.readFileSync(registryFilePath(), 'utf8'))
+    registryCache = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    // A missing or unreadable registry just means "nothing registered yet".
+    registryCache = {}
+  }
+  return registryCache
+}
+
+function saveRegistry(registry) {
+  registryCache = registry
+  try {
+    fs.mkdirSync(WORKSPACES_ROOT, { recursive: true })
+    fs.writeFileSync(registryFilePath(), JSON.stringify(registry, null, 2), 'utf8')
+  } catch (error) {
+    console.warn(`[workspace] could not persist the workspace registry: ${error.message}`)
+  }
+}
+
+/** Turns a human display name into a filesystem-safe folder base. */
+export function sanitizeFolderName(displayName) {
+  const base = String(displayName ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, FOLDER_NAME_MAX_LENGTH)
+    .replace(/-+$/g, '')
+  return base || 'project'
+}
+
+/** Deterministic per-user container folder, e.g. "u-507f1f77bcf86cd799439011". */
+export function workspaceOwnerKey(ownerId) {
+  const cleaned = String(ownerId ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+  return cleaned
+    ? `${OWNER_CONTAINER_PREFIX}${cleaned.slice(0, 24)}`
+    : `${OWNER_CONTAINER_PREFIX}guest`
+}
+
+/** Absolute path of the per-user container that holds a user's projects. */
+export function getOwnerContainerPath(ownerId) {
+  return path.join(WORKSPACES_ROOT, workspaceOwnerKey(ownerId))
+}
+
+function folderPathFor(container, folderName) {
+  return container
+    ? path.join(WORKSPACES_ROOT, container, folderName)
+    : path.join(WORKSPACES_ROOT, folderName)
+}
+
+/**
+ * Picks a folder name that is unique within its container: the sanitized base
+ * name plus a deterministic suffix derived from the projectId (extended only in
+ * the unlikely event of a hash clash), e.g. "shahzaib-art-4f2a".
+ */
+function uniqueFolderName(registry, projectId, container, base) {
+  const hash = crypto.createHash('sha1').update(String(projectId)).digest('hex')
+  for (let length = 4; length <= hash.length; length += 2) {
+    const candidate = `${base}-${hash.slice(0, length)}`
+    const taken = Object.entries(registry).some(
+      ([id, record]) =>
+        id !== projectId && record?.container === container && record?.folderName === candidate,
+    )
+    if (!taken) return candidate
+  }
+  return `${base}-${hash}`
+}
+
+/** The registered disk location for a workspace, or null when unknown. */
+export function getWorkspaceRecord(projectId) {
+  if (typeof projectId !== 'string') return null
+  const record = loadRegistry()[projectId]
+  if (!record || typeof record !== 'object') return null
+  if (typeof record.folderName !== 'string' || !record.folderName) return null
+  return {
+    container: typeof record.container === 'string' ? record.container : '',
+    folderName: record.folderName,
+  }
+}
+
+/**
+ * Creates (or re-uses) the on-disk folder for a workspace and records its name.
+ * Idempotent: calling it again for the same projectId keeps the existing folder.
+ * Returns { container, folderName, path }.
+ */
+export function registerWorkspaceFolder(projectId, options = {}) {
+  const {
+    ownerId = null,
+    displayName = null,
+    container: explicitContainer = null,
+    folderName: explicitFolderName = null,
+  } = options
+  const registry = loadRegistry()
+
+  const existing = getWorkspaceRecord(projectId)
+  if (existing) {
+    const existingPath = folderPathFor(existing.container, existing.folderName)
+    fs.mkdirSync(existingPath, { recursive: true })
+    return { ...existing, path: existingPath }
+  }
+
+  const container = explicitContainer ?? (ownerId ? workspaceOwnerKey(ownerId) : '')
+  const folderName =
+    explicitFolderName ??
+    uniqueFolderName(registry, projectId, container, sanitizeFolderName(displayName))
+  const folderPath = folderPathFor(container, folderName)
+  fs.mkdirSync(folderPath, { recursive: true })
+
+  registry[projectId] = { container, folderName }
+  saveRegistry(registry)
+
+  return { container, folderName, path: folderPath }
+}
+
+/**
+ * Rebuilds a registry entry from the absolute `diskPath` stored in MongoDB. This
+ * is the safety net for the case where the registry file is missing/cleared but
+ * the folder (and its Project document) survived — without it, `diskFolderName`
+ * in MongoDB would be write-only metadata.
+ */
+export function registerWorkspaceFromDiskPath(projectId, diskPath) {
+  const existing = getWorkspaceRecord(projectId)
+  if (existing) return existing
+  if (typeof diskPath !== 'string' || !diskPath.trim()) return null
+
+  const relative = path.relative(WORKSPACES_ROOT, path.resolve(diskPath))
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null
+
+  const segments = relative.split(path.sep).filter(Boolean)
+  // Either "<folderName>" (legacy) or "<container>/<folderName>".
+  if (segments.length === 0 || segments.length > 2) return null
+
+  const container = segments.length === 2 ? segments[0] : ''
+  const folderName = segments[segments.length - 1]
+  return registerWorkspaceFolderChecked(projectId, container, folderName)
+}
+
+function registerWorkspaceFolderChecked(projectId, container, folderName) {
+  const registry = loadRegistry()
+  registry[projectId] = { container, folderName }
+  saveRegistry(registry)
+  fs.mkdirSync(folderPathFor(container, folderName), { recursive: true })
+  return { container, folderName }
+}
+
 export const WORKSPACE_MISSING_MESSAGE =
   'This workspace is no longer on the server. It was most likely cleared when the ' +
   'server restarted (free tier). Re-import your project from a local backup.'
@@ -37,9 +213,19 @@ export function ensureScratchWorkspace(projectId) {
   if (!isScratchProjectId(projectId)) {
     throw new ApiError(400, 'Not a scratch workspace id.', 'INVALID_PROJECT_ID')
   }
-  const directory = path.join(WORKSPACES_ROOT, projectId)
-  fs.mkdirSync(directory, { recursive: true })
-  return directory
+
+  const existing = getWorkspaceRecord(projectId)
+  if (existing) {
+    const folderPath = folderPathFor(existing.container, existing.folderName)
+    fs.mkdirSync(folderPath, { recursive: true })
+    return folderPath
+  }
+
+  // "scratch-<userId>" lives in the SAME per-user container a real project of
+  // that user would use, so the terminal (which starts at the container) shows
+  // both side by side as enterable subfolders.
+  const ownerId = projectId.replace(/^scratch-/, '')
+  return registerWorkspaceFolder(projectId, { ownerId, displayName: 'Scratch' }).path
 }
 
 export function assertValidProjectId(projectId) {
@@ -69,7 +255,34 @@ function resolveInsideWorkspace(projectId, relativePath = '') {
 
 export function getWorkspacePath(projectId) {
   assertValidProjectId(projectId)
+  const record = getWorkspaceRecord(projectId)
+  if (record) return folderPathFor(record.container, record.folderName)
+  // Legacy / unregistered workspace: the folder is named after the projectId.
   return path.join(WORKSPACES_ROOT, projectId)
+}
+
+/**
+ * Where a terminal for this workspace starts: ONE LEVEL ABOVE the project
+ * folder, so the project shows up as a real, enterable subfolder of the
+ * terminal's start directory (matching the Explorer's root node). For a
+ * registered workspace that is the per-user container; for an unregistered or
+ * legacy workspace it is the workspaces root.
+ */
+export function getTerminalRootPath(projectId) {
+  assertValidProjectId(projectId)
+  const record = getWorkspaceRecord(projectId)
+  const root = record?.container
+    ? path.join(WORKSPACES_ROOT, record.container)
+    : WORKSPACES_ROOT
+  fs.mkdirSync(root, { recursive: true })
+  return root
+}
+
+/** The project folder's own name — the folder a user types after `cd`. */
+export function getWorkspaceFolderName(projectId) {
+  const record = getWorkspaceRecord(projectId)
+  if (record) return record.folderName
+  return path.basename(getWorkspacePath(projectId))
 }
 
 export function workspaceExists(projectId) {
@@ -88,11 +301,14 @@ export function assertWorkspaceExists(projectId) {
   }
 }
 
-export function createWorkspaceFolder(projectId) {
+/**
+ * Creates the project's on-disk folder, named after its display name. Pass
+ * { ownerId, displayName } so the folder can be named and placed in the owner's
+ * container. Returns { container, folderName, path }.
+ */
+export function createWorkspaceFolder(projectId, options = {}) {
   assertValidProjectId(projectId)
-  const directory = getWorkspacePath(projectId)
-  fs.mkdirSync(directory, { recursive: true })
-  return directory
+  return registerWorkspaceFolder(projectId, options)
 }
 
 export function deleteWorkspaceFolder(projectId) {
@@ -100,6 +316,12 @@ export function deleteWorkspaceFolder(projectId) {
   const directory = getWorkspacePath(projectId)
   if (!fs.existsSync(directory)) return false
   fs.rmSync(directory, { recursive: true, force: true })
+  // Drop the registry entry too, so a later re-create gets a clean mapping.
+  const registry = loadRegistry()
+  if (registry[projectId]) {
+    delete registry[projectId]
+    saveRegistry(registry)
+  }
   return true
 }
 
@@ -200,9 +422,31 @@ function copyDirectoryRecursive(fromAbsolute, toAbsolute) {
 }
 
 /**
+ * Picks a name inside `folderAbsolute` that does not collide with an existing
+ * entry: the original name if free, else "<base> (copy)<ext>", then
+ * "<base> (copy 2)<ext>", "<base> (copy 3)<ext>", … A copy therefore never
+ * overwrites and never fails — duplicating an item into a folder that already
+ * has one of that name just produces "a (copy).txt".
+ */
+function uniqueNameInFolder(folderAbsolute, name) {
+  if (!fs.existsSync(path.join(folderAbsolute, name))) return name
+  const { name: base, ext } = path.parse(name)
+  let counter = 1
+  let candidate = `${base} (copy)${ext}`
+  while (fs.existsSync(path.join(folderAbsolute, candidate))) {
+    counter += 1
+    candidate = `${base} (copy ${counter})${ext}`
+  }
+  return candidate
+}
+
+/**
  * Duplicates a file or folder into `targetFolderRelativePath` ('' = workspace
  * root), keeping the original name. Used by the Explorer's context-menu Copy ->
  * Paste. Folders are copied recursively.
+ *
+ * If the target folder already holds an item of that name, the copy is given a
+ * de-duplicated " (copy)" name rather than failing with a conflict.
  */
 export function copyPathInWorkspace(projectId, sourceRelativePath, targetFolderRelativePath = '') {
   assertWorkspaceExists(projectId)
@@ -237,15 +481,8 @@ export function copyPathInWorkspace(projectId, sourceRelativePath, targetFolderR
     )
   }
 
-  const name = path.basename(source.absolute)
+  const name = uniqueNameInFolder(targetFolder.absolute, path.basename(source.absolute))
   const destinationAbsolute = path.join(targetFolder.absolute, name)
-  if (fs.existsSync(destinationAbsolute)) {
-    const destinationRelative = path
-      .relative(getWorkspacePath(projectId), destinationAbsolute)
-      .split(path.sep)
-      .join('/')
-    throw new ApiError(409, `"${destinationRelative}" already exists.`, 'ALREADY_EXISTS')
-  }
 
   fs.mkdirSync(targetFolder.absolute, { recursive: true })
   if (sourceIsDirectory) copyDirectoryRecursive(source.absolute, destinationAbsolute)

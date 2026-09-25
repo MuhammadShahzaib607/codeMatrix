@@ -140,6 +140,8 @@
 .file-tree {
   display: flex;
   flex-direction: column;
+  /* Focusable so Ctrl+C/X/V can be scoped to the Explorer, but no focus ring. */
+  outline: none;
 }
 
 .tree-children {
@@ -177,6 +179,11 @@
 
 .tree-row.is-selected {
   background: var(--bg-active);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tree-row.is-selected .tree-label {
+  color: #ffffff;
 }
 
 .tree-row.is-creating {

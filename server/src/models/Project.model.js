@@ -26,6 +26,14 @@ const projectSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    // The project folder's real name on disk (e.g. "shahzaib-art-4f2a"), which
+    // is derived from the display name so users can `cd` into it. Kept separate
+    // from `name` (the human-readable label) and from projectId.
+    diskFolderName: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     lastAccessedAt: {
       type: Date,
       default: Date.now,

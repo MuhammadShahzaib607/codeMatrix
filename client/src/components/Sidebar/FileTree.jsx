@@ -16,6 +16,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { addTab, toggleFolder } from '../../features/fileSystemSlice'
+import { ROOT_ID } from '../../services/fileSystemAccess'
+import { findNode } from '../../utils/tree'
 import TreeContextMenu from './TreeContextMenu'
 
 function IndentGuides({ depth }) {
@@ -318,6 +320,50 @@ export default function FileTree({
     [onSelect],
   )
 
+  /**
+   * Clicking anywhere in the tree (except a text field) focuses the tree
+   * element, which is the scope the Ctrl+C / Ctrl+X / Ctrl+V shortcuts below
+   * listen on — so they can never fire while the editor or a search box is
+   * focused.
+   */
+  function handleMouseDown(event) {
+    const target = event.target
+    const tag = target?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
+    rootRef.current?.focus()
+  }
+
+  /**
+   * Explorer keyboard shortcuts, reusing the exact same clipboard state and
+   * handlers as the right-click menu: Ctrl+C copies the selected row, Ctrl+X
+   * cuts it, Ctrl+V pastes into the selected folder (or the workspace root when
+   * a file — or nothing — is selected).
+   */
+  function handleKeyDown(event) {
+    if (event.altKey || !(event.ctrlKey || event.metaKey)) return
+
+    const target = event.target
+    const tag = target?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
+
+    const key = event.key.toLowerCase()
+    if (key !== 'c' && key !== 'x' && key !== 'v') return
+
+    const node = selectedId ? findNode(nodes, selectedId) : null
+
+    if (key === 'v') {
+      event.preventDefault()
+      const folder = node && node.type === 'folder' ? node : { id: ROOT_ID, type: 'folder' }
+      onPaste?.(folder)
+      return
+    }
+
+    if (!node) return
+    event.preventDefault()
+    if (key === 'c') onCopy?.(node)
+    else onCut?.(node)
+  }
+
   function buildMenuItems(node) {
     const isLocked = lockedId !== null && node.id === lockedId
     const isFolder = node.type === 'folder'
@@ -410,7 +456,13 @@ export default function FileTree({
   }
 
   return (
-    <div className="file-tree" ref={rootRef}>
+    <div
+      className="file-tree"
+      ref={rootRef}
+      tabIndex={-1}
+      onMouseDown={handleMouseDown}
+      onKeyDown={handleKeyDown}
+    >
       {creating && creating.parentId === null && (
         <NewNodeInput
           depth={0}

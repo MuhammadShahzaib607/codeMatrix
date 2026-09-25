@@ -10,6 +10,7 @@ function toPublicProject(project) {
     id: project.projectId,
     name: project.name,
     diskPath: project.diskPath,
+    diskFolderName: project.diskFolderName || null,
     createdAt: project.createdAt,
     lastAccessedAt: project.lastAccessedAt,
   }
@@ -30,13 +31,19 @@ export const createProjectHandler = asyncHandler(async (req, res) => {
       : 'Untitled Project'
 
   const projectId = crypto.randomUUID()
-  const diskPath = createWorkspaceFolder(projectId)
+  // The on-disk folder is named from the DISPLAY name (sanitized + a short
+  // suffix) so the terminal's `cd <folder>` matches what the Explorer shows.
+  const { path: diskPath, folderName } = createWorkspaceFolder(projectId, {
+    ownerId: req.user.id,
+    displayName: requestedName,
+  })
 
   const project = await createProject({
     projectId,
     name: requestedName,
     owner: req.user.id,
     diskPath,
+    diskFolderName: folderName,
   })
 
   if (!project) {

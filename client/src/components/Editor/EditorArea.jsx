@@ -5,6 +5,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { setContent, updateContent } from '../../features/editorSlice'
 import { readWorkspaceFile } from '../../features/workspaceThunks'
 import { getLanguageFromFilename } from '../../utils/language'
+import { applyMonacoTsConfig } from '../../utils/monacoTsconfig'
 import { findNode } from '../../utils/tree'
 import { hasActiveWorkspace } from '../../utils/workspace'
 import EmptyState from './EmptyState'
@@ -16,16 +17,25 @@ export default function EditorArea() {
   const { tree, activeFileId, workspace } = useSelector((state) => state.fileSystem)
   const contentByFileId = useSelector((state) => state.editor.contentByFileId)
   const revealLine = useSelector((state) => state.ui.revealLine)
+  const monacoTsConfig = useSelector((state) => state.tsconfig.compilerOptions)
   const [failure, setFailure] = useState(null)
 
   const editorRef = useRef(null)
   const monacoRef = useRef(null)
   const revealRef = useRef(revealLine)
   const activeFileIdRef = useRef(activeFileId)
+  const tsConfigRef = useRef(monacoTsConfig)
 
   useEffect(() => {
     revealRef.current = revealLine
   }, [revealLine])
+
+  // Keep the language service in step with the project's tsconfig: apply it as
+  // soon as Monaco is ready and re-apply whenever the workspace config changes.
+  useEffect(() => {
+    tsConfigRef.current = monacoTsConfig
+    if (monacoRef.current) applyMonacoTsConfig(monacoRef.current, monacoTsConfig)
+  }, [monacoTsConfig])
 
   useEffect(() => {
     activeFileIdRef.current = activeFileId
@@ -135,7 +145,7 @@ export default function EditorArea() {
 
         {activeNode && !loadError && isLoaded && (
           <Editor
-            path={activeNode.id}
+            path={`file:///${activeNode.id}`}
             keepCurrentModel
             value={content}
             language={getLanguageFromFilename(activeNode.name)}
@@ -143,6 +153,10 @@ export default function EditorArea() {
             onMount={(editor, monaco) => {
               editorRef.current = editor
               monacoRef.current = monaco
+              // Monaco's TS worker only resolves path aliases against real file
+              // URIs, so models use file:/// and the project's compilerOptions
+              // (baseUrl/paths/jsx/…) are pushed in here.
+              applyMonacoTsConfig(monaco, tsConfigRef.current)
               applyReveal()
             }}
             onChange={(value) =>

@@ -426,6 +426,26 @@ body.is-resizing-cols * {
   background: transparent !important;
 }
 
+/* Transient clipboard / paste message, scoped to ONE terminal instance. It is
+   positioned against the nearest positioned ancestor (.terminal-group for a
+   full-width terminal, .terminal-split-body inside a split). */
+.terminal-notice {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 5;
+  max-width: calc(100% - 20px);
+  padding: 5px 10px;
+  border: 1px solid #6b4a2a;
+  border-radius: 6px;
+  background: rgba(37, 37, 38, 0.96);
+  color: #e8b7a8;
+  font-size: 12px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  user-select: none;
+}
+
 .terminal-empty {
   padding: 14px 16px;
   color: var(--text-dim);

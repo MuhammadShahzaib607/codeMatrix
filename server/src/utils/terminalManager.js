@@ -1,7 +1,13 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import path from 'node:path'
 import ApiError from './ApiError.js'
-import { WORKSPACE_MISSING_MESSAGE, getWorkspacePath, workspaceExists } from './workspaceManager.js'
+import {
+  WORKSPACE_MISSING_MESSAGE,
+  getTerminalRootPath,
+  getWorkspaceFolderName,
+  workspaceExists,
+} from './workspaceManager.js'
 
 let pty = null
 let ptyLoadError = null
@@ -46,9 +52,17 @@ export function getSessionCount() {
 let cachedShells = null
 
 function findWindowsBash() {
+  // Windows-ONLY probe: this function is called only when process.platform is
+  // 'win32', so none of it runs on the Linux deployment. Every path is composed
+  // with path.win32.join — there are no hardcoded backslashes or drive-letter
+  // string literals — which keeps the file portable and lint-clean.
+  const programFiles = process.env.ProgramFiles || path.win32.join('C:', 'Program Files')
+  const programFilesX86 =
+    process.env['ProgramFiles(x86)'] || path.win32.join('C:', 'Program Files (x86)')
+
   const candidates = [
-    `${process.env.ProgramFiles || 'C:\\Program Files'}\\Git\\bin\\bash.exe`,
-    `${process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'}\\Git\\bin\\bash.exe`,
+    path.win32.join(programFiles, 'Git', 'bin', 'bash.exe'),
+    path.win32.join(programFilesX86, 'Git', 'bin', 'bash.exe'),
   ]
   for (const candidate of candidates) {
     try {
@@ -122,7 +136,11 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
     throw new ApiError(404, WORKSPACE_MISSING_MESSAGE, 'WORKSPACE_MISSING')
   }
 
-  const cwd = getWorkspacePath(projectId)
+  // Terminals start ONE LEVEL ABOVE the project folder (the per-user container),
+  // so the project appears as a genuine, enterable subfolder whose name matches
+  // what the Explorer shows as its root — `cd <folderName>` just works.
+  const cwd = getTerminalRootPath(projectId)
+  const folderName = getWorkspaceFolderName(projectId)
   const shellInfo = resolveShell(options.shell)
 
   let ptyProcess
@@ -168,6 +186,7 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
   socket.emit('terminal:ready', {
     terminalId,
     cwd,
+    folderName,
     shell: shellInfo.label,
     shellId: shellInfo.id,
     pid: ptyProcess.pid,
@@ -176,6 +195,7 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
   return {
     terminalId,
     cwd,
+    folderName,
     shell: shellInfo.label,
     shellId: shellInfo.id,
     pid: ptyProcess.pid,

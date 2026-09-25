@@ -1,7 +1,7 @@
 import { isDatabaseConnected } from '../config/db.js'
 import Project from './Project.model.js'
 
-export async function upsertProject({ projectId, name, owner, diskPath }) {
+export async function upsertProject({ projectId, name, owner, diskPath, diskFolderName }) {
   if (!isDatabaseConnected()) return null
   try {
     return await Project.findOneAndUpdate(
@@ -11,6 +11,7 @@ export async function upsertProject({ projectId, name, owner, diskPath }) {
           name: name || 'Untitled Project',
           owner,
           diskPath,
+          ...(diskFolderName ? { diskFolderName } : {}),
           lastAccessedAt: new Date(),
         },
       },
@@ -22,7 +23,7 @@ export async function upsertProject({ projectId, name, owner, diskPath }) {
   }
 }
 
-export async function createProject({ projectId, name, owner, diskPath }) {
+export async function createProject({ projectId, name, owner, diskPath, diskFolderName }) {
   if (!isDatabaseConnected()) return null
   try {
     const project = await Project.create({
@@ -30,6 +31,7 @@ export async function createProject({ projectId, name, owner, diskPath }) {
       name: name || 'Untitled Project',
       owner,
       diskPath,
+      diskFolderName: diskFolderName || '',
       lastAccessedAt: new Date(),
     })
     return project.toObject()

@@ -56,7 +56,14 @@ export const importProject = asyncHandler(async (req, res) => {
     )
   }
 
-  const diskPath = createWorkspaceFolder(projectId)
+  const projectName = name?.trim() || projectId
+  // The folder on disk is named from the DISPLAY name (sanitized + a short
+  // suffix), inside the owner's container, so a terminal can `cd` into the
+  // folder that the Explorer shows as the project root.
+  const { path: diskPath, folderName } = createWorkspaceFolder(projectId, {
+    ownerId: req.user.id,
+    displayName: projectName,
+  })
 
   const failed = []
   let fileCount = 0
@@ -80,12 +87,12 @@ export const importProject = asyncHandler(async (req, res) => {
     }
   }
 
-  const projectName = name?.trim() || projectId
   const project = await upsertProject({
     projectId,
     name: projectName,
     owner: req.user.id,
     diskPath,
+    diskFolderName: folderName,
   })
 
   const tree = getWorkspaceTree(projectId, { name: project?.name || projectName })

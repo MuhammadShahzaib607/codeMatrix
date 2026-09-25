@@ -3,6 +3,7 @@ import {
   ensureScratchWorkspace,
   getWorkspacePath,
   isScratchProjectId,
+  registerWorkspaceFromDiskPath,
   workspaceExists,
 } from '../utils/workspaceManager.js'
 
@@ -24,8 +25,15 @@ export default function ensureWorkspace(req, res, next) {
   try {
     if (isScratchProjectId(projectId)) {
       ensureScratchWorkspace(projectId)
-    } else if (!workspaceExists(projectId)) {
-      return next(new ApiError(404, WORKSPACE_MISSING_MESSAGE, 'WORKSPACE_MISSING'))
+    } else {
+      // If the on-disk registry was lost but the Project document survived,
+      // rebuild the folder mapping from its stored diskPath before giving up.
+      if (req.project?.diskPath) {
+        registerWorkspaceFromDiskPath(projectId, req.project.diskPath)
+      }
+      if (!workspaceExists(projectId)) {
+        return next(new ApiError(404, WORKSPACE_MISSING_MESSAGE, 'WORKSPACE_MISSING'))
+      }
     }
     req.workspacePath = getWorkspacePath(projectId)
     return next()

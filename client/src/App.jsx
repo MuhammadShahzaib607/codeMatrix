@@ -11,8 +11,11 @@ import TerminalPanel from './components/Terminal/TerminalPanel'
 import Toast from './components/Toast/Toast'
 import Topbar from './components/Topbar/Topbar'
 import { fetchCurrentUser } from './features/authSlice'
+import { clearExplorerHistory } from './features/explorerHistorySlice'
 import { clearWorkspace } from './features/fileSystemSlice'
 import { fetchAvailableShells, resetTerminals } from './features/terminalSlice'
+import { clearTsConfig } from './features/tsconfigSlice'
+import { loadWorkspaceTsConfig } from './features/workspaceThunks'
 import { SIDEBAR_WIDTH_KEY, setSidebarWidth } from './features/uiSlice'
 import useGlobalShortcuts from './hooks/useGlobalShortcuts'
 import useRestoreWorkspace from './hooks/useRestoreWorkspace'
@@ -48,6 +51,18 @@ export default function App() {
   useEffect(() => {
     clearFileContentCache()
   }, [workspace.projectId])
+
+  // Load the project's tsconfig/jsconfig so Monaco resolves its path aliases
+  // (@/…) and type-checks JSX instead of underlining valid imports. The
+  // Explorer undo history is scoped to a workspace, so it resets alongside.
+  useEffect(() => {
+    dispatch(clearExplorerHistory())
+    if (!workspace.projectId) {
+      dispatch(clearTsConfig())
+      return
+    }
+    dispatch(loadWorkspaceTsConfig({ projectId: workspace.projectId }))
+  }, [workspace.projectId, dispatch])
 
   // Terminals only reset for a REAL imported project: entering the scratch
   // workspace must not tear down terminals that already run in that same folder

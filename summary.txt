@@ -1997,3 +1997,491 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
     server-side and traversal-guarded, and both refuse a folder into its own
     subtree with 400 INVALID_PATH.
 
+================================================================================
+AI Code Editor — Phase 11: Terminal Numbering Removed + Paste Fix
+================================================================================
+
+STATUS: complete and verified (25/25 duplicate/rename API checks + 34/34 UI checks).
+
+--------------------------------------------------------------------------------
+1. TERMINAL NUMBERING IS GONE
+--------------------------------------------------------------------------------
+Terminal tabs, the split-pane headers and the right-side TERMINALS list now show
+ONLY the shell name — "PowerShell", "CMD", "bash" — with no number, timestamp
+or letter. Two terminals of the same shell therefore show the same label, which
+is intended and accepted.
+
+  components/Terminal/TerminalPanel.jsx
+    - `lowestFreeSeq()` deleted (it was added in Phase 10; the whole idea of a
+      per-shell sequence is gone).
+    - nextPane(requestedShell) now returns { shell, title: shellLabel(shell) } —
+      the title is just the label.
+    - createTerminal()/splitActiveTerminal() no longer send a `seq`.
+
+  features/terminalSlice.js
+    - the module-level `lowestFreeSeq()` deleted, and `seq` removed from the pane
+      shape entirely: panes are { terminalId, title, shell }.
+    - addTerminal / splitActiveGroup no longer read a `seq`.
+    - setTerminalShell just records the shell the server really spawned and sets
+      `pane.title = label` (previously it re-allocated a number here). No
+      renumbering, no collision handling — none is needed without numbers.
+
+  WHAT IS STILL UNIQUE — deliberately: every pane keeps its own
+  `terminalId` (crypto.randomUUID()). That id is what React keys, the xterm
+  instances, the split layout and every `terminal:*` socket message use. Nothing
+  in the UI derives a number from it any more.
+
+  Verified in a real browser: three terminals of one shell are all titled the
+  plain shell name (no digit anywhere), the TERMINALS list matches, closing two
+  and opening another still shows the plain name, and a CMD terminal added from
+  the shell dropdown is labelled just "CMD".
+
+--------------------------------------------------------------------------------
+2. CUT/COPY/PASTE — ROOT CAUSE AND FIX
+--------------------------------------------------------------------------------
+The dispatch chain itself was correct (Copy/Cut -> clipboardSlice
+{ path, type, mode } -> Paste only rendered when clipboard.path is set -> on
+click it calls the rename endpoint for a cut and /duplicate for a copy with the
+FOLDER's own path as targetFolderPath). Two behaviours made it fail in practice:
+
+  ROOT CAUSE 1 — a name collision was a hard error.
+    copyPathInWorkspace() threw 409 ALREADY_EXISTS whenever the target folder
+    already contained an item of that name. A copy ALSO kept the clipboard on
+    purpose (VS Code behaviour), so the very common sequence "copy a file, paste
+    it, paste it again" — or pasting an item back into a folder that already had
+    it — hit a red error toast and the second paste looked like it did nothing.
+
+    FIX (server/src/utils/workspaceManager.js)
+      + uniqueNameInFolder(folderAbsolute, name): if the name is taken, the copy
+        is written as "<base> (copy)<ext>", then "<base> (copy 2)<ext>",
+        "<base> (copy 3)<ext>", … So a duplicate never overwrites and never
+        fails — copying a.txt into a folder that already has a.txt produces
+        a (copy).txt and leaves the original untouched. copyPathInWorkspace no
+        longer throws ALREADY_EXISTS at all.
+
+  ROOT CAUSE 2 — a stale clipboard.
+    After a successful copy-paste the clipboard was left populated, so Paste kept
+    being offered and repeating it reproduced the collision above.
+
+    FIX (client/src/components/Sidebar/Sidebar.jsx — handlePaste)
+      The clipboard is now cleared after ANY successful paste (cut or copy), so a
+      second Paste does nothing until something new is cut/copied. It is cleared
+      only AFTER the request resolves (via .unwrap()), so a FAILED paste keeps the
+      clipboard and can be retried.
+
+  Also confirmed correct (no change needed):
+    - the paste target is the CLICKED FOLDER's own path (`folderNode.id`, '' for
+      the workspace root) — never the source item's path or its parent;
+    - a CUT is a real server-side MOVE via PATCH /rename, so the original is gone
+      afterwards and nothing is duplicated;
+    - a COPY is a real server-side POST /duplicate; the original stays put;
+    - after either one the tree refetches (refreshWorkspaceTree) and the new item
+      is visible immediately.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (50 files). vite build: succeeds.
+    node --check passes on the changed server file.
+  - Duplicate/rename API against a real token (25/25): file duplicate into a
+    different folder (original intact, bytes equal); second + third duplicate
+    into the same folder auto-renamed to "a (copy).txt" / "a (copy 2).txt";
+    recursive folder duplicate with children; MOVE of a file (target present,
+    source 404 afterwards); MOVE of a folder (children intact, source gone);
+    the tree reflects every result.
+  - Headless Chrome UI run (34/34):
+      * terminal tabs and the TERMINALS list contain no digits, three same-shell
+        tabs share one label, and a CMD tab reads exactly "CMD";
+      * FILE menu is exactly Cut / Copy / Rename / Delete / Copy Path (no Paste);
+      * FOLDER menu contains Paste only once something is on the clipboard;
+      * copy -> paste put a.txt in archive while docs/a.txt stayed put;
+      * the clipboard cleared after the paste (Paste disappeared from the menu);
+      * copying a.txt into archive a second time produced archive/a (copy).txt;
+      * copying a folder copied it recursively (archive/sub/b.txt present);
+      * cut -> paste MOVED a file (moved/a.txt appeared, archive/a.txt gone);
+      * cut -> paste MOVED a folder with its child (moved/sub/b.txt present,
+        archive/sub gone);
+      * the cut row is dimmed (.is-cut) while the cut is pending;
+      * zero unexpected page exceptions.
+  - Cleanup: temp scripts (tmp-paste-api.mjs, tmp-ui.mjs, tmp-debug.mjs, and the
+    earlier tmp-cdp.mjs/tmp-duplicate-api.mjs/.dup-test.json), the headless
+    Chrome profile and every test scratch folder were removed.
+
+--------------------------------------------------------------------------------
+CLEANUP NOTE (please read)
+--------------------------------------------------------------------------------
+This phase registered more throwaway accounts, on top of the ones from earlier
+phases. Their scratch folders are deleted from disk, but the MongoDB documents
+could NOT be removed because the Atlas SRV DNS does not resolve in this shell:
+
+  users: dbg-*@example.com, ui-paste-*@example.com, dup-test-*@example.com,
+         paste-test-*@example.com, codebuff-test-*@example.com,
+         scratch-test-*@example.com, other-*@example.com
+
+Remove them with Mongo Compass or:
+
+  cd server && node --input-type=module -e "
+  import mongoose from 'mongoose';
+  import { env } from './src/config/env.js';
+  import User from './src/models/User.model.js';
+  await mongoose.connect(env.mongoUri);
+  console.log(await User.deleteMany({
+    email: /^(dbg-|ui-paste-|dup-test-|paste-test-|codebuff-test-|scratch-test-|other-)/,
+  }));
+  await mongoose.disconnect();
+  "
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - Terminals are intentionally anonymous: do NOT reintroduce a number, suffix
+    or any other differentiator into `title`. If you need to tell two terminals
+    apart in code, use `terminalId`.
+  - Duplicating is conflict-free by design (" (copy)" naming). Moving still
+    fails with 409 ALREADY_EXISTS if the destination name is taken — that is
+    deliberate (a move onto an existing name is not silently renamed), and the
+    client surfaces it as an error toast while KEEPING the clipboard.
+
+================================================================================
+AI Code Editor — Phase 12: Monaco Path Aliases, Vite Watcher Fix, Delete Confirm,
+               Explorer Undo/Redo + Keyboard Cut/Copy/Paste
+================================================================================
+
+STATUS: complete. client oxlint (0 warnings / 0 errors, 55 files) and `vite build`
+        both pass. Manual browser verification was NOT run in this environment.
+
+--------------------------------------------------------------------------------
+1. MONACO NO LONGER FLAGS VALID IMPORTS / JSX AS ERRORS
+--------------------------------------------------------------------------------
+WHY: Monaco's TypeScript language service runs in a web worker that cannot read
+the project on disk and knew nothing about the project's path aliases, so a
+Next.js-style "@/" import and plain JSX were underlined red.
+
+NEW client/src/utils/monacoTsconfig.js
+  - TS_CONFIG_FILENAMES = ['tsconfig.json', 'jsconfig.json'].
+  - parseTsconfigJson(text): strips // and /* */ comments (string-aware) and
+trailing commas, then JSON.parse — tsconfig files are JSONC and plain
+JSON.parse rejects them.
+  - extractCompilerOptions(config): pulls the serializable subset Monaco needs —
+baseUrl, paths, jsx, target, module, moduleResolution. `paths` values are
+normalised to arrays of strings.
+  - buildMonacoCompilerOptions(monaco, options): maps the tsconfig STRING values
+to the real Monaco/TypeScript enum numbers (ScriptTarget, ModuleKind,
+ModuleResolutionKind, JsxEmit). Falls back to modern React/Next defaults (ESNext,
+ESNext, Bundler, react-jsx, allowJs, noEmit, resolveJsonModule, skipLibCheck,
+esModuleInterop) whenever a value is missing, so a project with NO tsconfig still
+type-checks JSX. When `paths` exists without a `baseUrl`, baseUrl defaults to
+'.' so "./src/*"-style targets resolve.
+  - applyMonacoTsConfig(monaco, options): pushes the built compilerOptions AND
+the diagnostics options into BOTH typescriptDefaults and javascriptDefaults.
+  - DIAGNOSTIC_CODES_TO_IGNORE: because the worker still cannot see node_modules
+or unopened files, these codes are always false positives and are ignored:
+2307 (Cannot find module), 2792 (did you mean moduleResolution), 7016 (no
+declaration file), 2688 (no type definition file), 2503 (Cannot find namespace
+'React'), 2686 ('React' refers to a UMD global), 7026 (JSX element implicitly
+any), 17004 (JSX needs the --jsx flag). Syntax errors and real local semantic
+errors are still reported.
+
+NEW client/src/features/tsconfigSlice.js
+  state { fileName, compilerOptions } + setTsConfig / clearTsConfig.
+
+MODIFIED client/src/features/workspaceThunks.js
+  loadWorkspaceTsConfig({ projectId }) reads tsconfig.json then jsconfig.json via
+the workspace API (so it covers import, reopen AND the scratch workspace),
+parses it and stores the extracted options; a project with neither file clears
+the config and uses the defaults.
+
+MODIFIED client/src/App.jsx
+  An effect on workspace.projectId dispatches loadWorkspaceTsConfig (and
+clearTsConfig when there is no project).
+
+MODIFIED client/src/components/Editor/EditorArea.jsx
+  - Models are created with a real file URI (file:///<path>) so the TS worker
+treats them as files on disk.
+  - onMount calls applyMonacoTsConfig(monaco, latestConfig); a second effect
+re-applies it whenever the config changes, keeping a ref of the latest value so a
+late-mounting editor is configured too.
+
+NET EFFECT: "@/" and other tsconfig alias imports, plus JSX, no longer show red
+squiggles, and the options genuinely come from the project's tsconfig.
+
+--------------------------------------------------------------------------------
+2. VITE NO LONGER FULL-PAGE RELOADS ON WORKSPACE ACTIVITY
+--------------------------------------------------------------------------------
+WHY IT RELOADED: the dev server's root is client/, but Vite picks its watch root
+by walking up for a workspace/lockfile, so it ended up watching the whole repo —
+including server/workspaces, the live sandbox where every imported project, file
+write, `npm install` and terminal command lands. Vite treated those as project
+changes and did a FULL reload of CodeMatrix itself.
+
+MODIFIED client/vite.config.js
+  server.watch.ignored = ['**/server/workspaces/**', '**/server/node_modules/**',
+                          '**/.git/**']
+  Glob patterns (not absolute paths) keep it working on Windows. Now only real
+edits under client/src trigger HMR; terminal/file/npm activity no longer reloads
+the tab.
+
+TERMINAL `cd`: no code change was needed. Each tab is a real pty spawned with
+cwd = server/workspaces/<projectId>, and terminal:input is forwarded to the shell
+verbatim, so `cd <folder>` changes that shell's own working directory and later
+`dir`/`ls` run from inside it. It only looked broken while the watcher was
+reloading the page out from under the terminal.
+
+--------------------------------------------------------------------------------
+3. DELETE CONFIRMATION
+--------------------------------------------------------------------------------
+NEW client/src/components/Common/ConfirmModal.jsx + .css
+  Reusable dark-theme dialog (overlay + card). Escape / backdrop click cancel;
+the confirm button is autofocused and destructive confirm is a red button.
+
+MODIFIED client/src/components/Sidebar/Sidebar.jsx
+  Both the hover trash icon and the context-menu Delete call requestDelete(),
+which opens the modal:
+    title:  Delete '<name>'?
+    file:   "This action cannot be undone."
+    folder: "This will permanently delete this folder and everything inside it.
+             This action cannot be undone."
+  The delete API call only runs on confirm.
+
+--------------------------------------------------------------------------------
+4. EXPLORER UNDO / REDO (Ctrl+Z / Ctrl+Y)
+--------------------------------------------------------------------------------
+NEW client/src/features/explorerHistorySlice.js
+  { undoStack, redoStack } capped at 20 entries (EXPLORER_HISTORY_LIMIT).
+Reducers recordExplorerAction (push + cap + clear the redo branch),
+shiftUndoToRedo, shiftRedoToUndo, clearExplorerHistory. Pure bookkeeping — no I/O.
+
+NEW client/src/features/explorerHistoryThunks.js
+  - deleteExplorerEntry: snapshots the subtree BEFORE deleting (every folder path
+plus every file's content, fetched from the server), deletes, then records a
+{ kind:'delete', snapshot } entry.
+  - revertExplorerEntry / applyExplorerEntry run an entry backwards / forwards:
+      create    -> delete the created path          / re-create it
+      delete    -> restore folders + files from the / delete it again
+                   snapshot
+      rename    -> rename newPath back to oldPath   / oldPath -> newPath
+      move      -> same as rename                   / same as rename
+      duplicate -> delete the copy's newPath        / duplicate again
+    Renames/moves go through renameWorkspaceEntry, so open tabs are remapped.
+  - undoLastExplorerAction / redoLastExplorerAction read the top of the relevant
+stack, run it, move the entry to the other stack, then refresh the tree from the
+backend (the true state).
+
+MODIFIED client/src/hooks/useGlobalShortcuts.js
+  Ctrl/Cmd+Z undoes; Ctrl+Y and Ctrl+Shift+Z redo. isTextEntryFocused() bails out
+when focus is in Monaco (its hidden textarea), an <input> or a contenteditable,
+so Monaco's own per-file text undo is untouched. Failures show an error toast.
+
+MODIFIED client/src/components/Sidebar/Sidebar.jsx
+  create, rename, move (cut-paste) and duplicate (copy-paste) each record an entry
+after they succeed. MODIFIED client/src/App.jsx clears the history when the
+active workspace changes.
+
+--------------------------------------------------------------------------------
+5. KEYBOARD CUT / COPY / PASTE IN THE EXPLORER (Ctrl+X / Ctrl+C / Ctrl+V)
+--------------------------------------------------------------------------------
+MODIFIED client/src/components/Sidebar/FileTree.jsx
+  - The tree element is focusable (tabIndex -1) and is focused on mousedown
+(except on text fields), giving the shortcuts a scope that cannot overlap Monaco
+or the search inputs.
+  - handleKeyDown reuses the exact same clipboardSlice state and handlers as the
+context menu: Ctrl+C copies the selected row, Ctrl+X cuts it, Ctrl+V pastes into
+the selected folder — or the workspace root when a file/nothing is selected. It
+ignores events from inputs/textareas/contenteditable.
+
+MODIFIED client/src/components/Sidebar/Sidebar.css
+  Selected rows get an accent left stripe (inset box-shadow) + a white label on
+top of the existing background, so the selected row is unmistakable.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED THIS PHASE
+--------------------------------------------------------------------------------
+NEW   client/src/utils/monacoTsconfig.js
+NEW   client/src/features/tsconfigSlice.js
+NEW   client/src/features/explorerHistorySlice.js
+NEW   client/src/features/explorerHistoryThunks.js
+NEW   client/src/components/Common/ConfirmModal.jsx
+NEW   client/src/components/Common/ConfirmModal.css
+MOD   client/vite.config.js
+MOD   client/src/app/store.js                 (+ explorerHistory, tsconfig)
+MOD   client/src/App.jsx                      (load tsconfig, clear history)
+MOD   client/src/features/workspaceThunks.js  (loadWorkspaceTsConfig)
+MOD   client/src/components/Editor/EditorArea.jsx
+MOD   client/src/components/Sidebar/Sidebar.jsx
+MOD   client/src/components/Sidebar/FileTree.jsx
+MOD   client/src/components/Sidebar/Sidebar.css
+MOD   client/src/hooks/useGlobalShortcuts.js
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - Path aliases are best-effort: the TS worker only resolves against models that
+    are OPEN in the editor, so full cross-file type-checking is still not
+    possible. That is exactly why the cannot-find-* codes above are ignored — do
+    not "fix" that by enabling noSemanticValidation, which would hide real errors
+    too.
+  - tsconfig `extends` (e.g. "extends": "next/tsconfig.json") is NOT followed;
+    only the file's own compilerOptions are read.
+  - Explorer undo/redo is per-workspace and in-memory only (no persistence) and
+    capped at 20 entries; a fresh action clears the redo branch.
+  - Undoing a delete re-uploads the saved content, so undoing the delete of a
+    huge folder is slow — acceptable for now.
+  - Keyboard cut/copy/paste and Explorer undo/redo both ignore keystrokes whose
+    target is an input/textarea/contenteditable; keep that guard if you add more
+    Explorer shortcuts.
+
+================================================================================
+AI Code Editor — Phase 13: Cross-Platform Path Audit, Display-Name Disk Folders,
+               Terminals Start Above the Project, Terminal Copy/Paste
+================================================================================
+
+STATUS: complete. `node --check` passes on every server source file; client
+        oxlint (0/0) and `vite build` pass. Verified against a live server and a
+        real pty.
+
+--------------------------------------------------------------------------------
+0. CROSS-PLATFORM PATH AUDIT (production runs on Linux)
+--------------------------------------------------------------------------------
+Searched the whole server tree for backslashes, drive letters ("C:\..."), manual
+'/'-or-'\' string joins, and process.cwd()/__dirname misuse.
+
+FINDING (the only one): src/utils/terminalManager.js findWindowsBash() built the
+Git-Bash candidate paths with backslash template literals:
+    `${process.env.ProgramFiles || 'C:\\Program Files'}\\Git\\bin\\bash.exe`
+
+FIX: those paths are now composed with path.win32.join(...); no backslash or
+drive-letter literal remains anywhere in the server. findWindowsBash() stays
+Windows-only (called only when process.platform === 'win32'), so none of it can
+run on the Linux deployment.
+
+CONFIRMED CORRECT (no change needed):
+  - workspaceManager.js builds every disk path with path.join / path.resolve,
+    rooted at WORKSPACES_ROOT, which is path.resolve(env.workspacesRoot) or
+    path.join(SERVER_ROOT, 'workspaces') where SERVER_ROOT derives from
+    fileURLToPath(import.meta.url) (the ESM equivalent of __dirname). The only
+    forward-slash strings are API-RELATIVE paths, and those are produced with
+    `.split(path.sep).join('/')` so they are correct on Windows too.
+  - resolveInsideWorkspace() resolves + path.relative()-checks every user path,
+    so traversal escapes nothing on either OS.
+  - terminalManager.getAvailableShells() branches on process.platform:
+    win32 -> PowerShell / CMD (+ Git Bash only if it actually exists);
+    linux/darwin -> bash. resolveShell() falls back to the platform default, so a
+    stale 'bash' request can never assume a Windows shell exists.
+  - env.js loads .env via path.resolve(here, '..', '..', '.env'); server.js
+    mkdirs WORKSPACES_ROOT recursively. No hardcoded separators anywhere.
+  - Every fs.* call receives a value produced by path.join / resolve / dirname.
+
+--------------------------------------------------------------------------------
+1. DISK FOLDER NAME NOW MATCHES THE PROJECT'S DISPLAY NAME
+--------------------------------------------------------------------------------
+WHY: folders were created as server/workspaces/<projectId> (a raw UUID) while the
+Explorer shows the human name ("shahzaib.art") as its root — so `cd shahzaib.art`
+in the terminal could never work.
+
+NEW NAMING: sanitized display name + a deterministic short suffix
+  sanitizeFolderName('shahzaib.art')  -> 'shahzaib-art'
+  folder name                         -> 'shahzaib-art-<4 hex of sha1(projectId)>'
+  e.g. 'shahzaib-art-6822'
+Collisions (same name, different project) extend the hash slice; the operation is
+idempotent, so re-importing reuses the same folder.
+
+LAYOUT: every user gets a per-user container so a terminal can start one level
+above the project:
+  server/workspaces/
+    .workspaces.json                  <- registry: projectId -> { container, folderName }
+    u-<ownerId>/                      <- the terminal's start directory
+      shahzaib-art-6822/              <- the project (its real files)
+      scratch-<hash>/                 <- the scratch workspace, same container
+
+TERMINALS START ONE LEVEL ABOVE the project folder (the container), so the
+project shows up as a genuine, enterable subfolder matching the Explorer's root
+node. terminal:ready now also carries `folderName`, and the client prints:
+  "Project folder: shahzaib-art-6822 — run  cd shahzaib-art-6822"
+
+SERVER CHANGES
+  - models/Project.model.js        + diskFolderName (String)
+  - models/project.repository.js   upsert/createProject persist diskFolderName
+  - utils/workspaceManager.js      + on-disk registry (.workspaces.json),
+      sanitizeFolderName, workspaceOwnerKey, registerWorkspaceFolder,
+      registerWorkspaceFromDiskPath, getWorkspaceRecord, getTerminalRootPath,
+      getWorkspaceFolderName; getWorkspacePath / ensureScratchWorkspace /
+      createWorkspaceFolder / deleteWorkspaceFolder now resolve + maintain it.
+      A legacy folder named after the raw projectId still resolves (fallback).
+  - controllers/project.controller.js   names the folder from the display name,
+      stores diskFolderName, returns it in the public project.
+  - controllers/workspace.controller.js (import) does the same.
+  - utils/terminalManager.js        cwd = getTerminalRootPath(projectId); the
+      terminal:ready payload gains folderName.
+  - middlewares/ensureWorkspace.js  rebuilds the registry from Project.diskPath
+      if the registry file is ever lost but the folder survived (so the Mongo
+      metadata is not write-only).
+  - client components/Terminal/TerminalView.jsx  prints the cd hint.
+
+--------------------------------------------------------------------------------
+2. REAL COPY / PASTE INSIDE THE TERMINAL
+--------------------------------------------------------------------------------
+MODIFIED client/src/components/Terminal/TerminalView.jsx + TerminalPanel.css
+  - Ctrl/Cmd+C: WITH a selection, it copies via
+    navigator.clipboard.writeText(term.getSelection()) and swallows the key (no
+    \x03). With NO selection it returns true, so xterm sends the normal interrupt
+    byte — Ctrl+C still kills a running process.
+  - Ctrl/Cmd+V (and Ctrl+Shift+V): navigator.clipboard.readText() is written into
+    the pty through the existing 'terminal:input' socket event, as if typed.
+    preventDefault() stops the browser's own paste from double-firing.
+  - Right-click on a terminal with an active selection copies it.
+  - If clipboard access is denied/unavailable, a small inline overlay appears
+    inside THAT terminal ("Clipboard access denied — check browser permissions")
+    and auto-dismisses after 4s.
+  - All of it is scoped with term.attachCustomKeyEventHandler / a contextmenu
+    listener on the terminal element, so the Explorer's Ctrl+C/X/V shortcuts and
+    the global Ctrl+Z/Y are untouched (they only fire with the relevant focus).
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - node --check on every server source file: passes.
+  - client oxlint 0/0 and vite build: pass.
+  - Isolated workspaceManager run against a temp WORKSPACES_ROOT:
+      sanitizeFolderName('shahzaib.art') = 'shahzaib-art';
+      create -> '<root>/u-<owner>/shahzaib-art-<hash>', idempotent on re-run;
+      getTerminalRootPath === path.dirname(getWorkspacePath);
+      a second project with the same display name gets a DIFFERENT folder;
+      scratch-<userId> lands in the SAME container as that user's projects;
+      a legacy/unregistered id falls back to <root>/<id>;
+      registerWorkspaceFromDiskPath rebuilds a mapping and rejects paths outside
+      the root.
+  - Live server on a spare port (4100): health ok, DB connected, shells show the
+    win32 set (PowerShell/CMD/bash).
+  - Live API end-to-end: registered a throwaway user, POST /api/projects
+    { name: 'shahzaib.art' } -> diskFolderName 'shahzaib-art-6822' under
+    workspaces/u-6ab657aba46195d79efa2e75/; POST /import wrote 2 files; GET /tree
+    returned them; server/workspaces/.workspaces.json held the mapping.
+  - Live pty run (real cmd.exe): session cwd === the container (one level above);
+    sending `cd shahzaib-art-6822` then `cd` printed
+    ...\u-6ab657aba46195d79efa2e75\shahzaib-art-6822 — the terminal really enters
+    the project folder by its visible name.
+
+--------------------------------------------------------------------------------
+CLEANUP NOTE
+--------------------------------------------------------------------------------
+The end-to-end test created one throwaway account (audit-*@example.com) and one
+project; both were deleted from MongoDB, the project folder was removed, the
+registry entry was dropped (.workspaces.json is {} again) and the empty container
+folder was deleted. The temporary pty test script was removed.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - The disk folder name is derived from the DISPLAY name; two same-named
+    projects get different hash suffixes. The registry (.workspaces.json) is the
+    fast path for projectId -> folder; MongoDB's diskPath/diskFolderName is the
+    durable copy, and ensureWorkspace rebuilds the registry from it when needed.
+    Keep the two in step if you change folder creation.
+  - SCRATCH is a real project-shaped folder inside the same per-user container, so
+    the Explorer and the terminal still agree on one directory tree.
+  - Legacy projects (folders named after the raw projectId) still resolve via the
+    fallback, but their terminal starts at the workspaces root and `cd` needs the
+    UUID — re-import to get the friendly name.
+  - Terminal copy/paste deliberately makes Ctrl+C copy ONLY when text is selected;
+    do NOT make plain Ctrl+C always copy or you lose the interrupt signal.
+

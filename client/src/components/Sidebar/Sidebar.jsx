@@ -2,16 +2,18 @@ import { ChevronsUp, FilePlus, FolderPlus, Info } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
+import { recordExplorerAction } from '../../features/explorerHistorySlice'
+import { deleteExplorerEntry } from '../../features/explorerHistoryThunks'
 import { collapseAll, setFolderOpen } from '../../features/fileSystemSlice'
 import { showToast } from '../../features/uiSlice'
 import {
   createWorkspaceEntry,
-  deleteWorkspaceEntry,
   duplicateWorkspaceEntry,
   openScratchWorkspace,
   renameWorkspaceEntry,
 } from '../../features/workspaceThunks'
 import useAuthGuard from '../../hooks/useAuthGuard'
+import ConfirmModal from '../Common/ConfirmModal'
 import { ROOT_ID } from '../../services/fileSystemAccess'
 import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
 import { copyTextToClipboard } from '../../utils/clipboard'
@@ -34,6 +36,8 @@ export default function Sidebar() {
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(null)
   const [isPreparing, setIsPreparing] = useState(false)
+  // Node awaiting confirmation from the delete modal (file or folder).
+  const [pendingDelete, setPendingDelete] = useState(null)
 
   // The active project id can change asynchronously (scratch workspace
   // bootstrap) while submit handlers from an older render are still mounted, so
@@ -108,6 +112,10 @@ export default function Sidebar() {
    * Paste into a folder: a CUT is a server-side move (rename endpoint), a COPY
    * is a server-side duplicate (POST /duplicate). Only a file/folder reference
    * travels through Redux — never content.
+   *
+   * The target is the FOLDER being pasted INTO (its own path), never the source
+   * item's path. On success the clipboard is cleared, so a second Paste does
+   * nothing until something new is cut/copied.
    */
   async function handlePaste(folderNode) {
     const activeProjectId = projectIdRef.current
@@ -123,14 +131,12 @@ export default function Sidebar() {
         dispatch(clearClipboard())
         return
       }
+      const newPath = joinPath(targetFolderPath, name)
       try {
         await dispatch(
-          renameWorkspaceEntry({
-            projectId: activeProjectId,
-            oldPath: sourcePath,
-            newPath: joinPath(targetFolderPath, name),
-          }),
+          renameWorkspaceEntry({ projectId: activeProjectId, oldPath: sourcePath, newPath }),
         ).unwrap()
+        dispatch(recordExplorerAction({ kind: 'move', oldPath: sourcePath, newPath }))
         dispatch(clearClipboard())
         dispatch(showToast({ message: `Moved ${name}`, type: 'success' }))
       } catch (error) {
@@ -143,8 +149,17 @@ export default function Sidebar() {
       const result = await dispatch(
         duplicateWorkspaceEntry({ projectId: activeProjectId, sourcePath, targetFolderPath }),
       ).unwrap()
-      // A copy stays on the clipboard so it can be pasted again (VS Code
-      // behaviour); a cut is consumed above.
+      dispatch(
+        recordExplorerAction({
+          kind: 'duplicate',
+          sourcePath,
+          targetFolderPath,
+          newPath: result.newPath,
+        }),
+      )
+      // Consumed only AFTER the copy succeeded, so a failed paste keeps the
+      // clipboard and can be retried.
+      dispatch(clearClipboard())
       dispatch(showToast({ message: `Copied ${name} → ${result.newPath}`, type: 'success' }))
     } catch (error) {
       reportError(`Could not copy ${name}: ${error.message}`)
@@ -171,14 +186,12 @@ export default function Sidebar() {
     if (!name || !activeProjectId) return
 
     const parentPath = parentId === ROOT_ID ? '' : parentId
+    const newPath = joinPath(parentPath, name)
     try {
       await dispatch(
-        createWorkspaceEntry({
-          projectId: activeProjectId,
-          path: joinPath(parentPath, name),
-          type,
-        }),
+        createWorkspaceEntry({ projectId: activeProjectId, path: newPath, type }),
       ).unwrap()
+      dispatch(recordExplorerAction({ kind: 'create', path: newPath, type }))
     } catch (error) {
       reportError(`Could not create ${name}: ${error.message}`)
     }
@@ -188,27 +201,31 @@ export default function Sidebar() {
     const activeProjectId = projectIdRef.current
     if (!activeProjectId || node.id === ROOT_ID) return
 
+    const newPath = joinPath(parentPathOf(node.id), nextName)
     try {
       await dispatch(
-        renameWorkspaceEntry({
-          projectId: activeProjectId,
-          oldPath: node.id,
-          newPath: joinPath(parentPathOf(node.id), nextName),
-        }),
+        renameWorkspaceEntry({ projectId: activeProjectId, oldPath: node.id, newPath }),
       ).unwrap()
+      dispatch(recordExplorerAction({ kind: 'rename', oldPath: node.id, newPath }))
     } catch (error) {
       reportError(`Could not rename ${node.name}: ${error.message}`)
     }
   }
 
-  async function handleDelete(node) {
+  /** Opens the confirmation modal; the delete only runs if the user confirms. */
+  function requestDelete(node) {
+    if (node.id === ROOT_ID) return
+    setPendingDelete(node)
+  }
+
+  async function confirmDelete() {
+    const node = pendingDelete
+    setPendingDelete(null)
     const activeProjectId = projectIdRef.current
-    if (!activeProjectId || node.id === ROOT_ID) return
+    if (!node || !activeProjectId || node.id === ROOT_ID) return
 
     try {
-      await dispatch(
-        deleteWorkspaceEntry({ projectId: activeProjectId, path: node.id }),
-      ).unwrap()
+      await dispatch(deleteExplorerEntry({ projectId: activeProjectId, node })).unwrap()
     } catch (error) {
       reportError(`Could not delete ${node.name}: ${error.message}`)
     }
@@ -271,7 +288,7 @@ export default function Sidebar() {
           onSubmitCreate={submitCreate}
           onCancelCreate={() => setCreating(null)}
           onRename={handleRename}
-          onDelete={handleDelete}
+          onDelete={requestDelete}
           lockedId={ROOT_ID}
           onRequestCreate={handleRequestCreate}
           onCut={handleCut}
@@ -280,6 +297,20 @@ export default function Sidebar() {
           onCopyPath={handleCopyPath}
         />
       </div>
+
+      {pendingDelete && (
+        <ConfirmModal
+          title={`Delete '${pendingDelete.name}'?`}
+          message={
+            pendingDelete.type === 'folder'
+              ? 'This will permanently delete this folder and everything inside it. This action cannot be undone.'
+              : 'This action cannot be undone.'
+          }
+          confirmLabel="Delete"
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
     </aside>
   )
 }

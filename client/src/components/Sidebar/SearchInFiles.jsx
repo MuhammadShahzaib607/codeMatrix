@@ -5,6 +5,7 @@ import { addTab, setFolderOpen } from '../../features/fileSystemSlice'
 import { revealLineInEditor, revealTreeNode, setActiveSidebarView } from '../../features/uiSlice'
 import { getFileContent } from '../../services/fileContentCache'
 import { collectAncestorFolderIds, flattenTreeNodes } from '../../utils/tree'
+import { hasActiveWorkspace } from '../../utils/workspace'
 import './SearchInFiles.css'
 
 const DEBOUNCE_MS = 300
@@ -69,7 +70,9 @@ export default function SearchInFiles() {
         if (cancelled) return
 
         let content = contentRef.current[file.id]
-        if (content === undefined && workspace.source === 'cloud' && workspace.projectId) {
+        // Content comes from the server for both imported projects and the
+        // scratch workspace; buffers already open in the editor win.
+        if (content === undefined && hasActiveWorkspace(workspace)) {
           try {
             content = await getFileContent(workspace.projectId, file.id)
           } catch {

@@ -16,7 +16,7 @@ import {
 export default function registerTerminalSocket(io) {
   io.on('connection', (socket) => {
     socket.on('terminal:create', (payload, acknowledge) => {
-      const { terminalId, projectId, cols, rows } = payload ?? {}
+      const { terminalId, projectId, shell, cols, rows } = payload ?? {}
       try {
         if (!terminalId) throw new Error('terminalId is required.')
         if (!isTerminalAvailable()) {
@@ -35,7 +35,7 @@ export default function registerTerminalSocket(io) {
           throw new Error('A valid projectId is required.')
         }
 
-        createTerminalSession(terminalId, resolvedProjectId, socket, { cols, rows })
+        createTerminalSession(terminalId, resolvedProjectId, socket, { cols, rows, shell })
         acknowledge?.({ ok: true, terminalId })
       } catch (error) {
         socket.emit('terminal:error', { terminalId, message: error.message })

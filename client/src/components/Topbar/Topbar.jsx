@@ -20,6 +20,7 @@ import useExportWorkspace from '../../hooks/useExportWorkspace'
 import useOpenFolder from '../../hooks/useOpenFolder'
 import useSaveActiveFile from '../../hooks/useSaveActiveFile'
 import useSyncToLaptop from '../../hooks/useSyncToLaptop'
+import { hasActiveWorkspace, isCloudWorkspace, workspaceLabel } from '../../utils/workspace'
 import Logo from '../Logo/Logo'
 import TopbarSearch from './TopbarSearch'
 import './Topbar.css'
@@ -44,7 +45,11 @@ export default function Topbar() {
     (state) => !!activeFileId && state.editor.unsavedFileIds.includes(activeFileId),
   )
 
-  const hasProject = workspace.source === 'cloud' && Boolean(workspace.projectId)
+  // A scratch workspace can be saved into but cannot be exported or synced
+  // (there is no imported folder on the laptop to sync back to).
+  const hasProject = isCloudWorkspace(workspace)
+  const hasWorkspace = hasActiveWorkspace(workspace)
+  const label = workspaceLabel(workspace)
   const projectDisabled = !hasProject
 
   return (
@@ -65,9 +70,9 @@ export default function Topbar() {
 
         <span
           className={`workspace-chip is-${workspace.source}`}
-          title={hasProject ? `Cloud workspace: ${workspace.name}` : IMPORT_FIRST}
+          title={label ? `Workspace: ${label}` : IMPORT_FIRST}
         >
-          {hasProject ? workspace.name : 'No project imported'}
+          {label ?? 'No project imported'}
         </span>
       </div>
 
@@ -131,16 +136,16 @@ export default function Topbar() {
           type="button"
           className={`icon-btn ${hasUnsavedChanges ? 'is-dirty' : ''}`}
           title={
-            projectDisabled
-              ? IMPORT_FIRST
-              : !activeFileId
-                ? 'No file open'
+            !activeFileId
+              ? 'No file open'
+              : !hasWorkspace
+                ? 'Create a file or import a folder first'
                 : isAuthenticated
                   ? 'Save file (Ctrl+S)'
                   : 'Please sign in to save files'
           }
           aria-label="Save file"
-          disabled={projectDisabled || !activeFileId}
+          disabled={!hasWorkspace || !activeFileId}
           onClick={() => guard(saveActiveFile, 'Please sign in to save files')}
         >
           <Save size={18} />

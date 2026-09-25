@@ -2,6 +2,9 @@
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
+  /* MUST stay 0: without it the editor refuses to shrink below its content and
+     pushes the docked terminal panel below the viewport (unreachable). */
+  min-height: 0;
   min-width: 0;
   background: var(--bg-editor);
 }
@@ -115,6 +118,9 @@
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
+  /* Keep Monaco / the welcome screen inside the editor when it is squeezed by
+     a growing terminal panel. */
+  overflow: hidden;
   background: var(--bg-editor);
 }
 
@@ -166,9 +172,8 @@
 
 .empty-state {
   display: flex;
-  align-items: center;
-  justify-content: center;
   height: 100%;
+  overflow: auto;
   padding: 24px;
   background:
     radial-gradient(900px 420px at 50% -10%, rgba(139, 92, 246, 0.09), transparent 70%),
@@ -178,6 +183,10 @@
 .empty-state-card {
   width: 100%;
   max-width: 430px;
+  /* `margin: auto` centres the card like align/justify-items: center would,
+     but also allows the container to scroll instead of clipping when the
+     editor area is short. */
+  margin: auto;
   text-align: center;
 }
 

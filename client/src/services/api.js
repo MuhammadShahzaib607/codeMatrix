@@ -110,6 +110,14 @@ export const authApi = {
   },
 }
 
+export const terminalApi = {
+  // The set of shells the SERVER can spawn depends on the server's OS, so the
+  // dropdown is populated from the server instead of being hardcoded.
+  getShells() {
+    return request('/api/terminal/shells')
+  },
+}
+
 export const projectApi = {
   create(payload) {
     return request('/api/projects', { method: 'POST', body: JSON.stringify(payload) })

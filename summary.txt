@@ -1280,3 +1280,499 @@ VERIFICATION PERFORMED THIS ENTRY
   - Process handover: the manual test server was stopped and the user's
     existing `npm run dev` watcher nudged (touch server/server.js) so ITS
     child now owns :4000 (verified by health/uptime + ACAO).
+
+
+================================================================================
+AI Code Editor — Phase 7: Terminal Resize Fix, Split Terminals, Shell Selector
+================================================================================
+
+STATUS: complete and verified. Resize, side-by-side split terminals and the
+per-OS shell dropdown all work; import/export, editor, sidebar and AI panel are
+untouched and still render.
+
+--------------------------------------------------------------------------------
+1. TERMINAL RESIZE — ROOT CAUSE AND FIX
+--------------------------------------------------------------------------------
+THE HANDLER WAS NEVER THE BUG. The panel was simply unreachable.
+
+`.editor-area` is a flex item inside `.editor-column` (a column flexbox). With
+no explicit `min-height`, it defaults to `min-height: auto`, so it refuses to
+shrink below its own content. Once the welcome screen / Monaco is taller than
+the viewport, the docked terminal panel is pushed completely below the fold.
+
+MEASURED BEFORE THE FIX (headless Chrome, 484px viewport):
+  .editor-column  436px
+  .editor-area    958px   <- would not shrink
+  .terminal-panel bottom at 1266px, i.e. ~780px BELOW the viewport
+So the handle existed and its listeners fired, but a user could neither see nor
+click it — which looks exactly like "the resize drag is broken".
+
+THE FIX (client/src/components/Editor/Editor.css):
+  .editor-area    min-height: 0        <-- the actual fix
+  .editor-body    overflow: hidden     <-- keeps Monaco / welcome inside the
+                                           editor box when the panel grows
+  .empty-state    overflow: auto, and the centring moved from align/justify
+                  to `.empty-state-card { margin: auto }` so the welcome screen
+                  scrolls instead of bleeding over the terminal.
+After the fix the panel bottom sits exactly on the viewport edge (verified: it
+grows/shrinks live, editor shrinks to match).
+
+HANDLE REBUILT CLEANLY anyway, per the brief (TerminalPanel.jsx startResize):
+  - mousedown on the 4px handle attaches mousemove + mouseup to `document`
+    (not to the handle), so a fast drag cannot outrun it.
+  - new height = startHeight + (clientY_start - clientY_now), clamped to
+    [TERMINAL_MIN_HEIGHT, window.innerHeight * TERMINAL_MAX_HEIGHT_RATIO].
+  - constants changed: TERMINAL_MIN_HEIGHT 100 -> 120,
+    TERMINAL_MAX_HEIGHT_RATIO 0.7 -> 0.75.
+  - a class on <body> (`.is-resizing-rows` / `.is-resizing-cols`) forces
+    `cursor: row-resize` (resp. col-resize) + `user-select: none` on every
+    element for the whole drag, even outside the handle.
+  - listener removal is symmetric on mouseup.
+
+--------------------------------------------------------------------------------
+2. SPLIT TERMINALS — THE GROUP DATA STRUCTURE
+--------------------------------------------------------------------------------
+terminalSlice no longer keeps a flat `terminals: []`. It keeps tab GROUPS:
+
+  groups: [
+    {
+      groupId,                              // the top-level tab id
+      sizes: [w1, w2, ...],                 // relative width weight per pane
+      panes: [ { terminalId, title, shell } ],
+    },
+  ]
+
+  - A group with ONE pane is a normal full-width terminal. A group with TWO OR
+    MORE panes is a side-by-side split inside a single tab.
+  - Every pane keeps its own `terminalId` -> its own xterm instance -> its own
+    server-side pty, so panes are fully independent and independently closable.
+  - activeGroupId  = which tab is visible.
+    activePaneId   = which pane of that group owns the keyboard focus (every
+                     visible pane is still `fit()`-ed on activation).
+  - Reducers: addTerminal (new group), splitActiveGroup (push a pane and a
+    weight), removeTerminal (drop a pane; 1 pane left -> sizes=[1] collapses the
+    group back to full width; 0 panes -> the group is removed), setActiveGroup,
+    setActivePane, setSplitSizes, resetTerminals, plus the existing
+    togglePanel / setPanelHeight / toggleMinimize.
+
+RENDERING (client/src/components/Terminal/):
+  - TerminalPanel renders the tab bar from `groups`. For each group it renders
+    either one TerminalView (single pane) or SplitTerminalView (2+ panes).
+  - ALL groups (and every pane) stay MOUNTED; inactive ones are hidden with
+    `visibility`, so switching tabs or minimizing never kills a shell.
+  - SplitTerminalView (new file): panes are flex children with
+    `flex-grow: sizes[i]` and `flex-basis: 0`, separated by a 5px draggable
+    vertical divider. A 22px header above each pane shows its title and its own
+    small X (closes just that pty). Dragging divider i moves weight between
+    panes i and i+1 ONLY, keeping their combined weight constant and clamping
+    each to TERMINAL_PANE_MIN_SHARE (0.15) so a divider can't hide a pane.
+  - The tab's own X closes the whole group (every pane's pty is closed).
+  - The Columns2 button next to "+" splits the active group. Works for 2, 3,
+    N panes; closing panes one at a time collapses back to a single terminal.
+
+--------------------------------------------------------------------------------
+3. SHELL SELECTION — DYNAMIC, BASED ON THE SERVER'S OS
+--------------------------------------------------------------------------------
+Nothing is hardcoded any more; the list is computed at runtime from
+`process.platform` (cached after the first call).
+
+server/src/utils/terminalManager.js
+  - getAvailableShells():
+      win32 -> powershell (powershell.exe), cmd ($ComSpec || cmd.exe), and bash
+               ONLY IF a real Git Bash exists (checked via
+               %ProgramFiles%\Git\bin\bash.exe and `where bash.exe`)
+      else  -> bash only ($SHELL || /bin/bash)
+  - getShellOptions() -> credential-free { platform, default, shells:[{id,label}] }
+    for the API/client.
+  - resolveShell(requestedId) -> falls back to the platform default when the id
+    is unknown or unavailable (e.g. a stale 'bash' request on a Windows host
+    without Git Bash), so a bad request can never crash the spawn.
+  - createTerminalSession(..., { shell }) spawns the resolved command instead of
+    a hardcoded shell, and terminal:ready now echoes { shell: label, shellId }.
+
+server/src/controllers/terminal.controller.js + routes/terminal.routes.js
+  - GET /api/terminal/shells  ->  { platform, default, shells:[{ id, label }] }
+  - mounted at /api/terminal in routes/index.js. Public (matches the socket,
+    which is not auth-gated either).
+
+server/src/socket/terminalSocket.js
+  - terminal:create now reads `shell` from the payload and passes it through.
+
+Client wiring
+  - services/api.js: `terminalApi.getShells()`.
+  - features/terminalSlice.js: `fetchAvailableShells` thunk (dispatched once
+    from App.jsx on load) fills `availableShells` + `defaultShell`.
+  - The "+" button is now a SPLIT-BUTTON: the icon opens a terminal with the
+    default shell, the small chevron opens a dropdown listing exactly what the
+    server returned (Windows dev: PowerShell / CMD / bash; Linux deploy: bash),
+    with a check mark on the default. The chevron is disabled while the list is
+    empty.
+  - The active shell is shown as a label in each tab title and each pane header
+    ("PowerShell 1", "CMD 2", "bash 3") plus a small per-shell colour chip.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (45 files).
+  - vite build: succeeds.
+  - node --check: terminalManager.js, terminalSocket.js, terminal.controller.js,
+    terminal.routes.js, routes/index.js all pass.
+  - Headless Chrome (CDP) drove the real UI end to end — 26/26 checks:
+      * panel docked INSIDE the viewport (editor shrinks to make room);
+      * drag grows/shrinks the panel live; clamps at exactly 120px and 75% of
+        the viewport; row-resize cursor held for the whole drag, restored after;
+      * shell dropdown lists exactly the server's 3 shells;
+      * choosing CMD opened "CMD 1" and the xterm buffer contained cmd.exe's own
+        "Microsoft Windows [Version 10.0.26200.9457]" banner (a REAL pty);
+      * split -> two 289px panes + divider; dragging it gives [407,170];
+        both panes have live independent ptys; a 3-pane split works; the
+        divider cannot squeeze a pane to 0 ([57,324,191]);
+      * closing panes one at a time collapses back to one full-width terminal;
+      * a tab's X removes the whole group; multiple groups stay switchable;
+      * minimize (36px) / expand still work;
+      * topbar, sidebar, activity bar, editor and AI panel all still render;
+      * zero uncaught page exceptions.
+  - Backend shell matrix over Socket.IO (Windows): powershell -> PowerShell,
+    cmd -> CMD, bash -> bash (Git Bash), an invalid id -> PowerShell fallback.
+  - POSIX branch checked by overriding process.platform: linux returns
+    { platform:'linux', default:'bash', shells:[bash] } — bash only, as required.
+
+
+================================================================================
+AI Code Editor — Phase 8: node-pty Windows Crash, Shell Selection, Session List
+================================================================================
+
+STATUS: complete and verified (32/32 UI checks + a socket crash-stress run).
+The server survived every create/split/close flow without crashing or
+restarting (health uptime stayed monotonic throughout).
+
+--------------------------------------------------------------------------------
+1. NODE-PTY CRASH ON WINDOWS (TypeError: ... reading 'forEach')
+--------------------------------------------------------------------------------
+ROOT CAUSE (confirmed by reading the installed source and by a deterministic
+A/B reproduction, not just the reported stack trace):
+
+  node_modules/node-pty/lib/windowsPtyAgent.js, ConPTY kill path:
+
+      this._getConsoleProcessList().then(function (consoleProcessList) {
+          consoleProcessList.forEach(...);      // <-- TypeError when undefined
+      });
+
+  ...and the helper it forks, conpty_console_list_agent.js:
+
+      var consoleProcessList = getConsoleProcessList(shellPid);
+      process.send({ consoleProcessList: consoleProcessList });
+
+  getConsoleProcessList() returns `undefined` once the shell process has
+  already exited (the console is gone). The parent then calls .forEach on that
+  undefined value INSIDE a `.then()`, which is an UNHANDLED PROMISE REJECTION —
+  and Node treats those as fatal, so the whole server process aborts. That is
+  exactly the reported crash, and it only exists on the ConPTY path.
+
+FIXES
+  a) server/package.json: node-pty range bumped ^1.0.0 -> ^1.1.0 and
+     `npm install` re-run. NOTE: 1.1.0 IS the latest published stable release
+     (npm dist-tags latest = 1.1.0; the only newer builds are 1.2.0-beta.*), so
+     upstream has not fixed this yet and the workaround below is required.
+  b) terminalManager.js createTerminalSession(): spawn options now include
+         ...(process.platform === 'win32' ? { useConpty: false } : {})
+     On Windows this forces node-pty onto the older, stable winpty backend,
+     which uses a SYNCHRONOUS native getProcessList() and never runs the
+     crash-prone ConPTY code above. Linux/macOS keep node-pty's defaults.
+  c) Crash-proof kill paths. killTerminal() deletes the session from the map
+     FIRST, then wraps ptyProcess.kill() in try/catch and logs
+     "[terminal] kill(<id>) failed (session dropped anyway): ..." instead of
+     letting the throw escape. killTerminalsForSocket() and killAllTerminals()
+     now log failures too (they used to swallow them silently), and
+     writeToTerminal() is guarded the same way. The session is always removed
+     from the sessions map regardless of what kill() does.
+
+PROOF — deterministic A/B against the real node-pty code (forcing the
+undefined consoleProcessList that the exited-shell race produces):
+  ConPTY  (useConpty: true)  -> CRASHED: TypeError: Cannot read properties of
+                               undefined (reading 'forEach')
+  winpty  (useConpty: false) -> SURVIVED (no crash, no unhandled rejection)
+Also: a socket-level stress run did 12 kill-a-running-pty cases, 12
+let-the-shell-exit-THEN-close cases (the reported trigger) and a batched
+8-terminal teardown; the server's /api/health uptime only ever increased
+(130s -> 147s) and the socket never dropped -> no crash, no restart.
+
+--------------------------------------------------------------------------------
+2. SHELL SELECTOR — WHY IT LOOKED LIKE "EVERYTHING IS BASH" + FIX
+--------------------------------------------------------------------------------
+GET /api/terminal/shells was already correct (verified live on win32):
+  { platform:'win32', default:'powershell',
+    shells:[{id:'powershell',label:'PowerShell'},{id:'cmd',label:'CMD'},
+            {id:'bash',label:'bash'}] }
+and the full chain was traced working: dropdown -> createTerminal(shellId) ->
+terminal:create { shell } -> terminalSocket.js -> createTerminalSession({shell})
+-> resolveShell() -> pty.spawn(). Real pty output proved it (cmd.exe printed its
+own "Microsoft Windows [Version 10.0.26200.9457]" banner).
+
+THE ACTUAL BUG: a tab's label came from the shell the CLIENT *requested*, not
+the one the SERVER spawned. fetchAvailableShells() runs once at page load; if
+the API was not reachable at that moment (server still starting / restarted),
+the list stayed empty, defaultShell stayed null, so every "+" requested
+nothing/`bash` and every tab said "bash ..." — even though PowerShell was what
+really spawned. The label was a guess, never a fact.
+
+FIXES
+  - terminalSlice: panes now store `seq` (the stable 1,2,3) and a new
+    setTerminalShell({ terminalId, shellId, label }) reducer.
+  - TerminalView: on terminal:ready it dispatches setTerminalShell with the
+    server's reported shell, so the tab/pane title and chip are corrected to
+    what was REALLY spawned ("PowerShell 1" instead of "bash 1"). The ready
+    event is the source of truth, since the server falls back to its platform
+    default whenever the requested shell is unavailable.
+  - The client now sends the requested shell as null when it has no list, so
+    the server picks its own default rather than being told "bash".
+  - Recovers from a failed initial fetch: while the shell list is empty the
+    panel retries once when it is (re)opened, and the chevron click retries
+    again (showing "Loading shells..." meanwhile). New shellStatus field
+    ('idle'|'loading'|'ready'|'failed') keeps that from looping.
+
+PROOF: with the shells endpoint deliberately BLOCKED (so the client has no
+list at all), clicking "+" still produced a tab named "PowerShell 1" with the
+is-powershell chip and a session-list row "PowerShell 1", and the buffer
+contained a real PowerShell banner. The "all bash" symptom is gone because the
+label now follows the spawn instead of the request.
+
+--------------------------------------------------------------------------------
+3. RIGHT-SIDE TERMINAL SESSION LIST (VS Code style)
+--------------------------------------------------------------------------------
+NEW FILE: client/src/components/Terminal/TerminalSessionList.jsx
+
+Panel layout is now: [tab bar on top] -> [terminal content | session list].
+
+  - A slim 200px column (min 180 / max 220) down the RIGHT edge of the terminal
+    panel, separated from the output area by `border-left: 1px solid #3c3c3c`,
+    with an uppercase "Terminals" header. It renders only while the terminal
+    panel is open (the whole workspace row is hidden when minimized).
+  - It flattens EVERY pane of EVERY group/split into one list, so all open
+    sessions are visible at a glance regardless of nesting. Each row shows:
+      * a small icon chosen by shell (TerminalSquare for PowerShell,
+        SquareTerminal for CMD, Terminal for bash) tinted with the same
+        per-shell colour used by the tab chip;
+      * the session label ("PowerShell 1", "CMD 2", "bash 3");
+      * a small X that closes just that one pty (emits terminal:close and
+        removes the pane) without activating the row underneath.
+  - The focused terminal's row is highlighted with the accent background plus
+    an accent left border (`.is-active`).
+  - Clicking a row dispatches setActivePane(terminalId), which brings the
+    parent tab group to the front and, when the session lives in a split,
+    focuses that exact pane.
+  - The top tab bar still switches groups/splits, and the split divider and
+    panel resize handle are untouched by the new column (the divider drag, the
+    handle drag and the session list were all exercised together).
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (46 files). vite build: succeeds.
+  - node --check on terminalManager.js and terminalSocket.js: passes.
+  - Headless Chrome (CDP) drove the real UI — 32/32 checks:
+      * shells endpoint content is platform correct;
+      * dropdown lists exactly PowerShell / CMD / bash;
+      * selecting each one really spawns that shell (per-pty banner proof) and
+        the tab/pane/session-list labels match;
+      * with the endpoint blocked, the label still resolves to the real shell;
+      * the session list is 200px wide with the #3c3c3c left divider, shows all
+        sessions, exactly one highlighted, and each row carries its shell class;
+      * clicking a row focuses that terminal; clicking a split-pane row focuses
+        that pane (asserted via the active pane title);
+      * closing from the list X, from a split pane's header X, and from a tab X
+        all behave (and the split collapses when it drops to one pane);
+      * the split divider still drags with the list present;
+      * no uncaught page exceptions;
+      * /api/health uptime increased across the whole flow (no crash/restart).
+  - Cleanup: temp scripts deleted, headless Chrome stopped and its profile
+    removed. The user's own API + vite dev servers were left running.
+
+
+================================================================================
+AI Code Editor — Phase 9: Floating Terminal Panel + Shared Scratch Workspace
+================================================================================
+
+STATUS: complete and verified (16/16 backend scratch checks + 29/29 UI checks).
+
+--------------------------------------------------------------------------------
+1. THE TERMINAL PANEL NOW FLOATS OVER THE EDITOR
+--------------------------------------------------------------------------------
+Before, the terminal was a normal flex child of `.editor-column`, so opening it
+pushed the editor up (it resized, and Phase 7 even had to add `min-height: 0`
+to `.editor-area` so it could shrink at all). Now it is an overlay.
+
+HOW IT WORKS
+  App.css        .editor-column { position: relative; ... }
+                 -> becomes the positioning context for the terminal.
+
+  TerminalPanel.css
+    .terminal-panel {
+      position: absolute;      /* out of flow: the editor is untouched */
+      left: 0; right: 0; bottom: 0;
+      z-index: 30;             /* above the editor, below topbar/toasts/modals */
+      background: #1e1e1e;     /* SOLID, it sits over live editor content */
+      border-top: 1px solid var(--border);
+      box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.45);   /* top-edge separation */
+    }
+  - `flex: 0 0 auto` was removed; the inline `height` (Redux terminal.panelHeight)
+    still drives the panel, so drag-to-resize behaves exactly as before — it now
+    just changes the FLOATING panel's height instead of a flex layout.
+  - z-index ladder: sidebar resize handle 5 < terminal 30 < sticky topbar 40 <
+    toast 50 < AuthModal 60. The terminal therefore never covers a modal or a
+    toast.
+  - Nothing else changed: the sidebar and AI panel keep their own
+    `.panel-slot` widths and are untouched; only the terminal's relationship to
+    the editor column changed. The resize handle, the split divider, the shell
+    dropdown and the right-side session list all keep working (all re-verified).
+
+  Verified in a real browser: editor height 852px before opening the terminal,
+  852px after, and still 852px after dragging the panel from 260px to 400px.
+  Panel computed style: position absolute, bottom flush with the editor column,
+  background rgb(30,30,30), box-shadow present, z-index 30. Sidebar (250px) and
+  AI panel (320px) widths unchanged.
+
+--------------------------------------------------------------------------------
+2. FILES/FOLDERS NOW WORK WITHOUT AN IMPORTED PROJECT (SHARED SCRATCH)
+--------------------------------------------------------------------------------
+The scratch workspace the terminal already used is now shared with the whole
+Explorer, so before any import the app is fully usable — not just for terminals.
+
+SERVER (server/src/middlewares/ensureWorkspace.js)
+  The single workspace guard used by every /api/workspace route now does:
+      if (isScratchProjectId(projectId))  ensureScratchWorkspace(projectId)
+      else if (!workspaceExists(projectId)) -> 404 WORKSPACE_MISSING
+  i.e. a scratch folder is created on demand (same folder the terminal uses as
+  cwd), while a real imported project that vanished still 404s exactly as
+  before. No second scratch system was introduced and no new routes were added —
+  tree/file/create/rename/delete/export all just work against scratch ids.
+
+CLIENT
+  NEW client/src/utils/workspace.js — one place that defines the two kinds of
+  workspace and, crucially, `scratchProjectIdFor(userId)` so the Explorer and
+  the terminal can never drift apart:
+      scratchProjectIdFor(userId) -> `scratch-${userId}` (or 'scratch-guest')
+      isCloudWorkspace / isScratchWorkspace / hasActiveWorkspace / workspaceLabel
+
+  features/fileSystemSlice.js
+    + setScratchWorkspace({ projectId, name, tree }) — same shape as
+      setCloudWorkspace but `source: 'scratch'`, and it deliberately does NOT
+      clear open tabs. From here on a scratch workspace is handled by exactly
+      the same reducers/thunks/routes as an imported project.
+  features/workspaceThunks.js
+    + openScratchWorkspace({ projectId }) thunk: GETs the tree (which also
+      creates the folder server-side and returns anything created earlier, so
+      the scratch workspace is REUSED across sessions) and dispatches
+      setScratchWorkspace.
+  components/Sidebar/Sidebar.jsx
+    - `hasProject` is now `hasActiveWorkspace(workspace)`, so the New File /
+      New Folder / Collapse All buttons are enabled with no project.
+    - startCreating() → guard(...) (sign-in first, like Import/Export/Save) →
+      ensureWorkspaceReady(): if there is no workspace it dispatches
+      openScratchWorkspace(scratchProjectIdFor(userId)) and awaits it, THEN sets
+      the inline create input. Because the scratch tree now exists, the input
+      renders inside the root folder instead of having nowhere to go.
+    - submitCreate/handleRename/handleDelete read the active project id from a
+      ref that is kept in sync with the store, so they are correct even though
+      the workspace id changes asynchronously on the first creation.
+    - The empty-state notice was reworded: "No project imported — New File
+      starts a scratch workspace, or click Import Folder…". As soon as the
+      first file is created the notice disappears and the scratch tree shows.
+
+  Scratch is now treated like a real project everywhere it matters:
+    Editor/EditorArea.jsx      loads file content via hasActiveWorkspace()
+    hooks/useSaveActiveFile.js saves via hasActiveWorkspace()
+    Sidebar/SearchInFiles.jsx  searches file CONTENT in scratch too
+    Editor/EmptyState.jsx      shows "Workspace: Scratch workspace"
+    Topbar/Topbar.jsx          Save enabled for any workspace; the chip reads
+                               "Scratch workspace"; Export ZIP and Sync-to-laptop
+                               stay cloud-project-only, because a scratch
+                               workspace has no imported laptop folder.
+
+  App.jsx — terminals no longer reset when entering scratch. The reset is keyed
+  to a REAL project only:
+      const cloudProjectId = isCloudWorkspace(workspace) ? workspace.projectId : null
+  so `none -> scratch` leaves any already-open terminal alive, while
+  `scratch -> imported project` (or project -> project) still resets, because the
+  pty's cwd genuinely changes. The file-content cache is still cleared on every
+  workspace change. resetTerminals() was added to the sign-out effect to keep the
+  old teardown behaviour there.
+
+  components/Terminal/TerminalPanel.jsx now resolves its cwd with the SAME helper:
+      effectiveProjectId = workspace.projectId || scratchProjectIdFor(userId)
+  so the terminal and the Explorer always point at one folder.
+
+  IMPORTING LATER stays independent: useOpenFolder creates a brand new project
+  (POST /api/projects) with its own workspace id, saves it as the restore ref and
+  becomes the active workspace; the scratch folder is never touched or deleted.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (47 files). vite build: succeeds.
+  - node --check on the changed server file: passes.
+  - Backend scratch API (real user token, 16/16):
+      * GET tree on a brand-new `scratch-<userId>` returns 200 and CREATES the
+        folder on disk (no import required);
+      * create file + folder -> visible in the tree AND really on disk;
+      * save -> read back -> bytes match on disk; rename + delete work;
+      * a second user gets their OWN empty scratch workspace (per-user);
+      * a vanished REAL project still answers 404 WORKSPACE_MISSING (the old
+        behaviour is intact, scratch ids are the only auto-created ones).
+  - Headless Chrome UI run (29/29):
+      * panel position absolute / z-index 30 / solid #1e1e1e / box-shadow, and
+        flush with the editor column bottom;
+      * EDITOR HEIGHT UNCHANGED when opening the terminal and when resizing it;
+      * sidebar + AI panel widths unchanged;
+      * New File / New Folder enabled with no project, no sign-in modal (already
+        authenticated), Explorer leaves the empty state;
+      * typing a name created `notes.txt` for real (confirmed over the API);
+      * the file opened as a tab, was EDITED through the editor model, showed the
+        unsaved dot, was saved from the topbar button, and the exact bytes landed
+        on disk and the dot cleared;
+      * a terminal opened BEFORE the file existed was NOT torn down when the
+        scratch workspace became active (same xterm instance);
+      * running `dir` in that terminal listed the Explorer's notes.txt (with the
+        32-byte length written from the editor), proving Explorer and terminal
+        share one folder — the terminal's own banner also shows cwd =
+        server/workspaces/scratch-<userId>;
+      * zero unexpected page exceptions.
+  - Cleanup: temp scripts, the headless Chrome profile and the test scratch
+    folders were removed.
+
+--------------------------------------------------------------------------------
+CLEANUP NOTE (please read)
+--------------------------------------------------------------------------------
+The scratch-API test registered two throwaway accounts. Their scratch folders
+are already deleted from disk, but the MongoDB documents could NOT be removed
+because the Atlas SRV DNS stopped resolving in this shell (same issue as an
+earlier phase):
+
+  users: scratch-test-*@example.com, other-*@example.com
+
+Remove them with Mongo Compass or:
+
+  cd server && node --input-type=module -e "
+  import mongoose from 'mongoose';
+  import { env } from './src/config/env.js';
+  import User from './src/models/User.model.js';
+  await mongoose.connect(env.mongoUri);
+  console.log(await User.deleteMany({ email: /^(scratch-test-|other-)/ }));
+  await mongoose.disconnect();
+  "
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - A scratch workspace is a FIRST-CLASS workspace: same tree/editor/save/
+    search paths as a cloud project, distinguished only by `workspace.source`.
+    When adding a feature, decide explicitly whether it should apply to scratch
+    (file operations: yes; Export ZIP / Sync-to-laptop / StorageNotice: no).
+  - Use utils/workspace.js helpers rather than comparing `source === 'cloud'`
+    by hand — that string check was the reason the Explorer was dead before an
+    import in the first place.
+  - The scratch folder is never registered in MongoDB and is never written to
+    workspaceStorage, so a reload always starts from "no project" and the
+    scratch files are reached again by clicking New File (which reuses them).
+  - The terminal panel is an overlay now: do not give it `flex` sizing, and keep
+    its z-index below the topbar (40)/toasts (50)/AuthModal (60).

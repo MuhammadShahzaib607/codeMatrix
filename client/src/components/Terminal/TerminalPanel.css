@@ -1,11 +1,25 @@
+/* Floating terminal panel.
+   It OVERLAYS the bottom of `.editor-column` (which is position: relative)
+   instead of taking part in the flex layout, so the editor never shrinks. The
+   inline `height` still drives the drag-to-resize handle; only the panel's
+   relationship to the editor changed. z-index 30 sits above the editor (and
+   the sidebar handle at 5) but below the sticky topbar (40), toasts (50) and
+   the auth modal (60). */
 .terminal-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
   display: flex;
   flex-direction: column;
-  flex: 0 0 auto;
   min-height: 0;
   overflow: hidden;
+  /* Solid, not transparent: it floats on top of live editor content. */
   background: #1e1e1e;
   border-top: 1px solid var(--border);
+  /* Separates the floating panel from the editor content behind it. */
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.45);
 }
 
 /* Draggable bar at the very top of the panel. */
@@ -17,8 +31,23 @@
   transition: background 0.12s ease;
 }
 
-.terminal-resize-handle:hover {
+.terminal-resize-handle:hover,
+.terminal-resize-handle:active {
   background: var(--accent);
+}
+
+/* While a drag is in progress the cursor must stay correct everywhere, even
+   when the pointer leaves the thin handle (or leaves the panel entirely). */
+body.is-resizing-rows,
+body.is-resizing-rows * {
+  cursor: row-resize !important;
+  user-select: none;
+}
+
+body.is-resizing-cols,
+body.is-resizing-cols * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 /* ---------- Tab bar ---------- */
@@ -26,7 +55,6 @@
 .terminal-tabs {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   flex: 0 0 32px;
   height: 32px;
   background: var(--bg-tab-bar);
@@ -37,6 +65,7 @@
 .terminal-tab-list {
   display: flex;
   align-items: stretch;
+  flex: 1 1 auto;
   height: 100%;
   min-width: 0;
   overflow-x: auto;
@@ -76,8 +105,50 @@
   white-space: nowrap;
 }
 
+.terminal-tab-split {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+
+/* Small colour chip identifying which shell a tab runs. */
+.terminal-tab-shell {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--text-dim);
+}
+
+.terminal-tab-shell.is-powershell {
+  background: #5391fe;
+}
+
+.terminal-tab-shell.is-cmd {
+  background: #c9c9c9;
+}
+
+.terminal-tab-shell.is-bash {
+  background: #4eaa25;
+}
+
+/* Right-hand action cluster: new / split / minimize. */
+.terminal-tab-actions {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  height: 100%;
+}
+
+.terminal-new-group {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-right: 1px solid var(--border);
+}
+
 .terminal-tab-close,
 .terminal-new,
+.terminal-new-caret,
 .terminal-minimize {
   display: inline-flex;
   align-items: center;
@@ -103,12 +174,79 @@
 
 .terminal-new {
   width: 26px;
-  border-right: 1px solid var(--border);
+  height: 100%;
   color: var(--text-dim);
 }
 
-.terminal-new:hover {
+.terminal-new:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.terminal-new:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.terminal-new-caret {
+  width: 15px;
+  height: 100%;
+  color: var(--text-dim);
+}
+
+.terminal-new-caret:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.terminal-new-caret:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.terminal-split-btn {
+  border-right: 1px solid var(--border);
+}
+
+/* Shell picker shown by the chevron next to +. */
+.terminal-shell-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #252526;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
+
+.terminal-shell-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.terminal-shell-option:hover {
+  background: var(--bg-active);
+}
+
+.terminal-shell-option span:nth-child(2) {
+  flex: 1 1 auto;
+}
+
+.terminal-shell-option.is-default {
   color: #ffffff;
 }
 
@@ -123,27 +261,154 @@
   color: #ffffff;
 }
 
-/* ---------- Terminal body ---------- */
+/* ---------- Terminal workspace (content + session list) ---------- */
+
+/* Row that holds the terminal output area and the right-hand session list. */
+.terminal-workspace {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
 
 .terminal-body {
   position: relative;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   background: #1e1e1e;
 }
 
-.terminal-panel.is-minimized .terminal-body {
+.terminal-panel.is-minimized .terminal-workspace {
   display: none;
 }
 
-/* Every terminal stays mounted; only the active one is visible. */
-.terminal-slot {
+/* ---------- Right-side session list (VS Code style) ---------- */
+
+.terminal-session-list {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: 200px;
+  min-width: 180px;
+  max-width: 220px;
+  overflow-y: auto;
+  background: #252526;
+  /* separates the list from the terminal output area */
+  border-left: 1px solid #3c3c3c;
+}
+
+.terminal-session-list-header {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.terminal-session-empty {
+  padding: 10px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.terminal-session-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+
+.terminal-session-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 4px 4px 8px;
+  border-left: 2px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.terminal-session-item:hover {
+  background: #2d2d2d;
+  color: var(--text);
+}
+
+/* The focused terminal's row. */
+.terminal-session-item.is-active {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  color: #ffffff;
+}
+
+.terminal-session-icon {
+  flex: 0 0 auto;
+}
+
+.terminal-session-item.is-powershell .terminal-session-icon {
+  color: #5391fe;
+}
+
+.terminal-session-item.is-cmd .terminal-session-icon {
+  color: #c9c9c9;
+}
+
+.terminal-session-item.is-bash .terminal-session-icon {
+  color: #4eaa25;
+}
+
+.terminal-session-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-session-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.terminal-session-item:hover .terminal-session-close,
+.terminal-session-item.is-active .terminal-session-close {
+  opacity: 1;
+}
+
+.terminal-session-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+/* Every group stays mounted; only the active one is visible. */
+.terminal-group {
   position: absolute;
   inset: 0;
   visibility: hidden;
 }
 
-.terminal-slot.is-active {
+.terminal-group.is-active {
   visibility: visible;
 }
 
@@ -169,4 +434,96 @@
 
 .terminal-empty strong {
   color: var(--text);
+}
+
+/* ---------- Split panes ---------- */
+
+.terminal-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.terminal-split-pane {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  flex-basis: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.terminal-split-pane.is-active .terminal-split-header {
+  color: #ffffff;
+  box-shadow: inset 0 -1px 0 var(--accent);
+}
+
+.terminal-split-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 22px;
+  height: 22px;
+  padding: 0 4px 0 8px;
+  background: var(--bg-tab-bar);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  user-select: none;
+}
+
+.terminal-split-title {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-split-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.terminal-split-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.terminal-split-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Draggable vertical bar between two panes. */
+.terminal-split-divider {
+  flex: 0 0 5px;
+  width: 5px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.12s ease;
+}
+
+.terminal-split-divider:hover,
+.terminal-split-divider:active {
+  background: var(--accent);
+}
+
+/* Dropdown placeholder shown while the shell list is being fetched. */
+.terminal-shell-loading {
+  padding: 6px 8px;
+  color: var(--text-dim);
+  font-size: 12px;
 }

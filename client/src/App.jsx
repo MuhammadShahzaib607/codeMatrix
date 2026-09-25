@@ -12,12 +12,13 @@ import Toast from './components/Toast/Toast'
 import Topbar from './components/Topbar/Topbar'
 import { fetchCurrentUser } from './features/authSlice'
 import { clearWorkspace } from './features/fileSystemSlice'
-import { resetTerminals } from './features/terminalSlice'
+import { fetchAvailableShells, resetTerminals } from './features/terminalSlice'
 import { SIDEBAR_WIDTH_KEY, setSidebarWidth } from './features/uiSlice'
 import useGlobalShortcuts from './hooks/useGlobalShortcuts'
 import useRestoreWorkspace from './hooks/useRestoreWorkspace'
 import { clearFileContentCache } from './services/fileContentCache'
 import { clearWorkspaceRef } from './services/workspaceStorage'
+import { isCloudWorkspace } from './utils/workspace'
 import './App.css'
 
 export default function App() {
@@ -36,14 +37,31 @@ export default function App() {
     dispatch(fetchCurrentUser())
   }, [dispatch])
 
+  // The available shells are decided by the server's OS, so ask the server once
+  // on load (Windows dev sees PowerShell/CMD/bash, the Linux deploy sees bash).
   useEffect(() => {
-    dispatch(resetTerminals())
+    dispatch(fetchAvailableShells())
+  }, [dispatch])
+
+  // The content cache is keyed by workspace id, so drop it whenever the active
+  // workspace changes (scratch included).
+  useEffect(() => {
     clearFileContentCache()
-  }, [workspace.projectId, dispatch])
+  }, [workspace.projectId])
+
+  // Terminals only reset for a REAL imported project: entering the scratch
+  // workspace must not tear down terminals that already run in that same folder
+  // (the Explorer and the terminal share scratch-<userId>).
+  const cloudProjectId = isCloudWorkspace(workspace) ? workspace.projectId : null
+  useEffect(() => {
+    if (!cloudProjectId) return
+    dispatch(resetTerminals())
+  }, [cloudProjectId, dispatch])
 
   useEffect(() => {
     if (isAuthenticated) return
     dispatch(clearWorkspace())
+    dispatch(resetTerminals())
     clearWorkspaceRef()
     clearFileContentCache()
   }, [isAuthenticated, dispatch])

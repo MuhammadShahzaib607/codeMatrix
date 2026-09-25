@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import ApiError from './ApiError.js'
 import { WORKSPACE_MISSING_MESSAGE, getWorkspacePath, workspaceExists } from './workspaceManager.js'
 
@@ -35,9 +37,75 @@ export function getSessionCount() {
   return sessions.size
 }
 
-function resolveShell() {
-  if (process.platform === 'win32') return process.env.COMSPEC || 'powershell.exe'
-  return process.env.SHELL || 'bash'
+/**
+ * Which shells this SERVER can actually spawn. This is derived at runtime from
+ * process.platform (plus a real check for bash on Windows), never hardcoded, so
+ * a Windows dev machine offers PowerShell/CMD/bash while the Linux deployment
+ * offers only bash.
+ */
+let cachedShells = null
+
+function findWindowsBash() {
+  const candidates = [
+    `${process.env.ProgramFiles || 'C:\\Program Files'}\\Git\\bin\\bash.exe`,
+    `${process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'}\\Git\\bin\\bash.exe`,
+  ]
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {}
+  }
+  try {
+    const result = spawnSync('where', ['bash.exe'], { stdio: 'ignore' })
+    if (result.status === 0) return 'bash.exe'
+  } catch {}
+  return null
+}
+
+export function getAvailableShells() {
+  if (cachedShells) return cachedShells
+
+  if (process.platform === 'win32') {
+    const shells = [
+      { id: 'powershell', label: 'PowerShell', command: 'powershell.exe' },
+      { id: 'cmd', label: 'CMD', command: process.env.ComSpec || 'cmd.exe' },
+    ]
+    const bash = findWindowsBash()
+    if (bash) shells.push({ id: 'bash', label: 'bash', command: bash })
+    cachedShells = { platform: process.platform, default: 'powershell', shells }
+  } else {
+    cachedShells = {
+      platform: process.platform,
+      default: 'bash',
+      shells: [{ id: 'bash', label: 'bash', command: process.env.SHELL || '/bin/bash' }],
+    }
+  }
+
+  return cachedShells
+}
+
+/** Public, credential-free view for the API / client dropdown. */
+export function getShellOptions() {
+  const { platform, default: fallback, shells } = getAvailableShells()
+  return {
+    platform,
+    default: fallback,
+    shells: shells.map(({ id, label }) => ({ id, label })),
+  }
+}
+
+/**
+ * Maps a requested shell id to a spawnable descriptor, falling back to the
+ * platform default when the id is unknown or unavailable on this server (e.g. a
+ * stale 'bash' request arriving at a Windows host without Git Bash).
+ */
+function resolveShell(shellType) {
+  const { shells, default: fallback } = getAvailableShells()
+  return (
+    shells.find((shell) => shell.id === shellType) ??
+    shells.find((shell) => shell.id === fallback) ??
+    shells[0]
+  )
 }
 
 export function createTerminalSession(terminalId, projectId, socket, options = {}) {
@@ -55,16 +123,27 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
   }
 
   const cwd = getWorkspacePath(projectId)
-  const shell = resolveShell()
+  const shellInfo = resolveShell(options.shell)
 
   let ptyProcess
   try {
-    ptyProcess = pty.spawn(shell, [], {
+    ptyProcess = pty.spawn(shellInfo.command, [], {
       name: 'xterm-256color',
       cols: Number(options.cols) || 80,
       rows: Number(options.rows) || 24,
       cwd,
       env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+      // WINDOWS ONLY: force the older winpty backend instead of ConPTY.
+      // node-pty's ConPTY kill path does, inside a fire-and-forget promise:
+      //     this._getConsoleProcessList().then((list) => list.forEach(...))
+      // getConsoleProcessList() forks a helper that reports the console's
+      // process ids. If the shell has ALREADY exited by the time the helper
+      // answers, the message carries no `consoleProcessList`, so `.forEach`
+      // throws inside a .then() — an unhandled rejection, which Node treats as
+      // fatal and kills the whole server. winpty has no such path (it calls the
+      // synchronous native getProcessList), so we avoid that crash entirely.
+      // Linux/macOS keep node-pty's defaults.
+      ...(process.platform === 'win32' ? { useConpty: false } : {}),
     })
   } catch (error) {
     throw new ApiError(500, `Could not start a shell process: ${error.message}`, 'SPAWN_FAILED')
@@ -86,15 +165,32 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
     if (socket.connected) socket.emit('terminal:exit', { terminalId, exitCode, signal })
   })
 
-  socket.emit('terminal:ready', { terminalId, cwd, shell, pid: ptyProcess.pid })
+  socket.emit('terminal:ready', {
+    terminalId,
+    cwd,
+    shell: shellInfo.label,
+    shellId: shellInfo.id,
+    pid: ptyProcess.pid,
+  })
 
-  return { terminalId, cwd, shell, pid: ptyProcess.pid }
+  return {
+    terminalId,
+    cwd,
+    shell: shellInfo.label,
+    shellId: shellInfo.id,
+    pid: ptyProcess.pid,
+  }
 }
 
 export function writeToTerminal(terminalId, data) {
   const session = sessions.get(terminalId)
   if (!session || typeof data !== 'string') return false
-  session.ptyProcess.write(data)
+  try {
+    session.ptyProcess.write(data)
+  } catch (error) {
+    console.error(`[terminal] write to ${terminalId} failed: ${error?.message ?? error}`)
+    return false
+  }
   return true
 }
 
@@ -111,13 +207,22 @@ export function resizeTerminal(terminalId, cols, rows) {
   return true
 }
 
+/**
+ * Kills one pty. node-pty's Windows kill path can throw *or* reject after the
+ * shell has already exited, so the kill is wrapped and the session is always
+ * dropped from the map: a broken pty must never take the server process down.
+ */
 export function killTerminal(terminalId) {
   const session = sessions.get(terminalId)
   if (!session) return false
+  // Delete first, so the session is gone even when kill() throws below.
   sessions.delete(terminalId)
   try {
     session.ptyProcess.kill()
-  } catch {
+  } catch (error) {
+    console.error(
+      `[terminal] kill(${terminalId}) failed (session dropped anyway): ${error?.message ?? error}`,
+    )
     return false
   }
   return true
@@ -130,17 +235,25 @@ export function killTerminalsForSocket(socketId) {
     sessions.delete(terminalId)
     try {
       session.ptyProcess.kill()
-    } catch {}
+    } catch (error) {
+      console.error(
+        `[terminal] kill(${terminalId}) during disconnect failed: ${error?.message ?? error}`,
+      )
+    }
     killed += 1
   }
   return killed
 }
 
 export function killAllTerminals() {
-  for (const [, session] of sessions) {
+  for (const [terminalId, session] of sessions) {
     try {
       session.ptyProcess.kill()
-    } catch {}
+    } catch (error) {
+      console.error(
+        `[terminal] kill(${terminalId}) during shutdown failed: ${error?.message ?? error}`,
+      )
+    }
   }
   sessions.clear()
 }

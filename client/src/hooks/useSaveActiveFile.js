@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { showToast } from '../features/uiSlice'
 import { saveWorkspaceFile } from '../features/workspaceThunks'
 import { findNode } from '../utils/tree'
+import { hasActiveWorkspace } from '../utils/workspace'
 
 export default function useSaveActiveFile() {
   const dispatch = useDispatch()
@@ -23,8 +24,11 @@ export default function useSaveActiveFile() {
 
     const fileName = findNode(tree, activeFileId)?.name ?? 'file'
 
-    if (workspace.source !== 'cloud' || !workspace.projectId) {
-      dispatch(showToast({ message: 'Import a project to save files.', type: 'info' }))
+    // The scratch workspace saves through the same endpoint as a real project.
+    if (!hasActiveWorkspace(workspace)) {
+      dispatch(
+        showToast({ message: 'Create a file or import a folder to save.', type: 'info' }),
+      )
       return
     }
 

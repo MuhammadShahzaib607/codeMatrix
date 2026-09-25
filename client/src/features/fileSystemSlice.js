@@ -46,6 +46,19 @@ const fileSystemSlice = createSlice({
       state.openTabs = []
     },
 
+    /**
+     * Makes the per-user scratch workspace active. It behaves exactly like an
+     * imported project from here on (same reducers, same thunks, same routes),
+     * but `source` stays 'scratch' so Import/Export/Sync and the terminal-reset
+     * logic can tell the two apart. Open tabs are intentionally kept.
+     */
+    setScratchWorkspace(state, action) {
+      const { projectId, name, tree } = action.payload
+      state.workspace = { name, source: 'scratch', projectId }
+      state.workspaceMissing = false
+      state.tree = tree
+    },
+
     refreshTree(state, action) {
       const { tree, name } = action.payload
       state.tree = tree
@@ -116,6 +129,7 @@ const fileSystemSlice = createSlice({
 
 export const {
   setCloudWorkspace,
+  setScratchWorkspace,
   refreshTree,
   markWorkspaceMissing,
   clearWorkspaceMissing,

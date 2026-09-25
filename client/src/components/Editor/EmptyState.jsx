@@ -2,6 +2,7 @@ import { FileCode2, FolderInput, FolderTree } from 'lucide-react'
 import { useSelector } from 'react-redux'
 import { isFileSystemAccessSupported } from '../../services/fileSystemAccess'
 import { UNSUPPORTED_MESSAGE } from '../../utils/messages'
+import { workspaceLabel } from '../../utils/workspace'
 import Logo from '../Logo/Logo'
 import './Editor.css'
 
@@ -13,7 +14,7 @@ const SHORTCUTS = [
 
 export default function EmptyState() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
-  const hasProject = workspace.source === 'cloud'
+  const label = workspaceLabel(workspace)
   const isSupported = isFileSystemAccessSupported()
 
   return (
@@ -38,12 +39,13 @@ export default function EmptyState() {
           </div>
         )}
 
-        {isSupported && !hasProject && (
+        {isSupported && !label && (
           <div className="empty-state-banner">
             <FolderInput size={15} />
             <span>
-              No project imported. Click <strong>Import Folder</strong> in the top bar to import a
-              folder from your device.
+              No project imported. Click <strong>New File</strong> in the Explorer to start a
+              scratch workspace, or <strong>Import Folder</strong> in the top bar to import a folder
+              from your device.
             </span>
           </div>
         )}
@@ -59,9 +61,7 @@ export default function EmptyState() {
 
         <div className="empty-state-footer">
           <FolderTree size={14} />
-          <span>
-            {hasProject ? `Cloud workspace: ${workspace.name}` : 'No project imported yet'}
-          </span>
+          <span>{label ? `Workspace: ${label}` : 'No project imported yet'}</span>
         </div>
       </div>
     </div>

@@ -2,6 +2,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef } from 'react'
+import { useDispatch } from 'react-redux'
+import { setTerminalShell } from '../../features/terminalSlice'
 import { getSocket } from '../../services/socket'
 
 const THEME = {
@@ -16,7 +18,8 @@ const THEME = {
 
 const FONT_FAMILY = "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace"
 
-export default function TerminalView({ terminalId, projectId, isActive }) {
+export default function TerminalView({ terminalId, projectId, shell, isActive, autoFocus = true }) {
+  const dispatch = useDispatch()
   const containerRef = useRef(null)
   const termRef = useRef(null)
   const fitRef = useRef(null)
@@ -44,9 +47,17 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
       if (payload?.terminalId === terminalId) term.write(payload.data)
     }
     const handleReady = (payload) => {
-      if (payload?.terminalId === terminalId) {
-        term.write(`\r\n\x1b[90m${payload.shell} · ${payload.cwd}\x1b[0m\r\n`)
-      }
+      if (payload?.terminalId !== terminalId) return
+      term.write(`\r\n\x1b[90m${payload.shell} · ${payload.cwd}\x1b[0m\r\n`)
+      // Trust the server over the request: label the tab with what actually
+      // got spawned (it may differ if the requested shell was unavailable).
+      dispatch(
+        setTerminalShell({
+          terminalId,
+          shellId: payload.shellId,
+          label: payload.shell,
+        }),
+      )
     }
     const handleExit = (payload) => {
       if (payload?.terminalId !== terminalId) return
@@ -75,6 +86,7 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
       socket.emit('terminal:create', {
         terminalId,
         projectId,
+        shell,
         cols: term.cols,
         rows: term.rows,
       })
@@ -117,7 +129,7 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
       termRef.current = null
       fitRef.current = null
     }
-  }, [terminalId, projectId])
+  }, [terminalId, projectId, shell, dispatch])
 
   useEffect(() => {
     if (!isActive) return undefined
@@ -129,10 +141,12 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
         fit.fit()
       } catch {}
       getSocket().emit('terminal:resize', { terminalId, cols: term.cols, rows: term.rows })
-      term.focus()
+      // In a split every visible pane must fit, but only the active pane takes
+      // keyboard focus — otherwise the last-rendered pane would steal it.
+      if (autoFocus) term.focus()
     })
     return () => cancelAnimationFrame(raf)
-  }, [isActive, terminalId])
+  }, [isActive, autoFocus, terminalId])
 
   return <div className="terminal-view" ref={containerRef} />
 }

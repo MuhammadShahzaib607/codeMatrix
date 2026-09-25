@@ -9,6 +9,7 @@ import {
   refreshTree,
   remapPaths,
   setCloudWorkspace,
+  setScratchWorkspace,
 } from './fileSystemSlice'
 
 function handleFailure(error, dispatch) {
@@ -56,6 +57,31 @@ export const reopenWorkspace = createAsyncThunk(
         setCloudWorkspace({
           projectId,
           name: data.name ?? name,
+          tree: [toReduxTree(data.tree)],
+        }),
+      )
+      return data
+    } catch (error) {
+      throw handleFailure(error, dispatch)
+    }
+  },
+)
+
+/**
+ * Boots (or re-opens) the per-user scratch workspace and makes it the active
+ * workspace. The server creates the folder on demand, so a plain tree read is
+ * enough — and it also returns any files created earlier, which is how the
+ * scratch workspace is reused across sessions.
+ */
+export const openScratchWorkspace = createAsyncThunk(
+  'workspace/openScratch',
+  async ({ projectId, name = 'Scratch' }, { dispatch }) => {
+    try {
+      const data = await workspaceApi.getTree(projectId)
+      dispatch(
+        setScratchWorkspace({
+          projectId,
+          name,
           tree: [toReduxTree(data.tree)],
         }),
       )

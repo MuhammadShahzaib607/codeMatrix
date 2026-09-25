@@ -6,6 +6,7 @@ import { setContent, updateContent } from '../../features/editorSlice'
 import { readWorkspaceFile } from '../../features/workspaceThunks'
 import { getLanguageFromFilename } from '../../utils/language'
 import { findNode } from '../../utils/tree'
+import { hasActiveWorkspace } from '../../utils/workspace'
 import EmptyState from './EmptyState'
 import TabBar from './TabBar'
 import './Editor.css'
@@ -73,7 +74,9 @@ export default function EditorArea() {
   useEffect(() => {
     if (!activeNode || activeNode.type !== 'file' || isLoaded) return undefined
 
-    if (workspace.source !== 'cloud' || !workspace.projectId) {
+    // Both an imported project and the scratch workspace have real files on
+    // the server; only a missing workspace falls back to an empty buffer.
+    if (!hasActiveWorkspace(workspace)) {
       dispatch(setContent({ fileId: activeNode.id, content: '' }))
       return undefined
     }

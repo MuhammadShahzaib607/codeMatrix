@@ -14,8 +14,13 @@
   min-height: 0;
 }
 
-/* Editor area stacked above the docked terminal panel. */
+/* The editor, plus the FLOATING terminal panel.
+   `position: relative` makes this the positioning context for the terminal
+   overlay (see TerminalPanel.css): the terminal is absolutely positioned over
+   the bottom of this column, so the editor underneath keeps its full height
+   whether the terminal is open, closed or resized. */
 .editor-column {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;

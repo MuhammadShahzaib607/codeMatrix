@@ -132,13 +132,6 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     const handleReady = (payload) => {
       if (payload?.terminalId !== terminalId) return
       term.write(`\r\n\x1b[90m${payload.shell} · ${payload.cwd}\x1b[0m\r\n`)
-      // The terminal starts ONE LEVEL ABOVE the project folder, so point the
-      // user at the exact `cd` that enters the project the Explorer shows.
-      if (payload.folderName) {
-        term.write(
-          `\x1b[90mProject folder: ${payload.folderName} — run  cd ${payload.folderName}\x1b[0m\r\n`,
-        )
-      }
       // Trust the server over the request: label the tab with what actually
       // got spawned (it may differ if the requested shell was unavailable).
       dispatch(

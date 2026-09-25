@@ -2485,3 +2485,122 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
   - Terminal copy/paste deliberately makes Ctrl+C copy ONLY when text is selected;
     do NOT make plain Ctrl+C always copy or you lose the interrupt signal.
 
+================================================================================
+AI Code Editor — Phase 14: CORRECTION — Workspace Folders Really Are Named After
+               the Project, plus a Startup Migration for Existing Projects
+================================================================================
+
+STATUS: complete. `node --check` on every server file passes; client oxlint (0/0)
+        and `vite build` pass. Verified against the live DB, disk and a real pty.
+
+--------------------------------------------------------------------------------
+WHY PHASE 13 WAS NOT GOOD ENOUGH
+--------------------------------------------------------------------------------
+Phase 13 DID create display-based folders for NEW imports, but for the projects
+that already existed it did nothing: their folder was still the raw UUID, so the
+client was changed to print a HINT ("Project folder: 55aeb831-… — run cd
+55aeb831-…"). That is not a fix — it just told the user the wrong name. It also
+appended a hash suffix to EVERY new folder ("shahzaib-art-6822") and lowercased /
+stripped dots, so even new projects never matched the visible name exactly.
+This phase removes the hint and fixes the real thing.
+
+--------------------------------------------------------------------------------
+1. THE REAL FOLDER NOW USES THE VISIBLE PROJECT NAME
+--------------------------------------------------------------------------------
+sanitizeFolderName() was rewritten to stay as close to the original as possible:
+  - ONLY genuinely unsafe characters are replaced with '-': / \ : * ? " < > |
+    plus control characters.
+  - dots, spaces, case and unicode are KEPT, so the Explorer's root name and the
+    on-disk name are the same ("shahzaib.art" -> folder "shahzaib.art").
+  - leading/trailing dots and spaces are trimmed (Windows cannot store those) and
+    Windows device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9) are guarded.
+
+COLLISIONS: no suffix by default. The plain sanitized name is used unless it is
+already taken IN THE SAME CONTAINER, in which case "-2", "-3", … is appended
+(e.g. "shahzaib.art", "shahzaib.art-2"). "Taken" means the registry maps it to a
+different project, or a folder of that name already exists that is not the
+project's own current folder.
+
+LAYOUT (unchanged from Phase 13):
+  server/workspaces/u-<ownerId>/<project's visible name>/
+Terminals still start at the container (one level above) so the project is a real
+subfolder. PREFER the name over an ID everywhere: getWorkspacePath(), every file
+operation, the terminal cwd and the migration all resolve via the registry entry
+(`folderName`), never via the projectId.
+
+MongoDB keeps diskFolderName (the real folder name) and diskPath (its absolute
+path); the registry (.workspaces.json) is the fast path and ensureWorkspace can
+rebuild it from diskPath.
+
+--------------------------------------------------------------------------------
+2. STARTUP MIGRATION FOR EXISTING PROJECTS
+--------------------------------------------------------------------------------
+NEW server/src/utils/workspaceMigration.js  ->  migrateWorkspaceFolders()
+Runs from server.js start() right after connectDatabase(), BEFORE listen:
+  1. loads every Project record (most-recently-used first, so when several share
+     a display name the ACTIVE one keeps the plain name and the duplicates get
+     -2, -3 — the empty duplicates are the ones suffixed);
+  2. for each project whose folder still exists, computes the intended container
+     (u-<ownerId>) and name, planning the whole set first so two projects can
+     never be assigned the same name;
+  3. fs.renameSync()s the old folder (workspaces/<uuid>) to
+     workspaces/u-<owner>/<name>, creating the container with fs.mkdirSync;
+  4. writes the registry entry and updates the Project document
+     (diskPath + diskFolderName);
+  5. skips projects whose folder is gone (ephemeral disk) and never clobbers an
+     existing folder.
+It is idempotent — a second boot finds everything already in place and only
+re-syncs the registry/DB rows.
+
+NEW repository helpers: listAllProjects(), updateProjectDiskInfo().
+NEW workspaceManager exports: workspaceFolderPath(), setWorkspaceRecord(),
+resolveExistingWorkspaceFolder(); getWorkspaceFolderName() was removed (it only
+existed for the deleted hint).
+
+--------------------------------------------------------------------------------
+3. HINT MESSAGE REMOVED
+--------------------------------------------------------------------------------
+client/components/Terminal/TerminalView.jsx no longer prints
+"Project folder: … — run cd …"; the server no longer sends `folderName` in
+terminal:ready. After the migration the user types `cd shahzaib.art` — exactly
+what the Explorer shows — and it just works, with no explanation needed.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - Isolated run against a temp WORKSPACES_ROOT:
+      sanitizeFolderName('shahzaib.art') = 'shahzaib.art'; 'My Cool Project'
+      stays 'My Cool Project'; unsafe chars -> '-'; trailing dots trimmed;
+      three same-named projects -> 'shahzaib.art', 'shahzaib.art-2',
+      'shahzaib.art-3'; getTerminalRootPath is the folder's parent; re-running
+      createWorkspaceFolder is idempotent.
+  - REAL migration on the dev database + disk. Before: three projects named
+    "shahzaib.art" (owner …cedba9f08) living in UUID folders, one with 113 files
+    (client/, server/, client/lib/data.js) and two empty. After restart:
+      server/workspaces/u-6ab62726ce74736cedba9f08/shahzaib.art     (113 files)
+      server/workspaces/u-6ab62726ce74736cedba9f08/shahzaib.art-2   (empty)
+      server/workspaces/u-6ab62726ce74736cedba9f08/shahzaib.art-3   (empty)
+    The registry maps each projectId to its new folder and every Project document
+    now carries the matching diskFolderName + diskPath. The two projects whose
+    folders were already gone (CB Test, E2E Project) were left untouched.
+  - REAL pty test (cmd.exe) against the migrated project 55aeb831-…:
+      session cwd = …\workspaces\u-6ab62726ce74736cedba9f08  (one level above)
+      typed `cd shahzaib.art` -> prompt became …\shahzaib.art
+      `dir /b` printed: client, data.js, server
+    i.e. the user can `cd` straight into the folder whose name they see.
+  - The server on :4000 was restarted and is now running this code (the migration
+    runs on every boot and was a no-op on the restart after the first pass).
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - Generate NEW workspace folders with registerWorkspaceFolder(projectId,
+    { ownerId, displayName }) and ALWAYS resolve paths through getWorkspacePath()
+    / the registry — do not build a path from the projectId by hand.
+  - The migration is safe to keep forever; it is the thing that heals folders left
+    by older code. If you rename the naming rules again, extend it (and keep it
+    idempotent + never-clobber).
+  - Folder names may contain dots and spaces (by design, to mirror the visible
+    name). A name with spaces needs shell quoting (`cd My\ Project`), which is
+    normal; names without spaces (the common case) work unquoted.
+

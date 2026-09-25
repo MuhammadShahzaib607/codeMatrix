@@ -1,4 +1,3 @@
-import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -68,16 +67,31 @@ function saveRegistry(registry) {
   }
 }
 
-/** Turns a human display name into a filesystem-safe folder base. */
+// Only these characters are genuinely unsafe in a folder name (illegal on
+// Windows, awkward elsewhere). Everything else — dots, spaces, case, unicode —
+// is KEPT, so the on-disk folder stays as close as possible to the name the
+// Explorer shows. That is what makes `cd shahzaib.art` just work.
+const UNSAFE_FOLDER_CHARS = /[/\\:*?"<>|\u0000-\u001F]/g
+// Windows reserves these device names (with or without an extension).
+const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i
+
+/** Turns a human display name into a filesystem-safe folder name. */
 export function sanitizeFolderName(displayName) {
-  const base = String(displayName ?? '')
+  let name = String(displayName ?? '')
+    .replace(UNSAFE_FOLDER_CHARS, '-')
+    .replace(/\s+/g, ' ')
     .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, FOLDER_NAME_MAX_LENGTH)
-    .replace(/-+$/g, '')
-  return base || 'project'
+
+  // Windows cannot store a name that starts or ends with a dot or a space.
+  name = name.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
+
+  if (name.length > FOLDER_NAME_MAX_LENGTH) {
+    name = name.slice(0, FOLDER_NAME_MAX_LENGTH).replace(/[.\s]+$/, '')
+  }
+
+  if (!name) name = 'project'
+  if (WINDOWS_RESERVED_NAMES.test(name)) name = `${name}-project`
+  return name
 }
 
 /** Deterministic per-user container folder, e.g. "u-507f1f77bcf86cd799439011". */
@@ -102,22 +116,41 @@ function folderPathFor(container, folderName) {
     : path.join(WORKSPACES_ROOT, folderName)
 }
 
+/** Absolute path of a folder inside a container (or at the workspaces root). */
+export function workspaceFolderPath(container, folderName) {
+  return folderPathFor(container, folderName)
+}
+
 /**
- * Picks a folder name that is unique within its container: the sanitized base
- * name plus a deterministic suffix derived from the projectId (extended only in
- * the unlikely event of a hash clash), e.g. "shahzaib-art-4f2a".
+ * Picks the folder name for a project: the sanitized DISPLAY NAME itself when it
+ * is free (e.g. "shahzaib.art"), and only a "-2", "-3", … suffix when that name
+ * is genuinely already taken in the same container. A name is taken when the
+ * registry maps it to a different project, or a folder of that name already
+ * exists on disk and is not this project's own current folder.
  */
-function uniqueFolderName(registry, projectId, container, base) {
-  const hash = crypto.createHash('sha1').update(String(projectId)).digest('hex')
-  for (let length = 4; length <= hash.length; length += 2) {
-    const candidate = `${base}-${hash.slice(0, length)}`
-    const taken = Object.entries(registry).some(
-      ([id, record]) =>
-        id !== projectId && record?.container === container && record?.folderName === candidate,
-    )
-    if (!taken) return candidate
+function availableFolderName(registry, projectId, container, base, ownCurrent = null) {
+  const isOwnCurrent = (candidate) =>
+    ownCurrent != null &&
+    ownCurrent.container === container &&
+    ownCurrent.folderName === candidate
+
+  const taken = (candidate) => {
+    if (
+      Object.entries(registry).some(
+        ([id, record]) =>
+          id !== projectId && record?.container === container && record?.folderName === candidate,
+      )
+    ) {
+      return true
+    }
+    if (isOwnCurrent(candidate)) return false
+    return fs.existsSync(folderPathFor(container, candidate))
   }
-  return `${base}-${hash}`
+
+  if (!taken(base)) return base
+  let counter = 2
+  while (taken(`${base}-${counter}`)) counter += 1
+  return `${base}-${counter}`
 }
 
 /** The registered disk location for a workspace, or null when unknown. */
@@ -156,7 +189,7 @@ export function registerWorkspaceFolder(projectId, options = {}) {
   const container = explicitContainer ?? (ownerId ? workspaceOwnerKey(ownerId) : '')
   const folderName =
     explicitFolderName ??
-    uniqueFolderName(registry, projectId, container, sanitizeFolderName(displayName))
+    availableFolderName(registry, projectId, container, sanitizeFolderName(displayName))
   const folderPath = folderPathFor(container, folderName)
   fs.mkdirSync(folderPath, { recursive: true })
 
@@ -164,6 +197,41 @@ export function registerWorkspaceFolder(projectId, options = {}) {
   saveRegistry(registry)
 
   return { container, folderName, path: folderPath }
+}
+
+/**
+ * Writes (or rewrites) a registry entry without going through the naming logic.
+ * Used by the startup migration, which has already chosen the final name.
+ */
+export function setWorkspaceRecord(projectId, { container = '', folderName, ensure = true } = {}) {
+  if (!folderName) return null
+  const registry = loadRegistry()
+  registry[projectId] = { container, folderName }
+  saveRegistry(registry)
+  if (ensure) fs.mkdirSync(folderPathFor(container, folderName), { recursive: true })
+  return { container, folderName }
+}
+
+/**
+ * The workspace folder that actually exists for a project right now, whether it
+ * is registry-based or a legacy folder named after the projectId. Returns
+ * { container, folderName, path } or null.
+ */
+export function resolveExistingWorkspaceFolder(projectId) {
+  if (typeof projectId !== 'string') return null
+
+  const record = getWorkspaceRecord(projectId)
+  if (record) {
+    const recordPath = folderPathFor(record.container, record.folderName)
+    if (fs.existsSync(recordPath)) return { ...record, path: recordPath }
+  }
+
+  const legacyPath = path.join(WORKSPACES_ROOT, projectId)
+  if (fs.existsSync(legacyPath)) {
+    return { container: '', folderName: projectId, path: legacyPath }
+  }
+
+  return null
 }
 
 /**
@@ -186,15 +254,7 @@ export function registerWorkspaceFromDiskPath(projectId, diskPath) {
 
   const container = segments.length === 2 ? segments[0] : ''
   const folderName = segments[segments.length - 1]
-  return registerWorkspaceFolderChecked(projectId, container, folderName)
-}
-
-function registerWorkspaceFolderChecked(projectId, container, folderName) {
-  const registry = loadRegistry()
-  registry[projectId] = { container, folderName }
-  saveRegistry(registry)
-  fs.mkdirSync(folderPathFor(container, folderName), { recursive: true })
-  return { container, folderName }
+  return setWorkspaceRecord(projectId, { container, folderName })
 }
 
 export const WORKSPACE_MISSING_MESSAGE =
@@ -276,13 +336,6 @@ export function getTerminalRootPath(projectId) {
     : WORKSPACES_ROOT
   fs.mkdirSync(root, { recursive: true })
   return root
-}
-
-/** The project folder's own name — the folder a user types after `cd`. */
-export function getWorkspaceFolderName(projectId) {
-  const record = getWorkspaceRecord(projectId)
-  if (record) return record.folderName
-  return path.basename(getWorkspacePath(projectId))
 }
 
 export function workspaceExists(projectId) {

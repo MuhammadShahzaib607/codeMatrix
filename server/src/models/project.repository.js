@@ -41,6 +41,34 @@ export async function createProject({ projectId, name, owner, diskPath, diskFold
   }
 }
 
+export async function listAllProjects() {
+  if (!isDatabaseConnected()) return []
+  try {
+    return await Project.find({}).lean()
+  } catch (error) {
+    console.warn(`[project] could not list all projects: ${error.message}`)
+    return []
+  }
+}
+
+/**
+ * Updates only the on-disk location of a project (used by the startup folder
+ * migration to point an existing record at its renamed folder).
+ */
+export async function updateProjectDiskInfo(projectId, { diskPath, diskFolderName }) {
+  if (!isDatabaseConnected()) return null
+  try {
+    return await Project.findOneAndUpdate(
+      { projectId },
+      { $set: { diskPath, diskFolderName } },
+      { new: true },
+    ).lean()
+  } catch (error) {
+    console.warn(`[project] could not update disk info for ${projectId}: ${error.message}`)
+    return null
+  }
+}
+
 export async function findProject(projectId) {
   if (!isDatabaseConnected()) return null
   try {

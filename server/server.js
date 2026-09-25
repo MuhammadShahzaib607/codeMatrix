@@ -6,6 +6,7 @@ import { connectDatabase } from './src/config/db.js'
 import { env, resolveCorsOrigin } from './src/config/env.js'
 import registerTerminalSocket from './src/socket/terminalSocket.js'
 import { killAllTerminals } from './src/utils/terminalManager.js'
+import { migrateWorkspaceFolders } from './src/utils/workspaceMigration.js'
 import { WORKSPACES_ROOT } from './src/utils/workspaceManager.js'
 
 fs.mkdirSync(WORKSPACES_ROOT, { recursive: true })
@@ -31,6 +32,17 @@ registerTerminalSocket(io)
 
 async function start() {
   await connectDatabase()
+
+  // Rename any legacy UUID-named project folders to their display-name names so
+  // every existing project matches its Explorer root (and `cd <name>` works).
+  try {
+    const { migrated, checked } = await migrateWorkspaceFolders()
+    if (checked > 0) {
+      console.log(`[workspace] folder migration: checked ${checked}, renamed ${migrated}`)
+    }
+  } catch (error) {
+    console.warn(`[workspace] folder migration failed: ${error.message}`)
+  }
 
   server.listen(env.port, () => {
     console.log(`[server] listening on http://localhost:${env.port}`)

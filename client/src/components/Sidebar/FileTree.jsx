@@ -1,7 +1,22 @@
-import { ChevronDown, ChevronRight, FileCode, Folder, FolderOpen, Pencil, Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import {
+  ChevronDown,
+  ChevronRight,
+  Clipboard,
+  Copy,
+  FileCode,
+  FilePlus,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  Link,
+  Pencil,
+  Scissors,
+  Trash2,
+} from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { addTab, toggleFolder } from '../../features/fileSystemSlice'
+import TreeContextMenu from './TreeContextMenu'
 
 function IndentGuides({ depth }) {
   return Array.from({ length: depth }, (_, level) => <span key={level} className="indent-guide" />)
@@ -46,6 +61,45 @@ function NewNodeInput({ depth, type, onSubmit, onCancel }) {
   )
 }
 
+/**
+ * The rename field. It owns its own draft + "already settled" flag so a mount is
+ * always a fresh rename session — that is what lets the context menu start a
+ * rename on an existing row without any state-syncing effect.
+ */
+function RenameInput({ initialValue, isFolder, onCommit, onCancel }) {
+  const [value, setValue] = useState(initialValue)
+  const settled = useRef(false)
+
+  function commit() {
+    if (settled.current) return
+    settled.current = true
+    onCommit(value)
+  }
+
+  function cancel() {
+    if (settled.current) return
+    settled.current = true
+    onCancel()
+  }
+
+  return (
+    <input
+      autoFocus
+      className="tree-input"
+      value={value}
+      spellCheck={false}
+      placeholder={isFolder ? 'Folder name…' : 'File name…'}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => setValue(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') commit()
+        else if (event.key === 'Escape') cancel()
+      }}
+      onBlur={commit}
+    />
+  )
+}
+
 function TreeNode({
   node,
   depth,
@@ -59,16 +113,23 @@ function TreeNode({
   lockedId,
   revealedId,
   revealNonce,
+  renamingId,
+  onRenameSettled,
+  onOpenMenu,
+  clipboardPath,
 }) {
   const dispatch = useDispatch()
   const [isRenaming, setIsRenaming] = useState(false)
-  const [draftName, setDraftName] = useState(node.name)
-  const settled = useRef(false)
 
   const isFolder = node.type === 'folder'
   const isSelected = selectedId === node.id
   const isRevealed = revealedId === node.id
   const isLocked = lockedId !== null && node.id === lockedId
+  // Rename can be started from the hover pencil (local state) or from the
+  // context menu (the tree publishes the target id; each row compares it against
+  // its OWN id, so nested rows work too).
+  const forceRename = renamingId === node.id
+  const showRename = isRenaming || forceRename
 
   function handleRowClick(event) {
     event.stopPropagation()
@@ -77,26 +138,25 @@ function TreeNode({
     else dispatch(addTab(node.id))
   }
 
+  function handleContextMenu(event) {
+    onOpenMenu(event, node)
+  }
+
   function startRename(event) {
     event.stopPropagation()
-    settled.current = false
-    setDraftName(node.name)
     setIsRenaming(true)
   }
 
-  function commitRename() {
-    if (settled.current) return
-    settled.current = true
+  function commitRename(nextValue) {
     setIsRenaming(false)
-    const nextName = draftName.trim()
+    onRenameSettled?.()
+    const nextName = nextValue.trim()
     if (nextName && nextName !== node.name) onRename(node, nextName)
   }
 
   function cancelRename() {
-    if (settled.current) return
-    settled.current = true
-    setDraftName(node.name)
     setIsRenaming(false)
+    onRenameSettled?.()
   }
 
   function handleDelete(event) {
@@ -109,8 +169,11 @@ function TreeNode({
       <div
         key={isRevealed ? `reveal-${revealNonce}` : undefined}
         data-node-id={node.id}
-        className={`tree-row ${isSelected ? 'is-selected' : ''} ${isRevealed ? 'is-revealed' : ''}`}
+        className={`tree-row ${isSelected ? 'is-selected' : ''} ${isRevealed ? 'is-revealed' : ''} ${
+          clipboardPath === node.id ? 'is-cut' : ''
+        }`}
         onClick={handleRowClick}
+        onContextMenu={handleContextMenu}
         title={node.name}
       >
         <IndentGuides depth={depth} />
@@ -137,20 +200,13 @@ function TreeNode({
           )}
         </span>
 
-        {isRenaming ? (
-          <input
-            autoFocus
-            className="tree-input"
-            value={draftName}
-            spellCheck={false}
-            placeholder={isFolder ? 'Folder name…' : 'File name…'}
-            onClick={(event) => event.stopPropagation()}
-            onChange={(event) => setDraftName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') commitRename()
-              else if (event.key === 'Escape') cancelRename()
-            }}
-            onBlur={commitRename}
+        {showRename ? (
+          <RenameInput
+            key={forceRename ? `menu-${node.id}` : `inline-${node.id}`}
+            initialValue={node.name}
+            isFolder={isFolder}
+            onCommit={commitRename}
+            onCancel={cancelRename}
           />
         ) : (
           <span className="tree-label">{node.name}</span>
@@ -205,6 +261,10 @@ function TreeNode({
               lockedId={lockedId}
               revealedId={revealedId}
               revealNonce={revealNonce}
+              renamingId={renamingId}
+              onRenameSettled={onRenameSettled}
+              onOpenMenu={onOpenMenu}
+              clipboardPath={clipboardPath}
             />
           ))}
         </div>
@@ -223,9 +283,20 @@ export default function FileTree({
   onRename,
   onDelete,
   lockedId = null,
+  onRequestCreate,
+  onCut,
+  onCopy,
+  onPaste,
+  onCopyPath,
 }) {
   const revealedNode = useSelector((state) => state.ui.revealedNode)
+  const clipboard = useSelector((state) => state.clipboard)
   const rootRef = useRef(null)
+  const [menu, setMenu] = useState(null)
+  const [renamingId, setRenamingId] = useState(null)
+
+  const closeMenu = useCallback(() => setMenu(null), [])
+  const clearForcedRename = useCallback(() => setRenamingId(null), [])
 
   useEffect(() => {
     if (!revealedNode?.id) return
@@ -234,6 +305,109 @@ export default function FileTree({
     const row = container.querySelector(`[data-node-id="${CSS.escape(revealedNode.id)}"]`)
     row?.scrollIntoView({ block: 'center' })
   }, [revealedNode, nodes])
+
+  const openMenu = useCallback(
+    (event, node) => {
+      event.preventDefault()
+      event.stopPropagation()
+      // Right-click also selects the row, like VS Code, so the highlighted row
+      // and the menu always refer to the same node.
+      onSelect(node.id)
+      setMenu({ x: event.clientX, y: event.clientY, node })
+    },
+    [onSelect],
+  )
+
+  function buildMenuItems(node) {
+    const isLocked = lockedId !== null && node.id === lockedId
+    const isFolder = node.type === 'folder'
+    const canPaste = isFolder && Boolean(clipboard.path)
+
+    if (isLocked) {
+      // The workspace root can't be cut, renamed or deleted.
+      return [
+        {
+          id: 'new-file',
+          label: 'New File',
+          icon: FilePlus,
+          onSelect: () => onRequestCreate(node.id, 'file'),
+        },
+        {
+          id: 'new-folder',
+          label: 'New Folder',
+          icon: FolderPlus,
+          onSelect: () => onRequestCreate(node.id, 'folder'),
+        },
+        canPaste ? { separator: true } : null,
+        canPaste
+          ? {
+              id: 'paste',
+              label: 'Paste',
+              icon: Clipboard,
+              onSelect: () => onPaste(node),
+            }
+          : null,
+        { separator: true },
+        {
+          id: 'copy-path',
+          label: 'Copy Path',
+          icon: Link,
+          onSelect: () => onCopyPath(node),
+        },
+      ]
+    }
+
+    return [
+      isFolder
+        ? {
+            id: 'new-file',
+            label: 'New File',
+            icon: FilePlus,
+            onSelect: () => onRequestCreate(node.id, 'file'),
+          }
+        : null,
+      isFolder
+        ? {
+            id: 'new-folder',
+            label: 'New Folder',
+            icon: FolderPlus,
+            onSelect: () => onRequestCreate(node.id, 'folder'),
+          }
+        : null,
+      isFolder ? { separator: true } : null,
+      { id: 'cut', label: 'Cut', icon: Scissors, onSelect: () => onCut(node) },
+      { id: 'copy', label: 'Copy', icon: Copy, onSelect: () => onCopy(node) },
+      canPaste
+        ? {
+            id: 'paste',
+            label: 'Paste',
+            icon: Clipboard,
+            onSelect: () => onPaste(node),
+          }
+        : null,
+      { separator: true },
+      {
+        id: 'rename',
+        label: 'Rename',
+        icon: Pencil,
+        onSelect: () => setRenamingId(node.id),
+      },
+      {
+        id: 'delete',
+        label: 'Delete',
+        icon: Trash2,
+        danger: true,
+        onSelect: () => onDelete(node),
+      },
+      { separator: true },
+      {
+        id: 'copy-path',
+        label: 'Copy Path',
+        icon: Link,
+        onSelect: () => onCopyPath(node),
+      },
+    ]
+  }
 
   return (
     <div className="file-tree" ref={rootRef}>
@@ -260,8 +434,21 @@ export default function FileTree({
           lockedId={lockedId}
           revealedId={revealedNode?.id ?? null}
           revealNonce={revealedNode?.nonce}
+          renamingId={renamingId}
+          onRenameSettled={clearForcedRename}
+          onOpenMenu={openMenu}
+          clipboardPath={clipboard.mode === 'cut' ? clipboard.path : null}
         />
       ))}
+
+      {menu && (
+        <TreeContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={buildMenuItems(menu.node)}
+          onClose={closeMenu}
+        />
+      )}
     </div>
   )
 }

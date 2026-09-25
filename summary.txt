@@ -1776,3 +1776,224 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
     scratch files are reached again by clicking New File (which reuses them).
   - The terminal panel is an overlay now: do not give it `flex` sizing, and keep
     its z-index below the topbar (40)/toasts (50)/AuthModal (60).
+
+================================================================================
+AI Code Editor — Phase 10: Terminal Number Reuse + Explorer Context Menu
+================================================================================
+
+STATUS: complete and verified (13/13 duplicate-API checks + 41/41 UI checks).
+
+--------------------------------------------------------------------------------
+1. TERMINAL NUMBERS NOW REUSE FREED SLOTS (per shell type)
+--------------------------------------------------------------------------------
+Before, a single module-level counterRef in TerminalPanel.jsx incremented
+forever: opening PowerShell 1, 2, 3, closing 1 and 2 and opening another one
+gave "PowerShell 4". The counter never looked at what was actually open.
+
+NEW RULE (both places compute the same thing)
+  The number for a new terminal = the LOWEST positive integer that no
+  currently-open terminal of that SAME shell type is using. Shells are counted
+  independently: PowerShell, CMD and bash each keep their own sequence, so a CMD
+  terminal never shifts PowerShell numbers and vice versa.
+
+  components/Terminal/TerminalPanel.jsx
+    - `counterRef` was DELETED.
+    - + lowestFreeSeq(shell): walks every group's panes, collects `seq` values of
+      panes whose `shell` matches, then returns the smallest integer >= 1 that is
+      not in that set (`while (used.has(seq)) seq += 1`). The answer is computed
+      FRESH on every create — nothing is cached and nothing only increases.
+    - nextPane(requestedShell) calls lowestFreeSeq(shell) and builds the title
+      `${shellLabel(shell)} ${seq}`. createTerminal() and splitActiveTerminal()
+      both go through it.
+
+  features/terminalSlice.js
+    - + a module-level copy of lowestFreeSeq(groups, shell, excludeTerminalId).
+      It exists because the number is allocated against the REQUESTED shell, but
+      the server is the source of truth for what actually spawned (a fallback for
+      an unavailable shell, or the platform default when the client had no shell
+      list yet).
+    - setTerminalShell(...) now: if the reported `shellId` differs from the
+      pane's current shell, it switches `pane.shell` AND re-allocates `pane.seq`
+      via lowestFreeSeq(..., terminalId) (excluding the pane itself), then
+      retitles from `label + seq`. Without this, two panes could end up both
+      labelled "PowerShell 1" after a server fallback.
+
+  EXPLICIT TEST (the scenario from the request)
+    open PowerShell 1 / 2 / 3 -> close 1 and 2 -> open another PowerShell
+      => "PowerShell 1"  (the lowest free number, NOT 4).
+    CMD numbering verified independently: CMD 1, CMD 2 -> close CMD 1 -> next
+      CMD is "CMD 1", and the PowerShell numbering is unaffected by CMD panes.
+
+--------------------------------------------------------------------------------
+2. RIGHT-CLICK CONTEXT MENU IN THE EXPLORER
+--------------------------------------------------------------------------------
+Right-clicking any row in the tree (file, folder or the root) opens a small
+dark-theme menu at the cursor with working file operations. The existing hover
+pencil/trash icons are still there — the menu is an additional path to the same
+actions, not a replacement. Left-click still expands/collapses folders.
+
+NEW components/Sidebar/TreeContextMenu.jsx
+  - `position: fixed` (so it appears at the cursor regardless of scroll), height
+    above everything it must cover. z-index 45 (below toasts 50 / AuthModal 60).
+  - Full viewport clamping via useLayoutEffect: if the menu would overflow the
+    right or bottom edge it is nudged back on screen.
+  - `role="menu"`, one row per item (`{ id, label, icon, onSelect, disabled?,
+    danger? }`); `{ separator: true }` draws a divider; null entries are filtered
+    out (used to conditionally hide Paste).
+  - Closes on: item click, any outside `mousedown`, and Escape. Right-clicking a
+    second row moves the menu to the new cursor position. Rows also fire the
+    row's normal select so the item being acted on is highlighted.
+
+NEW features/clipboardSlice.js  (registered as `clipboard` in app/store.js)
+  { path, type: 'file'|'folder', mode: 'cut'|'copy' } + setClipboard() /
+  clearClipboard(). Only a lightweight reference travels through Redux — never
+  file content.
+
+NEW utils/clipboard.js
+  copyTextToClipboard(text): navigator.clipboard.writeText with a hidden-
+  textarea + document.execCommand('copy') fallback. Returns a boolean.
+
+components/Sidebar/FileTree.jsx
+  - Every row (and the root) gets onContextMenu -> openMenu(node) (which also
+    selects the row). buildMenuItems(node) builds the list per node type, and
+    <TreeContextMenu> is rendered once at the bottom of the tree.
+  - A cut row is dimmed with the `.is-cut` class.
+  - Rename was refactored into a child <RenameInput> component that owns its
+    draft text, keyed `menu-<id>` (started from the menu) or `inline-<id>`
+    (started from the hover pencil). The API changed from a boolean `forceRename`
+    to an id: FileTree passes `renamingId` down and each row compares
+    `renamingId === node.id`. (FIXED A REAL BUG found while testing: the old
+    boolean was resolved at the top level, so a menu Rename on a NESTED row could
+    never start editing.)
+
+components/Sidebar/Sidebar.jsx — the handlers
+  - handleRequestCreate(parentId, type): signs in first, then opens the inline
+    New File / New Folder input INSIDE that specific folder.
+  - handleCut(node)     -> setClipboard({ path: node.id, type, mode: 'cut' })
+  - handleCopy(node)    -> setClipboard({ path: node.id, type, mode: 'copy' })
+  - handlePaste(folder) -> CUT = a real server-side MOVE via the existing rename
+    endpoint (newPath = joinPath(target, baseName(source))); COPY = a real
+    server-side duplicate via the new endpoint. Pasting into the folder the item
+    already lives in is a no-op toast. A cut is consumed (clipboard cleared) so
+    Paste disappears; a copy stays on the clipboard (VS Code behaviour) so it can
+    be pasted again.
+  - handleCopyPath(node) -> copyTextToClipboard(node.id) and a
+    "Copied path: <path>" toast.
+  - The active project id is read from projectIdRef for all of these so they
+    stay correct even while the workspace id changes asynchronously.
+
+MENU CONTENTS (exact)
+  FILE:        Cut | Copy | ─ | Rename | Delete | ─ | Copy Path
+  FOLDER:      New File | New Folder | ─ | Cut | Copy | (Paste if clipboard
+               non-empty) | ─ | Rename | Delete | ─ | Copy Path
+  ROOT (locked workspace root — cannot be cut/renamed/deleted):
+               New File | New Folder | ─ | (Paste) | ─ | Copy Path
+  Icons (lucide-react): Scissors=Cut, Copy=Copy, Clipboard=Paste, Pencil=Rename,
+  Trash2=Delete, FilePlus=New File, FolderPlus=New Folder, Link=Copy Path.
+  Delete is styled red (`.is-danger`, #c62828); the panel is rounded with a
+  subtle border and a hover highlight per row (styles in Sidebar.css).
+
+--------------------------------------------------------------------------------
+3. NEW BACKEND ENDPOINT: POST /api/workspace/:projectId/duplicate
+--------------------------------------------------------------------------------
+  Body:    { sourcePath: string, targetFolderPath?: string }  ('' = root)
+  201 ->   { sourcePath, newPath, duplicated: true }
+
+  server/src/routes/workspace.routes.js
+    router.post('/:projectId/duplicate', ensureWorkspace, controller.duplicateEntry)
+
+  server/src/controllers/workspace.controller.js
+    duplicateEntry: validates sourcePath, calls copyPathInWorkspace(...) and
+    touchProject(projectId). Optional targetFolderPath -> workspace root.
+
+  server/src/utils/workspaceManager.js
+    + copyPathInWorkspace(projectId, sourceRelativePath, targetFolderPath = '')
+      resolves both paths inside the workspace (traversal-guarded), refuses to
+      copy a folder into itself or a descendant, keeps the ORIGINAL name, and
+      copies via copyFileSync (file) or copyDirectoryRecursive (folder).
+    + copyDirectoryRecursive(from, to): mkdir -p then walk readdirSync with
+      withFileTypes, recursing into directories and copying every file — so a
+      whole folder tree is duplicated.
+    - renamePathInWorkspace now also rejects moving a folder into itself/a
+      descendant (400 INVALID_PATH), matching the copy guard.
+
+  Error codes:
+    400 INVALID_PATH  — missing/empty sourcePath, path escapes the workspace,
+                        folder copied into itself/its own subtree.
+    400 NOT_A_FOLDER  — targetFolderPath points at a file.
+    404 FILE_MISSING  — the source path does not exist.
+    409 ALREADY_EXISTS — an item with that name is already in the target folder.
+
+  Client plumbing: services/api.js workspaceApi.duplicateEntry(projectId,
+  sourcePath, targetFolderPath) -> POST /duplicate; features/workspaceThunks.js
+  duplicateWorkspaceEntry thunk calls it then refreshes the tree.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (50 files). vite build: succeeds.
+    node --check passes on the 3 changed server files.
+  - Duplicate API, against a real token (13/13): file duplicate; recursive
+    folder duplicate; copied bytes identical to the source; the original left
+    intact; folder-into-itself and folder-into-descendant both 400
+    INVALID_PATH; name collision 409 ALREADY_EXISTS; missing source 404
+    FILE_MISSING; file used as targetFolderPath 400 NOT_A_FOLDER; moving a
+    folder into its own subtree 400; a normal move succeeds.
+  - Headless Chrome UI run (41/41):
+      * exact menu item list per node type (file / folder / locked root);
+      * menu clamps to the viewport near the right/bottom edges;
+      * closes on Escape and on an outside click;
+      * Copy -> Paste created docs/a.txt for real; a COPY stays pasteable;
+      * Cut -> Paste MOVED docs/a.txt to archive/a.txt with the content ('AAA')
+        preserved, and the cut was consumed so Paste disappeared;
+      * copying a folder copied its children too (archive/docs/b.txt);
+      * context-menu New File / New Folder created items INSIDE the chosen
+        folder; menu Rename -> archive/renamed.txt; Delete removed the item;
+      * Copy Path toast read "Copied path: docs" AND
+        navigator.clipboard.readText() === 'docs';
+      * left-click still expands/collapses folders;
+      * zero unexpected page exceptions.
+  - Terminal number reuse confirmed in the same run (see section 1 scenario),
+    including independent CMD vs PowerShell sequences.
+  - Cleanup: temp scripts (tmp-cdp.mjs, tmp-duplicate-api.mjs, .dup-test.json),
+    the headless Chrome profile and the test scratch folders were removed.
+
+--------------------------------------------------------------------------------
+CLEANUP NOTE (please read)
+--------------------------------------------------------------------------------
+The duplicate-API test registered another throwaway account, and earlier phases
+left more. Their scratch folders are already deleted from disk, but the MongoDB
+documents could NOT be removed because the Atlas SRV DNS stopped resolving in
+this shell:
+
+  users: dup-test-*@example.com, codebuff-test-*@example.com,
+         scratch-test-*@example.com, other-*@example.com
+
+Remove them with Mongo Compass or:
+
+  cd server && node --input-type=module -e "
+  import mongoose from 'mongoose';
+  import { env } from './src/config/env.js';
+  import User from './src/models/User.model.js';
+  await mongoose.connect(env.mongoUri);
+  console.log(await User.deleteMany({
+    email: /^(dup-test-|codebuff-test-|scratch-test-|other-)/,
+  }));
+  await mongoose.disconnect();
+  "
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - Terminal numbers are PER SHELL and recomputed from the open panes every
+    time. If you add another place that creates a pane, route it through
+    nextPane()/lowestFreeSeq() — do not reintroduce a counter.
+  - The clipboard stores only { path, type, mode }; any new "paste" target must
+    go through handlePaste so the cut/copy distinction and the error toasts
+    stay in one place.
+  - The context menu is generic (TreeContextMenu): build a new item list and
+    pass it in rather than writing another positioned menu.
+  - A move is the rename endpoint and a copy is /duplicate; both are
+    server-side and traversal-guarded, and both refuse a folder into its own
+    subtree with 400 INVALID_PATH.
+

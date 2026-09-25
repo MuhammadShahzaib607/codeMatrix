@@ -38,7 +38,6 @@ export default function TerminalPanel() {
   } = useSelector((state) => state.terminal)
   const projectId = useSelector((state) => state.fileSystem.workspace.projectId)
   const userId = useSelector((state) => state.auth.user?.id)
-  const counterRef = useRef(0)
   const shellMenuRef = useRef(null)
   const shellRetryRef = useRef(false)
   const [isShellMenuOpen, setIsShellMenuOpen] = useState(false)
@@ -78,12 +77,30 @@ export default function TerminalPanel() {
     )
   }
 
-  // seq is the stable "1, 2, 3" number in the title; the label half is replaced
-  // with the real shell as soon as the server reports it.
+  /**
+   * Numbers are per SHELL TYPE and reuse freed slots. The new terminal gets the
+   * lowest positive integer that no currently-open terminal of that same shell
+   * is using — so closing "PowerShell 1" and "PowerShell 2" makes the next
+   * PowerShell terminal "PowerShell 1" again, instead of ever increasing.
+   * PowerShell, CMD and bash each have their own independent sequence.
+   */
+  function lowestFreeSeq(shell) {
+    const used = new Set()
+    for (const group of groups) {
+      for (const pane of group.panes) {
+        if (pane.shell === shell && Number.isInteger(pane.seq)) used.add(pane.seq)
+      }
+    }
+    let seq = 1
+    while (used.has(seq)) seq += 1
+    return seq
+  }
+
+  // seq is the stable "1, 2, 3" in the title; the label half is replaced with
+  // the real shell as soon as the server reports it.
   function nextPane(requestedShell) {
-    counterRef.current += 1
-    const seq = counterRef.current
     const shell = requestedShell ?? defaultShell ?? null
+    const seq = lowestFreeSeq(shell)
     return { seq, shell, title: `${shellLabel(shell)} ${seq}` }
   }
 

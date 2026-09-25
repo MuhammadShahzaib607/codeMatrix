@@ -54,6 +54,25 @@ function clampSizes(sizes) {
   return sizes.map((size) => (Number.isFinite(size) && size > 0 ? size : 1))
 }
 
+/**
+ * Lowest positive integer not used by another OPEN pane of the same shell.
+ * The component uses the same rule when creating a terminal; this copy exists
+ * so a pane whose shell gets corrected by the server (requested -> really
+ * spawned) can be renumbered instead of colliding with an existing title.
+ */
+function lowestFreeSeq(groups, shell, excludeTerminalId = null) {
+  const used = new Set()
+  for (const group of groups) {
+    for (const pane of group.panes) {
+      if (pane.terminalId === excludeTerminalId) continue
+      if (pane.shell === shell && Number.isInteger(pane.seq)) used.add(pane.seq)
+    }
+  }
+  let seq = 1
+  while (used.has(seq)) seq += 1
+  return seq
+}
+
 export const fetchAvailableShells = createAsyncThunk(
   'terminal/fetchAvailableShells',
   async () => {
@@ -104,7 +123,18 @@ const terminalSlice = createSlice({
       const group = findGroupOfPane(state, terminalId)
       const pane = group?.panes.find((candidate) => candidate.terminalId === terminalId)
       if (!pane) return
-      if (shellId) pane.shell = shellId
+
+      // The number was allocated against the REQUESTED shell. If the server
+      // reports a different one (a fallback, or the client had no shell list
+      // yet), re-allocate inside the real shell's numbering so two panes can
+      // never share a label like "PowerShell 1".
+      if (shellId && shellId !== pane.shell) {
+        pane.shell = shellId
+        pane.seq = lowestFreeSeq(state.groups, shellId, terminalId)
+      } else if (shellId) {
+        pane.shell = shellId
+      }
+
       if (label) pane.title = pane.seq ? `${label} ${pane.seq}` : label
     },
 

@@ -64,6 +64,11 @@ export function parentPathOf(path = '') {
   return index === -1 ? '' : path.slice(0, index)
 }
 
+export function baseNameOf(path = '') {
+  const index = path.lastIndexOf('/')
+  return index === -1 ? path : path.slice(index + 1)
+}
+
 export function joinPath(parentPath, name) {
   return parentPath ? `${parentPath}/${name}` : name
 }

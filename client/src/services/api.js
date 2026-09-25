@@ -174,6 +174,15 @@ export const workspaceApi = {
     })
   },
 
+  // Copy -> Paste in the Explorer context menu. Folders are copied recursively
+  // server-side.
+  duplicateEntry(projectId, sourcePath, targetFolderPath) {
+    return request(workspacePath(projectId, '/duplicate'), {
+      method: 'POST',
+      body: JSON.stringify({ sourcePath, targetFolderPath }),
+    })
+  },
+
   async exportProject(projectId) {
     if (!API_BASE_URL) {
       throw new ApiError(

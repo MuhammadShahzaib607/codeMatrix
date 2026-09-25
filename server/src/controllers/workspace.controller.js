@@ -3,6 +3,7 @@ import { findProject, touchProject, upsertProject } from '../models/project.repo
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
 import {
+  copyPathInWorkspace,
   createFolderInWorkspace,
   createWorkspaceFolder,
   deleteFromWorkspace,
@@ -172,6 +173,18 @@ export const renameEntry = asyncHandler(async (req, res) => {
   await touchProject(projectId)
 
   res.json({ ...result, renamed: true })
+})
+
+export const duplicateEntry = asyncHandler(async (req, res) => {
+  const { projectId } = req.params
+  const sourcePath = requirePath(req.body?.sourcePath, 'sourcePath')
+  const targetFolderPath =
+    typeof req.body?.targetFolderPath === 'string' ? req.body.targetFolderPath : ''
+
+  const result = copyPathInWorkspace(projectId, sourcePath, targetFolderPath)
+  await touchProject(projectId)
+
+  res.status(201).json({ ...result, duplicated: true })
 })
 
 function sanitizeFileName(name) {

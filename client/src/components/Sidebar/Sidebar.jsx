@@ -1,17 +1,20 @@
 import { ChevronsUp, FilePlus, FolderPlus, Info } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
 import { collapseAll, setFolderOpen } from '../../features/fileSystemSlice'
 import { showToast } from '../../features/uiSlice'
 import {
   createWorkspaceEntry,
   deleteWorkspaceEntry,
+  duplicateWorkspaceEntry,
   openScratchWorkspace,
   renameWorkspaceEntry,
 } from '../../features/workspaceThunks'
 import useAuthGuard from '../../hooks/useAuthGuard'
 import { ROOT_ID } from '../../services/fileSystemAccess'
-import { joinPath, parentPathOf } from '../../utils/cloudTree'
+import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
+import { copyTextToClipboard } from '../../utils/clipboard'
 import { findNode, findParentId } from '../../utils/tree'
 import { hasActiveWorkspace, scratchProjectIdFor } from '../../utils/workspace'
 import FileTree from './FileTree'
@@ -22,6 +25,7 @@ export default function Sidebar() {
   const guard = useAuthGuard()
   const tree = useSelector((state) => state.fileSystem.tree)
   const workspace = useSelector((state) => state.fileSystem.workspace)
+  const clipboard = useSelector((state) => state.clipboard)
   const userId = useSelector((state) => state.auth.user?.id)
   // A scratch workspace counts as an active workspace: everything below treats
   // it exactly like an imported project.
@@ -71,11 +75,10 @@ export default function Sidebar() {
     return parentId === undefined ? ROOT_ID : parentId
   }
 
-  async function beginCreating(type) {
+  async function beginCreatingIn(parentId, type) {
     const ready = await ensureWorkspaceReady()
     if (!ready) return
 
-    const parentId = resolveTargetParentId()
     setCreating({ parentId, type })
     if (parentId) dispatch(setFolderOpen({ id: parentId, isOpen: true }))
   }
@@ -83,7 +86,80 @@ export default function Sidebar() {
   // Creating a file is a server-side operation, so sign-in comes first — the
   // same guard the Import/Export/Save buttons use.
   function startCreating(type) {
-    guard(() => beginCreating(type), 'Please sign in to create files')
+    guard(() => beginCreatingIn(resolveTargetParentId(), type), 'Please sign in to create files')
+  }
+
+  /** "New File" / "New Folder" from a folder's context menu. */
+  function handleRequestCreate(parentId, type) {
+    guard(() => beginCreatingIn(parentId, type), 'Please sign in to create files')
+  }
+
+  function handleCut(node) {
+    dispatch(setClipboard({ path: node.id, type: node.type, mode: 'cut' }))
+    dispatch(showToast({ message: `Cut ${node.name}`, type: 'info' }))
+  }
+
+  function handleCopy(node) {
+    dispatch(setClipboard({ path: node.id, type: node.type, mode: 'copy' }))
+    dispatch(showToast({ message: `Copied ${node.name}`, type: 'info' }))
+  }
+
+  /**
+   * Paste into a folder: a CUT is a server-side move (rename endpoint), a COPY
+   * is a server-side duplicate (POST /duplicate). Only a file/folder reference
+   * travels through Redux — never content.
+   */
+  async function handlePaste(folderNode) {
+    const activeProjectId = projectIdRef.current
+    const sourcePath = clipboard.path
+    if (!activeProjectId || !sourcePath) return
+
+    const targetFolderPath = folderNode?.id === ROOT_ID ? '' : (folderNode?.id ?? '')
+    const name = baseNameOf(sourcePath)
+
+    if (clipboard.mode === 'cut') {
+      if (parentPathOf(sourcePath) === targetFolderPath) {
+        dispatch(showToast({ message: `${name} is already in that folder.`, type: 'info' }))
+        dispatch(clearClipboard())
+        return
+      }
+      try {
+        await dispatch(
+          renameWorkspaceEntry({
+            projectId: activeProjectId,
+            oldPath: sourcePath,
+            newPath: joinPath(targetFolderPath, name),
+          }),
+        ).unwrap()
+        dispatch(clearClipboard())
+        dispatch(showToast({ message: `Moved ${name}`, type: 'success' }))
+      } catch (error) {
+        reportError(`Could not move ${name}: ${error.message}`)
+      }
+      return
+    }
+
+    try {
+      const result = await dispatch(
+        duplicateWorkspaceEntry({ projectId: activeProjectId, sourcePath, targetFolderPath }),
+      ).unwrap()
+      // A copy stays on the clipboard so it can be pasted again (VS Code
+      // behaviour); a cut is consumed above.
+      dispatch(showToast({ message: `Copied ${name} → ${result.newPath}`, type: 'success' }))
+    } catch (error) {
+      reportError(`Could not copy ${name}: ${error.message}`)
+    }
+  }
+
+  async function handleCopyPath(node) {
+    const relativePath = node.id === ROOT_ID ? '' : node.id
+    const copied = await copyTextToClipboard(relativePath)
+    dispatch(
+      showToast({
+        message: copied ? `Copied path: ${relativePath || '/'}` : 'Could not access the clipboard.',
+        type: copied ? 'success' : 'error',
+      }),
+    )
   }
 
   async function submitCreate(rawName) {
@@ -197,6 +273,11 @@ export default function Sidebar() {
           onRename={handleRename}
           onDelete={handleDelete}
           lockedId={ROOT_ID}
+          onRequestCreate={handleRequestCreate}
+          onCut={handleCut}
+          onCopy={handleCopy}
+          onPaste={handlePaste}
+          onCopyPath={handleCopyPath}
         />
       </div>
     </aside>

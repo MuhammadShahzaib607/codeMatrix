@@ -18,6 +18,7 @@ router.put('/:projectId/file', ensureWorkspace, workspaceController.saveFile)
 router.post('/:projectId/create', ensureWorkspace, workspaceController.createEntry)
 router.delete('/:projectId/delete', ensureWorkspace, workspaceController.deleteEntry)
 router.patch('/:projectId/rename', ensureWorkspace, workspaceController.renameEntry)
+router.post('/:projectId/duplicate', ensureWorkspace, workspaceController.duplicateEntry)
 router.get('/:projectId/export', ensureWorkspace, workspaceController.exportWorkspace)
 
 export default router

@@ -144,6 +144,23 @@ export const renameWorkspaceEntry = createAsyncThunk(
   },
 )
 
+export const duplicateWorkspaceEntry = createAsyncThunk(
+  'workspace/duplicateEntry',
+  async ({ projectId, sourcePath, targetFolderPath }, { dispatch }) => {
+    try {
+      const result = await workspaceApi.duplicateEntry(
+        projectId,
+        sourcePath,
+        targetFolderPath ?? '',
+      )
+      await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
+      return result
+    } catch (error) {
+      throw handleFailure(error, dispatch)
+    }
+  },
+)
+
 export const saveWorkspaceFile = createAsyncThunk(
   'workspace/saveFile',
   async ({ projectId, path, content }, { dispatch }) => {

@@ -167,6 +167,19 @@ export function renamePathInWorkspace(projectId, oldRelativePath, newRelativePat
   if (!fs.existsSync(from.absolute)) {
     throw new ApiError(404, `"${from.relative}" was not found in this workspace.`, 'FILE_MISSING')
   }
+  // Moving a folder into itself (or into one of its own descendants) would make
+  // fs.renameSync fail with an opaque EINVAL, so reject it up front. This is the
+  // cut -> paste-into-itself case.
+  if (
+    fs.statSync(from.absolute).isDirectory() &&
+    (to.relative === from.relative || to.relative.startsWith(`${from.relative}/`))
+  ) {
+    throw new ApiError(
+      400,
+      `Cannot move "${from.relative}" into itself or one of its own folders.`,
+      'INVALID_PATH',
+    )
+  }
   if (fs.existsSync(to.absolute)) {
     throw new ApiError(409, `"${to.relative}" already exists.`, 'ALREADY_EXISTS')
   }
@@ -174,6 +187,75 @@ export function renamePathInWorkspace(projectId, oldRelativePath, newRelativePat
   fs.mkdirSync(path.dirname(to.absolute), { recursive: true })
   fs.renameSync(from.absolute, to.absolute)
   return { oldPath: from.relative, newPath: to.relative }
+}
+
+function copyDirectoryRecursive(fromAbsolute, toAbsolute) {
+  fs.mkdirSync(toAbsolute, { recursive: true })
+  for (const entry of fs.readdirSync(fromAbsolute, { withFileTypes: true })) {
+    const childFrom = path.join(fromAbsolute, entry.name)
+    const childTo = path.join(toAbsolute, entry.name)
+    if (entry.isDirectory()) copyDirectoryRecursive(childFrom, childTo)
+    else if (entry.isFile()) fs.copyFileSync(childFrom, childTo)
+  }
+}
+
+/**
+ * Duplicates a file or folder into `targetFolderRelativePath` ('' = workspace
+ * root), keeping the original name. Used by the Explorer's context-menu Copy ->
+ * Paste. Folders are copied recursively.
+ */
+export function copyPathInWorkspace(projectId, sourceRelativePath, targetFolderRelativePath = '') {
+  assertWorkspaceExists(projectId)
+  const source = resolveInsideWorkspace(projectId, sourceRelativePath)
+  const targetFolder = resolveInsideWorkspace(projectId, targetFolderRelativePath)
+
+  if (!source.relative) {
+    throw new ApiError(400, 'A source path is required.', 'INVALID_PATH')
+  }
+  if (!fs.existsSync(source.absolute)) {
+    throw new ApiError(404, `"${source.relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+
+  const sourceIsDirectory = fs.statSync(source.absolute).isDirectory()
+  if (
+    sourceIsDirectory &&
+    (targetFolder.relative === source.relative ||
+      targetFolder.relative.startsWith(`${source.relative}/`))
+  ) {
+    throw new ApiError(
+      400,
+      `Cannot copy "${source.relative}" into itself or one of its own folders.`,
+      'INVALID_PATH',
+    )
+  }
+
+  if (fs.existsSync(targetFolder.absolute) && !fs.statSync(targetFolder.absolute).isDirectory()) {
+    throw new ApiError(
+      400,
+      `"${targetFolder.relative}" is not a folder.`,
+      'NOT_A_FOLDER',
+    )
+  }
+
+  const name = path.basename(source.absolute)
+  const destinationAbsolute = path.join(targetFolder.absolute, name)
+  if (fs.existsSync(destinationAbsolute)) {
+    const destinationRelative = path
+      .relative(getWorkspacePath(projectId), destinationAbsolute)
+      .split(path.sep)
+      .join('/')
+    throw new ApiError(409, `"${destinationRelative}" already exists.`, 'ALREADY_EXISTS')
+  }
+
+  fs.mkdirSync(targetFolder.absolute, { recursive: true })
+  if (sourceIsDirectory) copyDirectoryRecursive(source.absolute, destinationAbsolute)
+  else fs.copyFileSync(source.absolute, destinationAbsolute)
+
+  const newPath = path
+    .relative(getWorkspacePath(projectId), destinationAbsolute)
+    .split(path.sep)
+    .join('/')
+  return { sourcePath: source.relative, newPath }
 }
 
 function sortChildren(children) {

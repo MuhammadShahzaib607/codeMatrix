@@ -1,5 +1,6 @@
 /**
- * Thin fetch wrapper around the workspace API.
+ * Thin fetch wrapper around the API. Every call automatically attaches the
+ * `Authorization: Bearer <token>` header when a session token is stored.
  *
  * The client no longer reads or writes the user's laptop during editing — every
  * file operation goes through these endpoints, because the project "lives" in a
@@ -9,6 +10,36 @@
 export const API_BASE_URL = (
   import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
 ).replace(/\/+$/, '')
+
+/** Auth token lives in localStorage so a reload keeps the session. */
+const TOKEN_KEY = 'code-matrix:token'
+
+export function getAuthToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function setAuthToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    // Storage can be unavailable (private mode); the session is just not kept.
+  }
+}
+
+export function clearAuthToken() {
+  setAuthToken(null)
+}
+
+/** Authorization header for the current session, if any. */
+function authHeaders() {
+  const token = getAuthToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 /** Error shape shared by every call, with the server's machine-readable code. */
 export class ApiError extends Error {
@@ -41,11 +72,12 @@ async function readError(response) {
 }
 
 async function request(path, options = {}) {
+  const { headers, ...rest } = options
   let response
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
-      ...options,
+      headers: { 'Content-Type': 'application/json', ...authHeaders(), ...headers },
+      ...rest,
     })
   } catch {
     throw new ApiError(`Could not reach the server at ${API_BASE_URL}. Is it running?`, {
@@ -122,7 +154,7 @@ export const workspaceApi = {
   async exportProject(projectId) {
     let response
     try {
-      response = await fetch(workspacePath(projectId, '/export'))
+      response = await fetch(workspacePath(projectId, '/export'), { headers: authHeaders() })
     } catch {
       throw new ApiError(`Could not reach the server at ${API_BASE_URL}. Is it running?`, {
         status: 0,
@@ -139,5 +171,28 @@ export const workspaceApi = {
       blob: await response.blob(),
       filename: match?.[1] ?? `${projectId}.zip`,
     }
+  },
+}
+
+export const authApi = {
+  /** POST /api/auth/register */
+  register(payload) {
+    return request('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  /** POST /api/auth/login */
+  login(payload) {
+    return request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  /** GET /api/auth/me */
+  me() {
+    return request('/api/auth/me')
   },
 }

@@ -1,6 +1,6 @@
 import Editor from '@monaco-editor/react'
 import { AlertTriangle, Loader2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { setContent, updateContent } from '../../features/editorSlice'
 import { readWorkspaceFile } from '../../features/workspaceThunks'
@@ -14,8 +14,66 @@ export default function EditorArea() {
   const dispatch = useDispatch()
   const { tree, activeFileId, workspace } = useSelector((state) => state.fileSystem)
   const contentByFileId = useSelector((state) => state.editor.contentByFileId)
+  const revealLine = useSelector((state) => state.ui.revealLine)
   // Kept per file id so switching tabs does not need a state reset in an effect.
   const [failure, setFailure] = useState(null) // { fileId, message }
+
+  // Monaco instance + the latest reveal request, so search results can jump to a
+  // line no matter whether the editor mounted before or after the request.
+  const editorRef = useRef(null)
+  const monacoRef = useRef(null)
+  const revealRef = useRef(revealLine)
+  const activeFileIdRef = useRef(activeFileId)
+
+  // Mirror the latest values into refs without writing during render.
+  useEffect(() => {
+    revealRef.current = revealLine
+  }, [revealLine])
+  useEffect(() => {
+    activeFileIdRef.current = activeFileId
+  }, [activeFileId])
+
+  const applyReveal = useCallback(() => {
+    const editor = editorRef.current
+    const monaco = monacoRef.current
+    const target = revealRef.current
+    if (!editor || !monaco || !target) return
+    if (target.fileId !== activeFileIdRef.current) return
+
+    const maxLine = editor.getModel()?.getLineCount?.() ?? target.line
+    const line = Math.max(1, Math.min(target.line, maxLine))
+    editor.revealLineInCenter(line)
+    editor.setPosition({ lineNumber: line, column: 1 })
+
+    const decoration = {
+      range: new monaco.Range(line, 1, line, 1),
+      options: { isWholeLine: true, className: 'editor-line-highlight' },
+    }
+
+    // `createDecorationsCollection` is the modern API; older Monaco builds only
+    // expose `deltaDecorations`.
+    if (typeof editor.createDecorationsCollection === 'function') {
+      const collection = editor.createDecorationsCollection([decoration])
+      window.setTimeout(() => {
+        try {
+          collection.clear()
+        } catch {
+          // The editor was disposed before the highlight expired.
+        }
+      }, 2000)
+      return
+    }
+
+    const decorationIds = editor.deltaDecorations([], [decoration])
+    // The line flash is temporary, like VS Code's search highlight.
+    window.setTimeout(() => {
+      try {
+        editor.deltaDecorations(decorationIds, [])
+      } catch {
+        // The editor was disposed before the highlight expired.
+      }
+    }, 2000)
+  }, [])
 
   const activeNode = activeFileId ? findNode(tree, activeFileId) : null
   // A file already present in the buffer map has been loaded (from the server or
@@ -56,6 +114,11 @@ export default function EditorArea() {
     }
   }, [activeNode, isLoaded, workspace, dispatch])
 
+  // Covers the case where the editor is already mounted when a reveal arrives.
+  useEffect(() => {
+    applyReveal()
+  }, [applyReveal, revealLine, activeFileId, isLoaded])
+
   return (
     <section className="editor-area">
       <TabBar />
@@ -90,6 +153,11 @@ export default function EditorArea() {
             value={content}
             language={getLanguageFromFilename(activeNode.name)}
             theme="vs-dark"
+            onMount={(editor, monaco) => {
+              editorRef.current = editor
+              monacoRef.current = monaco
+              applyReveal()
+            }}
             onChange={(value) =>
               dispatch(updateContent({ fileId: activeNode.id, content: value ?? '' }))
             }

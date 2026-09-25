@@ -12,7 +12,10 @@ export const env = {
   port: Number(process.env.PORT) || 4000,
   mongoUri: process.env.MONGODB_URI || '',
   clientOrigin: process.env.CLIENT_ORIGIN || '*',
-  defaultOwnerId: process.env.DEFAULT_OWNER_ID || 'local-user',
+  // Signing key for auth JWTs. The fallback keeps local dev working, but any
+  // real deployment MUST set JWT_SECRET (see .env.example).
+  jwtSecret: process.env.JWT_SECRET || 'dev-insecure-secret-change-me',
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   workspacesRoot: process.env.WORKSPACES_ROOT || '',
 }
 

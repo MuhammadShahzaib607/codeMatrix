@@ -6,7 +6,7 @@ import Project from './Project.model.js'
  * configured, so a database outage never breaks file operations.
  */
 
-export async function upsertProject({ projectId, name, ownerId, diskPath }) {
+export async function upsertProject({ projectId, name, owner, diskPath }) {
   if (!isDatabaseConnected()) return null
   try {
     return await Project.findOneAndUpdate(
@@ -14,7 +14,7 @@ export async function upsertProject({ projectId, name, ownerId, diskPath }) {
       {
         $set: {
           name: name || 'Untitled Project',
-          ownerId: ownerId || 'local-user',
+          owner,
           diskPath,
           lastAccessedAt: new Date(),
         },

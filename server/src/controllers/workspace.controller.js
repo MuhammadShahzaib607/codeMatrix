@@ -1,5 +1,4 @@
 import archiver from 'archiver'
-import { env } from '../config/env.js'
 import { findProject, touchProject, upsertProject } from '../models/project.repository.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
@@ -17,17 +16,9 @@ import {
 // Refuses absurd imports that would fill the (ephemeral) disk or time out.
 const MAX_IMPORT_FILES = 5000
 
-function resolveOwnerId(req, body) {
-  return (
-    (typeof body?.ownerId === 'string' && body.ownerId.trim()) ||
-    req.get('x-user-id') ||
-    env.defaultOwnerId
-  )
-}
-
 /** Accepts either a bare array or `{ name, files: [...] }`. */
 function normalizeImportBody(body) {
-  if (Array.isArray(body)) return { files: body, name: undefined, ownerId: undefined }
+  if (Array.isArray(body)) return { files: body, name: undefined }
   const source = body ?? {}
   const files = Array.isArray(source.files)
     ? source.files
@@ -37,7 +28,6 @@ function normalizeImportBody(body) {
   return {
     files,
     name: typeof source.name === 'string' ? source.name : undefined,
-    ownerId: typeof source.ownerId === 'string' ? source.ownerId : undefined,
   }
 }
 
@@ -54,7 +44,7 @@ function requirePath(value, label = 'path') {
 
 export const importProject = asyncHandler(async (req, res) => {
   const { projectId } = req.params
-  const { files, name, ownerId } = normalizeImportBody(req.body)
+  const { files, name } = normalizeImportBody(req.body)
 
   if (!files || files.length === 0) {
     throw new ApiError(
@@ -97,10 +87,11 @@ export const importProject = asyncHandler(async (req, res) => {
   }
 
   const projectName = name?.trim() || projectId
+  // Ownership always comes from the verified JWT, never from the request body.
   const project = await upsertProject({
     projectId,
     name: projectName,
-    ownerId: resolveOwnerId(req, req.body),
+    owner: req.user.id,
     diskPath,
   })
 

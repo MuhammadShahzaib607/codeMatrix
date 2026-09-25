@@ -1,5 +1,6 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import { isWorkspaceMissingError, workspaceApi } from '../services/api'
+import { setCachedFileContent } from '../services/fileContentCache'
 import { toReduxTree } from '../utils/cloudTree'
 import { markSaved, removeContent, setContent } from './editorSlice'
 import {
@@ -129,6 +130,8 @@ export const saveWorkspaceFile = createAsyncThunk(
   async ({ projectId, path, content }, { dispatch }) => {
     try {
       const result = await workspaceApi.saveFile(projectId, path, content)
+      // Keep the search cache in step with what is now on the server.
+      setCachedFileContent(projectId, path, content)
       dispatch(markSaved(path))
       return result
     } catch (error) {

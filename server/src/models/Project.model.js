@@ -5,7 +5,8 @@ import mongoose from 'mongoose'
  * live on the server's disk under `diskPath` and are wiped whenever the server
  * restarts on the free tier.
  *
- * ownerId is a plain string; full authentication does not exist yet.
+ * `owner` is a real reference to a User, so every workspace operation can check
+ * that the signed-in user owns the project before touching the disk.
  */
 const projectSchema = new mongoose.Schema(
   {
@@ -22,12 +23,11 @@ const projectSchema = new mongoose.Schema(
       trim: true,
       default: 'Untitled Project',
     },
-    ownerId: {
-      type: String,
+    owner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
       required: true,
-      default: 'local-user',
       index: true,
-      trim: true,
     },
     diskPath: {
       type: String,

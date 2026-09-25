@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, FileCode, Folder, FolderOpen, Pencil, Trash2 } from 'lucide-react'
-import { useRef, useState } from 'react'
-import { useDispatch } from 'react-redux'
+import { useEffect, useRef, useState } from 'react'
+import { useDispatch, useSelector } from 'react-redux'
 import { addTab, toggleFolder } from '../../features/fileSystemSlice'
 
 // Vertical guide lines that reproduce VS Code's indentation guides.
@@ -61,6 +61,8 @@ function TreeNode({
   onRename,
   onDelete,
   lockedId,
+  revealedId,
+  revealNonce,
 }) {
   const dispatch = useDispatch()
   const [isRenaming, setIsRenaming] = useState(false)
@@ -69,6 +71,7 @@ function TreeNode({
 
   const isFolder = node.type === 'folder'
   const isSelected = selectedId === node.id
+  const isRevealed = revealedId === node.id
   // The workspace root cannot be renamed or deleted.
   const isLocked = lockedId !== null && node.id === lockedId
 
@@ -109,8 +112,11 @@ function TreeNode({
 
   return (
     <div className="tree-node">
+      {/* Revealed rows get a nonce-based key so the flash animation replays. */}
       <div
-        className={`tree-row ${isSelected ? 'is-selected' : ''}`}
+        key={isRevealed ? `reveal-${revealNonce}` : undefined}
+        data-node-id={node.id}
+        className={`tree-row ${isSelected ? 'is-selected' : ''} ${isRevealed ? 'is-revealed' : ''}`}
         onClick={handleRowClick}
         title={node.name}
       >
@@ -203,6 +209,8 @@ function TreeNode({
               onRename={onRename}
               onDelete={onDelete}
               lockedId={lockedId}
+              revealedId={revealedId}
+              revealNonce={revealNonce}
             />
           ))}
         </div>
@@ -222,8 +230,20 @@ export default function FileTree({
   onDelete,
   lockedId = null,
 }) {
+  const revealedNode = useSelector((state) => state.ui.revealedNode)
+  const rootRef = useRef(null)
+
+  // Scroll the revealed row into view whenever search/quick-open jumps to a node.
+  useEffect(() => {
+    if (!revealedNode?.id) return
+    const container = rootRef.current
+    if (!container) return
+    const row = container.querySelector(`[data-node-id="${CSS.escape(revealedNode.id)}"]`)
+    row?.scrollIntoView({ block: 'center' })
+  }, [revealedNode, nodes])
+
   return (
-    <div className="file-tree">
+    <div className="file-tree" ref={rootRef}>
       {/* No workspace root yet (demo mode): new nodes are appended at the top level. */}
       {creating && creating.parentId === null && (
         <NewNodeInput
@@ -246,6 +266,8 @@ export default function FileTree({
           onRename={onRename}
           onDelete={onDelete}
           lockedId={lockedId}
+          revealedId={revealedNode?.id ?? null}
+          revealNonce={revealedNode?.nonce}
         />
       ))}
     </div>

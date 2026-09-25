@@ -1,13 +1,18 @@
 import { Router } from 'express'
 import * as workspaceController from '../controllers/workspace.controller.js'
+import protect from '../middlewares/authMiddleware.js'
+import authorizeProject from '../middlewares/authorizeProject.js'
 import ensureWorkspace from '../middlewares/ensureWorkspace.js'
 import validateProjectId from '../middlewares/validateProjectId.js'
 
 const router = Router()
 
-// Every route below needs a safe projectId. `import` is the only one allowed to
-// run when the workspace folder does not exist yet, so it skips ensureWorkspace.
-router.use('/:projectId', validateProjectId)
+// Every workspace route requires a signed-in user. The projectId is validated
+// next (it becomes a directory name), then ownership is checked, then the disk
+// folder is confirmed to still exist. `import` is the only route allowed to run
+// before the folder exists, so it skips ensureWorkspace.
+router.use(protect)
+router.use('/:projectId', validateProjectId, authorizeProject)
 
 router.post('/:projectId/import', workspaceController.importProject)
 

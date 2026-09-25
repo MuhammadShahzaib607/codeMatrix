@@ -73,6 +73,35 @@ export function mapTree(nodes, fn) {
   })
 }
 
+/**
+ * Flattens a tree into [{ id, name, type, path, depth }] in display order.
+ * `path` is the relative path used for display and for search results; cloud
+ * nodes already carry it, demo nodes get one built from their names.
+ */
+export function flattenTreeNodes(nodes, parentPath = '', depth = 0, out = []) {
+  for (const node of nodes) {
+    const path = node.path ?? (parentPath ? `${parentPath}/${node.name}` : node.name)
+    out.push({ id: node.id, name: node.name, type: node.type, path, depth })
+    if (node.children) flattenTreeNodes(node.children, path, depth + 1, out)
+  }
+  return out
+}
+
+/**
+ * Folder ids from the root down to (but not including) the node with `id`.
+ * Returns [] for a top-level node and null when the id is not in the tree.
+ */
+export function collectAncestorFolderIds(nodes, id, trail = []) {
+  for (const node of nodes) {
+    if (node.id === id) return trail
+    if (node.children) {
+      const found = collectAncestorFolderIds(node.children, id, [...trail, node.id])
+      if (found) return found
+    }
+  }
+  return null
+}
+
 // Seeds the editor's content map so files open with their dummy content.
 export function buildContentMap(nodes, map = {}) {
   for (const node of nodes) {

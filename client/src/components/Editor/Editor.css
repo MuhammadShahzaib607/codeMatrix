@@ -124,6 +124,11 @@
   font-size: 13px;
 }
 
+/* Temporary whole-line flash when search jumps to a match. */
+.editor-line-highlight {
+  background: rgba(255, 214, 0, 0.18);
+}
+
 /* Loading / error placeholder shown in place of Monaco. */
 .editor-status {
   display: flex;

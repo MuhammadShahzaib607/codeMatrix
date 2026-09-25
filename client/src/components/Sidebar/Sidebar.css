@@ -1,9 +1,11 @@
+/* The panel fills whatever width the resizable slot gives it. */
 .sidebar {
   display: flex;
   flex-direction: column;
-  width: 250px;
+  width: 100%;
   height: 100%;
-  min-width: 250px;
+  min-width: 0;
+  overflow: hidden;
   background: var(--bg-sidebar);
 }
 
@@ -162,6 +164,20 @@
 .tree-row.is-creating {
   cursor: default;
   background: var(--bg-hover);
+}
+
+/* Soft flash used when search/quick-open jumps to a row. */
+.tree-row.is-revealed {
+  animation: tree-reveal 1.5s ease-out;
+}
+
+@keyframes tree-reveal {
+  0% {
+    background: rgba(255, 214, 0, 0.45);
+  }
+  100% {
+    background: transparent;
+  }
 }
 
 .indent-guide {

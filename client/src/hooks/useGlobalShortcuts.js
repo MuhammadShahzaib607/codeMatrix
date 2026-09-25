@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import { TOPBAR_SEARCH_INPUT_ID } from '../components/Topbar/TopbarSearch'
 import { toggleAIPanel, toggleSidebar } from '../features/uiSlice'
 import useSaveActiveFile from './useSaveActiveFile'
 
@@ -18,9 +19,14 @@ export default function useGlobalShortcuts() {
           event.preventDefault()
           dispatch(toggleSidebar())
           break
+        case 'p':
+          // Quick Open — same as VS Code.
+          event.preventDefault()
+          document.getElementById(TOPBAR_SEARCH_INPUT_ID)?.focus()
+          break
         case 's':
           event.preventDefault()
-          // Ctrl+S writes to the real file when a local folder is open.
+          // Ctrl+S writes to the server workspace when a cloud project is open.
           if (activeFileId) saveActiveFile()
           break
         case 'j':

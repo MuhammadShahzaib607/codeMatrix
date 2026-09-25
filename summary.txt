@@ -527,3 +527,258 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
     They are no longer used by the editor (cloud thunks replaced them) but are
     kept because they are harmless and may return for a future sandbox mode.
   - Binary files are imported/exported as UTF-8 text; the workspace is text-only.
+
+
+================================================================================
+AI Code Editor — Phase 4: Authentication, Topbar Redesign, Resizable Sidebar,
+               Activity Bar + Search in Files
+================================================================================
+
+STATUS: complete. Start the API (`cd server && node server.js`) and the client
+        (`cd client && npm run dev`), then open http://localhost:5173 in a
+        Chromium browser.
+
+HEADS-UP: MongoDB is now REQUIRED for auth. server/.env already had a working
+MONGODB_URI and register/login were exercised against it successfully. If
+MONGODB_URI is empty, /api/auth/* answers 503 AUTH_UNAVAILABLE and nobody can
+sign in, so all cloud features are unusable (by design — the toolbar gates them).
+
+--------------------------------------------------------------------------------
+IMPORTANT: AUTH IS NOW REQUIRED FOR ALL CLOUD/WORKSPACE FEATURES
+--------------------------------------------------------------------------------
+Every route under /api/workspace is protected:
+  protect (JWT)  ->  validateProjectId  ->  authorizeProject (ownership)  ->
+  ensureWorkspace (disk exists)
+
+On the client, Open/Import Folder, Export, Sync, Save and the Terminal toggle
+only run for a signed-in user. If they are clicked while signed out, the sign-in
+modal opens with "Please sign in to continue" (see useAuthGuard). The workspace
+remembered in localStorage is only reopened once authenticated, and signing out
+resets the editor to the demo workspace and clears the caches.
+
+--------------------------------------------------------------------------------
+PART 1 — AUTH (BACKEND)
+--------------------------------------------------------------------------------
+NEW API ROUTES
+  POST /api/auth/register  { name, email, password }
+       -> 201 { token, user: { id, name, email } }
+       errors: 400 INVALID_NAME/INVALID_EMAIL/INVALID_PASSWORD,
+               409 EMAIL_TAKEN, 503 AUTH_UNAVAILABLE
+  POST /api/auth/login     { email, password }
+       -> 200 { token, user } ; 401 INVALID_CREDENTIALS (same message for a bad
+       email and a bad password, so emails cannot be enumerated)
+  GET  /api/auth/me        Authorization: Bearer <token>  -> { user }
+
+NEW SERVER FILES
+  server/src/models/User.model.js         name/email(unique, lowercase)/password;
+                                          bcrypt pre-save hash + comparePassword()
+  server/src/middlewares/authMiddleware.js  protect: verifies Bearer JWT,
+                                          sets req.user = { id }
+  server/src/controllers/auth.controller.js
+  server/src/routes/auth.routes.js
+  server/src/middlewares/authorizeProject.js  ownership check (see below)
+
+MODIFIED SERVER FILES
+  server/src/models/Project.model.js   ownerId (String) REPLACED by
+                                        owner: ObjectId ref 'User' (required)
+  server/src/models/project.repository.js  upsertProject({ ..., owner })
+  server/src/routes/workspace.routes.js    protect + authorizeProject on all routes
+  server/src/routes/index.js               mounts /api/auth
+  server/src/controllers/workspace.controller.js  owner always from req.user.id
+                                        (never from the body); max import 5000 files
+  server/src/config/env.js             + jwtSecret (JWT_SECRET), jwtExpiresIn (7d)
+  server/.env.example                  + JWT_SECRET + JWT_EXPIRES_IN (DEFAULT_OWNER_ID
+                                        removed; it no longer exists)
+  server/package.json                  + bcryptjs, jsonwebtoken
+
+OWNERSHIP RULE (authorizeProject.js)
+  project exists && owner !== req.user.id      -> 403 FORBIDDEN
+  project exists && owner matches              -> continue (req.project attached)
+  project not found                            -> continue, because POST .../import
+     legitimately targets an id with no metadata yet; disk access is still guarded
+     by ensureWorkspace (404 WORKSPACE_MISSING)
+  no database connected                        -> check skipped (local/dev only)
+
+JWT payload is { id: user._id }, signed with JWT_SECRET, expires in 7d
+(JWT_EXPIRES_IN). If JWT_SECRET is unset the server falls back to a dev value —
+production MUST set a real secret (see .env.example for a generator command).
+
+--------------------------------------------------------------------------------
+PART 2 — AUTH (FRONTEND) + NEW REDUX STATE
+--------------------------------------------------------------------------------
+NEW CLIENT FILES
+  client/src/features/authSlice.js          state { user, token, isAuthenticated,
+                                            loading, error }; thunks registerUser,
+                                            loginUser, fetchCurrentUser, logout
+  client/src/components/Auth/AuthModal.jsx  modal with Sign In / Sign Up tabs,
+                                            inline validation, spinner, switch link
+  client/src/components/Auth/AuthModal.css
+  client/src/hooks/useAuthGuard.js          guard(run, message) -> runs when signed
+                                            in, otherwise opens the sign-in modal
+
+NEW REDUX STATE (auth)
+  { user: null, token: <from localStorage>, isAuthenticated: <!!token>,
+    loading: false, error: null }
+  On login/register the token is stored under localStorage key
+  'code-matrix:token' and every API call attaches
+  `Authorization: Bearer <token>` automatically (services/api.js reads it per call).
+  fetchCurrentUser() runs once on app load to validate/restore the session; only a
+  401 clears the token, a network error does not.
+
+NEW REDUX STATE (ui)
+  activeSidebarView: 'explorer' | 'search'      (Activity Bar selection)
+  sidebarWidth: number (default 250, clamp 180..500, persisted to localStorage
+                under 'code-matrix:sidebarWidth')
+  revealedNode: { id, nonce } | null            (scroll + flash a tree row)
+  revealLine: { fileId, line, nonce } | null    (scroll Monaco + flash a line)
+  authModal: { isOpen, mode: 'signin'|'signup', message }
+  (+ the earlier toast / sidebar / AI-panel / storage-notice fields)
+
+services/api.js additions: getAuthToken / setAuthToken / clearAuthToken and an
+`authApi` object (register, login, me). `authApi`/workspace calls share the same
+fetch wrapper, so auth is applied uniformly.
+
+--------------------------------------------------------------------------------
+PART 3 — TOPBAR REDESIGN (three sections)
+--------------------------------------------------------------------------------
+LEFT   sidebar toggle, a reserved logo placeholder div (// TODO: logo will be
+       added later) + "CodeMatrix" text, and the workspace chip.
+CENTER the Quick Open search (see below).
+RIGHT  Open Folder, Export, Sync, Save, Terminal, AI toggle, Settings, then a
+       divider and the auth area (Sign In ghost + Sign Up primary buttons, or the
+       user avatar with a dropdown containing Settings and Logout).
+
+THE TWO DIFFERENT SEARCHES — DO NOT CONFUSE THEM
+  1. TOPBAR QUICK OPEN (client/src/components/Topbar/TopbarSearch.jsx)
+     - VS Code Ctrl+P style. Matches FILENAMES/FOLDERNAMES only, case-insensitive
+       substring, any depth, max 8 results.
+     - Keyboard: ArrowUp/Down to move, Enter to open, Escape to close; clicking
+       outside closes it. Ctrl/Cmd+P focuses it from anywhere
+       (see useGlobalShortcuts + TOPBAR_SEARCH_INPUT_ID).
+     - Selecting a result opens the file in the editor (or expands a folder),
+       switches the Activity Bar back to Explorer, expands ancestors and flashes
+       the row (ui.revealedNode -> .tree-row.is-revealed, 1.5s fade).
+  2. SEARCH IN FILES PANEL (client/src/components/Sidebar/SearchInFiles.jsx)
+     - VS Code Ctrl+Shift+F style, lives in the sidebar (Activity Bar > Search).
+     - Searches BOTH names AND FILE CONTENTS (case-insensitive substring).
+     - Debounced 300ms; results grouped per file with a match-count badge and
+       collapsible line list (line number + <mark>-highlighted match).
+     - Summary line: "N results in M files"; "No results found" and an idle state.
+     - Clicking a line opens the file AND dispatches ui.revealLine so Monaco
+       revealLineInCenter()s and flashes that line for ~2s.
+     - Fetches contents through services/fileContentCache.js (session cache keyed
+       `projectId:path`, cleared when the project changes, refreshed on save) and
+       prefers the live Redux buffer for files that are already open.
+     - Guards: MAX_FILES_TO_SEARCH = 400, MAX_LINES_PER_FILE = 50.
+
+--------------------------------------------------------------------------------
+PART 4 — RESIZABLE SIDEBAR
+--------------------------------------------------------------------------------
+  - 5px transparent handle on the sidebar's right edge (cursor: col-resize,
+    accent on hover), draggable between 180px and 500px.
+  - Live width lives in ui.sidebarWidth (clamped in the reducer); the drag handler
+    temporarily adds `.is-resizing` to the slot so the CSS width transition does
+    not lag the cursor. mousemove/mouseup listeners are added on mousedown and
+    removed on mouseup only.
+  - Persisted to localStorage and restored on the next visit.
+
+--------------------------------------------------------------------------------
+PART 5 + 6 — ACTIVITY BAR AND SEARCH PANEL
+--------------------------------------------------------------------------------
+NEW CLIENT FILES
+  client/src/components/ActivityBar/ActivityBar.jsx + .css   ~48px rail, #333333,
+        accent left-stripe + white icon for the active view, always visible
+  client/src/components/Sidebar/SidebarContainer.jsx         renders Sidebar
+        (Explorer) or SearchInFiles based on ui.activeSidebarView
+  client/src/components/Sidebar/SearchInFiles.jsx + .css
+  client/src/components/Topbar/TopbarSearch.jsx
+  client/src/services/fileContentCache.js
+
+MODIFIED CLIENT FILES
+  src/App.jsx                      ActivityBar -> SidebarContainer -> Editor ->
+                                   AIPanel, resize handle, cache/terminal reset on
+                                   project change, reset-to-demo + clear caches on
+                                   sign-out, fetchCurrentUser on load, AuthModal
+  src/App.css                      .panel-slot is relative + .is-resizing, the
+                                   resize handle; sidebar width now set inline
+  src/app/store.js                 + auth reducer
+  src/features/uiSlice.js          activity view, sidebar width, reveal targets,
+                                   auth modal (SIDEBAR_WIDTH_KEY exported)
+  src/features/workspaceThunks.js  keeps the content cache in step on save
+  src/hooks/useRestoreWorkspace.js only reopens the workspace when authenticated
+  src/hooks/useGlobalShortcuts.js  + Ctrl/Cmd+P focuses Quick Open
+  src/components/Topbar/Topbar.jsx + .css  three-section layout, auth area,
+                                   useAuthGuard gating
+  src/components/Sidebar/FileTree.jsx  data-node-id + reveal scroll/flash
+  src/components/Sidebar/Sidebar.css    .sidebar now 100% width; .is-revealed flash
+  src/components/Editor/EditorArea.jsx  Monaco onMount + reveal-line decorations
+  src/components/Editor/Editor.css      .editor-line-highlight
+  src/utils/tree.js                + flattenTreeNodes, collectAncestorFolderIds
+  src/services/api.js              + token helpers, authApi, Bearer header
+
+LAYOUT ORDER (left to right): ActivityBar -> sidebar slot -> editor column
+(Editor + TerminalPanel) -> AI panel. All dark-theme colours are unchanged
+(#1e1e1e editor, #252526 sidebar, #333333 topbar/activity bar, accent #8b5cf6).
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (44 files) — the two React-compiler rules that
+    flagged ref-writes-during-render and set-state-in-effect were fixed properly
+    (refs mirrored in effects, form reset via remount, empty query handled in the
+    input handler).
+  - vite build: succeeds.
+  - node --check on every server file: passes.
+  - Live auth run against the real MongoDB:
+      register -> 201 with { token, user } (no password hash in the response)
+      duplicate email -> 409 ; login -> 200 ; wrong password -> 401
+      GET /api/auth/me with token -> the user
+      import as user A -> 201 ; GET tree as A (owner) -> 200
+      GET tree as user B (not owner) -> 403 FORBIDDEN   <-- ownership enforced
+      GET tree with no token -> 401 ; with a garbage token -> 401
+
+--------------------------------------------------------------------------------
+CLEANUP NOTE (please read)
+--------------------------------------------------------------------------------
+The auth test created two throwaway accounts and one project in the dev
+MongoDB:
+  users:    codebuff-test-a@example.com, codebuff-test-b@example.com
+  project:  cbtestproj (plus possibly authproj / testproj1 metadata from earlier
+            phases — their workspace folders are already deleted)
+Their workspace folders were removed from disk already. The follow-up delete
+script could not run because DNS for the Atlas cluster (querySrv
+ECONNREFUSED _mongodb._tcp.cluster0...) stopped resolving in the sandbox. Remove
+them with either Mongo Compass or:
+
+  cd server && node --input-type=module -e "
+  import mongoose from 'mongoose';
+  import { env } from './src/config/env.js';
+  import User from './src/models/User.model.js';
+  import Project from './src/models/Project.model.js';
+  await mongoose.connect(env.mongoUri);
+  console.log(await User.deleteMany({ email: /^codebuff-test-/ }));
+  console.log(await Project.deleteMany({ projectId: /^(cbtestproj|authproj|testproj1)$/ }));
+  await mongoose.disconnect();
+  "
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - MongoDB is required for auth. A missing MONGODB_URI makes /api/auth/* return
+    503 AUTH_UNAVAILABLE; project.repository.js still degrades to no-ops, and
+    authorizeProject skips the ownership check when the DB is down (dev only).
+  - Never read the owner id from the request body. It always comes from the
+    verified JWT (req.user.id).
+  - Project.model.js changed `ownerId` (String) -> `owner` (ObjectId ref User,
+    required). Older Project documents created before this phase will not match
+    new code and should be deleted.
+  - Set a real JWT_SECRET before deploying; the fallback secret is only for local
+    development.
+  - The two searches are intentionally different: the Topbar one is quick-open by
+    NAME only; the sidebar Search panel is the full name+content search.
+  - Search-in-files caches file contents for the session and is NOT invalidated
+    by edits made outside the app; it refreshes on save and on project switch.
+  - Activity Bar has exactly two views. Add another entry to VIEWS in
+    ActivityBar.jsx and a matching branch in SidebarContainer.jsx.
+  - ui.sidebarWidth and the auth token both live in localStorage. Write-ups from
+    earlier phases in this file still apply unless contradicted here.

@@ -181,17 +181,11 @@
   text-align: center;
 }
 
+/* App logo, centred above the "No file selected" heading. */
 .empty-state-logo {
-  display: inline-flex;
-  align-items: center;
+  display: flex;
   justify-content: center;
-  width: 72px;
-  height: 72px;
   margin-bottom: 20px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: var(--accent-soft);
-  color: var(--accent);
 }
 
 .empty-state-title {

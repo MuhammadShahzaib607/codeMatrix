@@ -4,10 +4,6 @@ import { dismissStorageNotice } from '../../features/uiSlice'
 import { TEMPORARY_STORAGE_MESSAGE } from '../../utils/messages'
 import './Notices.css'
 
-/**
- * Warns that the server's disk is ephemeral. Shown whenever a cloud workspace is
- * open; dismissing it lasts for the session only, so it reappears on reload.
- */
 export default function StorageNotice() {
   const dispatch = useDispatch()
   const workspace = useSelector((state) => state.fileSystem.workspace)

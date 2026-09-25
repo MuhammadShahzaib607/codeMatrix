@@ -1,9 +1,5 @@
 import { env } from '../config/env.js'
 
-/**
- * Single place that turns any thrown error into the client error shape:
- *   { error: { message, code? } }
- */
 export default function errorHandler(error, req, res, next) {
   if (res.headersSent) return next(error)
 

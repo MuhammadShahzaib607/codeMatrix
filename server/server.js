@@ -5,14 +5,24 @@ import app from './src/app.js'
 import { connectDatabase } from './src/config/db.js'
 import { env, resolveCorsOrigin } from './src/config/env.js'
 import registerTerminalSocket from './src/socket/terminalSocket.js'
+import { killAllTerminals } from './src/utils/terminalManager.js'
 import { WORKSPACES_ROOT } from './src/utils/workspaceManager.js'
 
-// Make sure the ephemeral storage root exists before anything writes to it.
 fs.mkdirSync(WORKSPACES_ROOT, { recursive: true })
 
 const server = http.createServer(app)
 
-// Socket.IO shares the same HTTP server as Express.
+// Fail gracefully on listen errors instead of dumping an unhandled stack trace.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(
+      `[server] Port ${env.port} is already in use. Stop the other process or the predev script will handle it next run.`,
+    )
+    process.exit(1)
+  }
+  throw err
+})
+
 const io = new Server(server, {
   cors: { origin: resolveCorsOrigin(), methods: ['GET', 'POST'] },
 })
@@ -30,9 +40,9 @@ async function start() {
   })
 }
 
-// Never leave shell processes behind when the process is stopped.
 function shutdown(signal) {
   console.log(`[server] ${signal} received, shutting down.`)
+  killAllTerminals()
   io.close()
   server.close(() => process.exit(0))
 }

@@ -1,10 +1,6 @@
 import ApiError from '../utils/ApiError.js'
 import { isValidProjectId } from '../utils/workspaceManager.js'
 
-/**
- * The projectId comes straight from the URL and is used as a directory name, so
- * it must be validated before anything touches the filesystem.
- */
 export default function validateProjectId(req, res, next) {
   const { projectId } = req.params
   if (!isValidProjectId(projectId)) {

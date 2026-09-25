@@ -8,11 +8,6 @@ import { collectAncestorFolderIds, flattenTreeNodes } from '../../utils/tree'
 export const TOPBAR_SEARCH_INPUT_ID = 'topbar-quick-open-input'
 const MAX_RESULTS = 8
 
-/**
- * VS Code-style Quick Open: filters the current tree by filename (case-insensitive
- * substring, any depth) and jumps to a result. Opening a result expands the
- * sidebar to it and flashes the row.
- */
 export default function TopbarSearch() {
   const dispatch = useDispatch()
   const tree = useSelector((state) => state.fileSystem.tree)
@@ -33,8 +28,6 @@ export default function TopbarSearch() {
 
   const openTarget = useCallback(
     (target) => {
-      // Make sure the explorer (not the search panel) is showing, then open
-      // every ancestor folder so the row is actually visible.
       dispatch(setActiveSidebarView('explorer'))
       const ancestors = collectAncestorFolderIds(tree, target.id) ?? []
       for (const id of ancestors) dispatch(setFolderOpen({ id, isOpen: true }))
@@ -53,7 +46,6 @@ export default function TopbarSearch() {
     [dispatch, tree],
   )
 
-  // Clicking anywhere outside closes the dropdown.
   useEffect(() => {
     function handlePointerDown(event) {
       if (!containerRef.current?.contains(event.target)) setIsOpen(false)
@@ -101,7 +93,6 @@ export default function TopbarSearch() {
         autoComplete="off"
         onChange={(event) => {
           setQuery(event.target.value)
-          // A new query restarts the highlight at the top result.
           setActiveIndex(0)
           setIsOpen(true)
         }}

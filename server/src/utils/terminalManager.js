@@ -1,18 +1,6 @@
 import ApiError from './ApiError.js'
-import {
-  WORKSPACE_MISSING_MESSAGE,
-  getWorkspacePath,
-  workspaceExists,
-} from './workspaceManager.js'
+import { WORKSPACE_MISSING_MESSAGE, getWorkspacePath, workspaceExists } from './workspaceManager.js'
 
-/**
- * Owns the real terminal sessions (one node-pty process per terminal tab).
- *
- * node-pty is a native module and is declared as an optionalDependency, so the
- * server must still boot when it is missing (e.g. no build toolchain on a dev
- * machine). It is therefore imported dynamically and any failure is captured in
- * `ptyLoadError` instead of crashing the process.
- */
 let pty = null
 let ptyLoadError = null
 
@@ -26,7 +14,6 @@ try {
   )
 }
 
-/** terminalId -> { terminalId, projectId, socketId, ptyProcess } */
 const sessions = new Map()
 
 export function isTerminalAvailable() {
@@ -48,19 +35,11 @@ export function getSessionCount() {
   return sessions.size
 }
 
-/**
- * Production (Replit, Linux) uses bash. Windows dev machines have no bash by
- * default, so fall back to PowerShell — this is a development convenience only.
- */
 function resolveShell() {
   if (process.platform === 'win32') return process.env.COMSPEC || 'powershell.exe'
   return process.env.SHELL || 'bash'
 }
 
-/**
- * Spawns a shell process inside the project's workspace and streams its output
- * to the client over the given socket.
- */
 export function createTerminalSession(terminalId, projectId, socket, options = {}) {
   if (!terminalId || typeof terminalId !== 'string') {
     throw new ApiError(400, 'A terminalId is required.', 'INVALID_TERMINAL_ID')
@@ -112,7 +91,6 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
   return { terminalId, cwd, shell, pid: ptyProcess.pid }
 }
 
-/** Forwards user keystrokes to the shell. */
 export function writeToTerminal(terminalId, data) {
   const session = sessions.get(terminalId)
   if (!session || typeof data !== 'string') return false
@@ -120,7 +98,6 @@ export function writeToTerminal(terminalId, data) {
   return true
 }
 
-/** Keeps the PTY's window size in sync with the visible xterm.js instance. */
 export function resizeTerminal(terminalId, cols, rows) {
   const session = sessions.get(terminalId)
   if (!session) return false
@@ -129,13 +106,11 @@ export function resizeTerminal(terminalId, cols, rows) {
   try {
     session.ptyProcess.resize(safeCols, safeRows)
   } catch {
-    // A pty can reject a resize while it is shutting down; not worth reporting.
     return false
   }
   return true
 }
 
-/** Kills a terminal and drops it from the session map. */
 export function killTerminal(terminalId) {
   const session = sessions.get(terminalId)
   if (!session) return false
@@ -143,12 +118,11 @@ export function killTerminal(terminalId) {
   try {
     session.ptyProcess.kill()
   } catch {
-    // Already dead.
+    return false
   }
   return true
 }
 
-/** Kills every terminal owned by a socket — called on disconnect to avoid orphans. */
 export function killTerminalsForSocket(socketId) {
   let killed = 0
   for (const [terminalId, session] of sessions) {
@@ -156,22 +130,17 @@ export function killTerminalsForSocket(socketId) {
     sessions.delete(terminalId)
     try {
       session.ptyProcess.kill()
-    } catch {
-      // Already dead.
-    }
+    } catch {}
     killed += 1
   }
   return killed
 }
 
-/** Used on shutdown so no shell processes outlive the server. */
 export function killAllTerminals() {
   for (const [, session] of sessions) {
     try {
       session.ptyProcess.kill()
-    } catch {
-      // Already dead.
-    }
+    } catch {}
   }
   sessions.clear()
 }

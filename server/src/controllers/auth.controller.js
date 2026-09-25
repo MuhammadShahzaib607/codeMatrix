@@ -12,7 +12,6 @@ function signToken(userId) {
   return jwt.sign({ id: userId }, env.jwtSecret, { expiresIn: env.jwtExpiresIn })
 }
 
-/** The only user shape that ever leaves the API — never includes the hash. */
 function publicUser(user) {
   return {
     id: String(user._id),
@@ -30,10 +29,6 @@ function assertDatabase() {
     )
   }
 }
-
-/* ------------------------------------------------------------------ *
- * POST /api/auth/register   { name, email, password }
- * ------------------------------------------------------------------ */
 
 export const register = asyncHandler(async (req, res) => {
   assertDatabase()
@@ -59,15 +54,10 @@ export const register = asyncHandler(async (req, res) => {
     throw new ApiError(409, 'That email is already registered.', 'EMAIL_TAKEN')
   }
 
-  // The pre-save hook hashes the password.
   const user = await User.create({ name, email, password })
 
   res.status(201).json({ token: signToken(user._id), user: publicUser(user) })
 })
-
-/* ------------------------------------------------------------------ *
- * POST /api/auth/login   { email, password }
- * ------------------------------------------------------------------ */
 
 export const login = asyncHandler(async (req, res) => {
   assertDatabase()
@@ -80,8 +70,6 @@ export const login = asyncHandler(async (req, res) => {
   }
 
   const user = await User.findOne({ email })
-  // Same message for "no such user" and "wrong password" so the endpoint cannot
-  // be used to enumerate registered emails.
   const isValid = user ? await user.comparePassword(password) : false
   if (!isValid) {
     throw new ApiError(401, 'Invalid email or password.', 'INVALID_CREDENTIALS')
@@ -89,10 +77,6 @@ export const login = asyncHandler(async (req, res) => {
 
   res.json({ token: signToken(user._id), user: publicUser(user) })
 })
-
-/* ------------------------------------------------------------------ *
- * GET /api/auth/me   (protected)
- * ------------------------------------------------------------------ */
 
 export const me = asyncHandler(async (req, res) => {
   assertDatabase()

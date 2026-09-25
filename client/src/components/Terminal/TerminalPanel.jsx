@@ -15,25 +15,24 @@ import { getSocket } from '../../services/socket'
 import TerminalView from './TerminalView'
 import './TerminalPanel.css'
 
-/**
- * The VS Code-style docked terminal. It is never closed entirely — only
- * minimized to its tab bar (per the product decision). Individual tabs close
- * with their own X, which also kills the matching server-side pty.
- */
 export default function TerminalPanel() {
   const dispatch = useDispatch()
   const { terminals, activeTerminalId, isMinimized, panelHeight } = useSelector(
     (state) => state.terminal,
   )
   const projectId = useSelector((state) => state.fileSystem.workspace.projectId)
-  // Stable, human-friendly tab titles ("bash 1", "bash 2", ...).
+  const userId = useSelector((state) => state.auth.user?.id)
   const counterRef = useRef(0)
+
+  // With no imported project, terminals run in a temporary server-side scratch
+  // workspace (server/workspaces/scratch-<userId>/). Once a project is
+  // imported, its real projectId takes over for new terminals.
+  const effectiveProjectId = projectId || (userId ? `scratch-${userId}` : 'scratch-guest')
 
   function createTerminal() {
     counterRef.current += 1
     const id = crypto.randomUUID()
     dispatch(addTerminal({ id, title: `bash ${counterRef.current}` }))
-    // Opening a terminal while minimized should reveal it.
     if (isMinimized) dispatch(toggleMinimize())
   }
 
@@ -125,7 +124,6 @@ export default function TerminalPanel() {
         </button>
       </div>
 
-      {/* Kept mounted even when minimized so no shell process is torn down. */}
       <div className="terminal-body">
         {terminals.length === 0 && (
           <div className="terminal-empty">
@@ -139,7 +137,7 @@ export default function TerminalPanel() {
           >
             <TerminalView
               terminalId={terminal.id}
-              projectId={projectId}
+              projectId={effectiveProjectId}
               isActive={terminal.id === activeTerminalId && !isMinimized}
             />
           </div>

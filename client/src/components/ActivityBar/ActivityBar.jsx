@@ -3,7 +3,6 @@ import { useDispatch, useSelector } from 'react-redux'
 import { setActiveSidebarView } from '../../features/uiSlice'
 import './ActivityBar.css'
 
-// Exactly two views for now; add entries here to grow the rail.
 const VIEWS = [
   { id: 'explorer', label: 'Explorer', Icon: Files },
   { id: 'search', label: 'Search in Files', Icon: Search },
@@ -31,7 +30,6 @@ export default function ActivityBar() {
           </button>
         )
       })}
-      {/* Reversed flex spacer keeps icons pinned to the top. */}
       <div className="activity-spacer" />
     </nav>
   )

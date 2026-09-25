@@ -11,7 +11,7 @@ import TerminalPanel from './components/Terminal/TerminalPanel'
 import Toast from './components/Toast/Toast'
 import Topbar from './components/Topbar/Topbar'
 import { fetchCurrentUser } from './features/authSlice'
-import { resetToDemo } from './features/fileSystemSlice'
+import { clearWorkspace } from './features/fileSystemSlice'
 import { resetTerminals } from './features/terminalSlice'
 import { SIDEBAR_WIDTH_KEY, setSidebarWidth } from './features/uiSlice'
 import useGlobalShortcuts from './hooks/useGlobalShortcuts'
@@ -26,39 +26,32 @@ export default function App() {
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
   const sidebarWidth = useSelector((state) => state.ui.sidebarWidth)
   const isTerminalOpen = useSelector((state) => state.terminal.isTerminalPanelOpen)
-  const source = useSelector((state) => state.fileSystem.workspace.source)
-  const projectId = useSelector((state) => state.fileSystem.workspace.projectId)
+  const workspace = useSelector((state) => state.fileSystem.workspace)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
 
   useGlobalShortcuts()
   useRestoreWorkspace()
 
-  // Validate any stored token once on load, so a reload restores the session.
   useEffect(() => {
     dispatch(fetchCurrentUser())
   }, [dispatch])
 
-  // Terminals and the file-content cache belong to exactly one project.
   useEffect(() => {
     dispatch(resetTerminals())
     clearFileContentCache()
-  }, [projectId, dispatch])
+  }, [workspace.projectId, dispatch])
 
-  // Cloud projects only exist for a signed-in user, so hide them on sign-out.
   useEffect(() => {
     if (isAuthenticated) return
-    dispatch(resetToDemo())
+    dispatch(clearWorkspace())
     clearWorkspaceRef()
     clearFileContentCache()
   }, [isAuthenticated, dispatch])
 
-  // Remember the sidebar width for the next visit.
   useEffect(() => {
     try {
       localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))
-    } catch {
-      // Storage unavailable — the width is simply not remembered.
-    }
+    } catch {}
   }, [sidebarWidth])
 
   function startSidebarResize(event) {
@@ -66,7 +59,6 @@ export default function App() {
     const startX = event.clientX
     const startWidth = sidebarWidth
     const slot = event.currentTarget.closest('.panel-slot-sidebar')
-    // Disable the width transition while dragging so it tracks the cursor exactly.
     slot?.classList.add('is-resizing')
 
     function handleMove(moveEvent) {
@@ -83,7 +75,9 @@ export default function App() {
     document.addEventListener('mouseup', handleUp)
   }
 
-  const showTerminal = isTerminalOpen && source === 'cloud' && Boolean(projectId)
+  // The terminal is always available: with no project imported it runs in a
+  // server-side "scratch" workspace (see TerminalPanel).
+  const showTerminal = isTerminalOpen
 
   return (
     <div className="app">

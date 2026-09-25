@@ -3,14 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { addTab, toggleFolder } from '../../features/fileSystemSlice'
 
-// Vertical guide lines that reproduce VS Code's indentation guides.
 function IndentGuides({ depth }) {
-  return Array.from({ length: depth }, (_, level) => (
-    <span key={level} className="indent-guide" />
-  ))
+  return Array.from({ length: depth }, (_, level) => <span key={level} className="indent-guide" />)
 }
 
-// Inline input rendered inside the target folder while a node is being created.
 function NewNodeInput({ depth, type, onSubmit, onCancel }) {
   const [value, setValue] = useState('')
   const settled = useRef(false)
@@ -72,13 +68,11 @@ function TreeNode({
   const isFolder = node.type === 'folder'
   const isSelected = selectedId === node.id
   const isRevealed = revealedId === node.id
-  // The workspace root cannot be renamed or deleted.
   const isLocked = lockedId !== null && node.id === lockedId
 
   function handleRowClick(event) {
     event.stopPropagation()
     onSelect(node.id)
-    // Folders expand/collapse; files become the active tab.
     if (isFolder) dispatch(toggleFolder(node.id))
     else dispatch(addTab(node.id))
   }
@@ -112,7 +106,6 @@ function TreeNode({
 
   return (
     <div className="tree-node">
-      {/* Revealed rows get a nonce-based key so the flash animation replays. */}
       <div
         key={isRevealed ? `reveal-${revealNonce}` : undefined}
         data-node-id={node.id}
@@ -150,6 +143,7 @@ function TreeNode({
             className="tree-input"
             value={draftName}
             spellCheck={false}
+            placeholder={isFolder ? 'Folder name…' : 'File name…'}
             onClick={(event) => event.stopPropagation()}
             onChange={(event) => setDraftName(event.target.value)}
             onKeyDown={(event) => {
@@ -233,7 +227,6 @@ export default function FileTree({
   const revealedNode = useSelector((state) => state.ui.revealedNode)
   const rootRef = useRef(null)
 
-  // Scroll the revealed row into view whenever search/quick-open jumps to a node.
   useEffect(() => {
     if (!revealedNode?.id) return
     const container = rootRef.current
@@ -244,7 +237,6 @@ export default function FileTree({
 
   return (
     <div className="file-tree" ref={rootRef}>
-      {/* No workspace root yet (demo mode): new nodes are appended at the top level. */}
       {creating && creating.parentId === null && (
         <NewNodeInput
           depth={0}

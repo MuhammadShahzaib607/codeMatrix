@@ -44,17 +44,11 @@
   color: #ffffff;
 }
 
+/* App logo, centred above the title. */
 .auth-logo {
-  display: inline-flex;
-  align-items: center;
+  display: flex;
   justify-content: center;
-  width: 42px;
-  height: 42px;
   margin-bottom: 14px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--accent-soft);
-  color: var(--accent);
 }
 
 .auth-title {

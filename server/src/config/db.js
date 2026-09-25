@@ -1,8 +1,6 @@
 import mongoose from 'mongoose'
 import { env } from './env.js'
 
-// Metadata-only database. Project FILES are never stored here — they live on
-// disk under server/workspaces (which is ephemeral on the free tier).
 let connected = false
 
 export async function connectDatabase() {

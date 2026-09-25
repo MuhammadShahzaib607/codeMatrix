@@ -42,6 +42,14 @@
   opacity: 1;
 }
 
+.sidebar-header-actions.is-disabled {
+  opacity: 0.35;
+}
+
+.sidebar-header:hover .sidebar-header-actions.is-disabled {
+  opacity: 0.35;
+}
+
 .icon-btn-sm {
   display: inline-flex;
   align-items: center;
@@ -60,6 +68,16 @@
 .icon-btn-sm:hover {
   background: rgba(255, 255, 255, 0.1);
   color: #ffffff;
+}
+
+.icon-btn-sm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.icon-btn-sm:disabled:hover {
+  background: transparent;
+  color: var(--text-dim);
 }
 
 /* ---------- Workspace notices ---------- */

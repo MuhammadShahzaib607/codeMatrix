@@ -1,13 +1,9 @@
 import { io } from 'socket.io-client'
 import { API_BASE_URL } from './api'
 
-/**
- * One socket connection is created lazily and shared by every terminal tab.
- * Reconnecting per terminal would spawn duplicate sessions and waste sockets.
- */
-export const SOCKET_URL = (
-  import.meta.env.VITE_SOCKET_URL ?? import.meta.env.VITE_API_URL ?? API_BASE_URL
-).replace(/\/+$/, '')
+// The Socket.IO server shares the API server's origin, so it uses the same
+// single source of truth (VITE_API_BASE_URL via services/api.js).
+export const SOCKET_URL = API_BASE_URL
 
 let socket = null
 

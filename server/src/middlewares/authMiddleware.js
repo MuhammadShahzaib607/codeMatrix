@@ -2,11 +2,6 @@ import jwt from 'jsonwebtoken'
 import { env } from '../config/env.js'
 import ApiError from '../utils/ApiError.js'
 
-/**
- * Verifies the `Authorization: Bearer <token>` header and attaches the decoded
- * user id to `req.user` ({ id }). Any missing/invalid token is a clear 401 so the
- * client can send the user back to the sign-in modal.
- */
 export default function protect(req, res, next) {
   const header = req.get('authorization') || ''
   const [scheme, token] = header.split(' ')

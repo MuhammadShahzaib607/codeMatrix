@@ -13,10 +13,8 @@ import {
   writeFileToWorkspace,
 } from '../utils/workspaceManager.js'
 
-// Refuses absurd imports that would fill the (ephemeral) disk or time out.
 const MAX_IMPORT_FILES = 5000
 
-/** Accepts either a bare array or `{ name, files: [...] }`. */
 function normalizeImportBody(body) {
   if (Array.isArray(body)) return { files: body, name: undefined }
   const source = body ?? {}
@@ -38,10 +36,6 @@ function requirePath(value, label = 'path') {
   return value.trim()
 }
 
-/* ------------------------------------------------------------------ *
- * POST /api/workspace/:projectId/import
- * ------------------------------------------------------------------ */
-
 export const importProject = asyncHandler(async (req, res) => {
   const { projectId } = req.params
   const { files, name } = normalizeImportBody(req.body)
@@ -61,7 +55,6 @@ export const importProject = asyncHandler(async (req, res) => {
     )
   }
 
-  // The workspace is created here, before any file is written.
   const diskPath = createWorkspaceFolder(projectId)
 
   const failed = []
@@ -87,7 +80,6 @@ export const importProject = asyncHandler(async (req, res) => {
   }
 
   const projectName = name?.trim() || projectId
-  // Ownership always comes from the verified JWT, never from the request body.
   const project = await upsertProject({
     projectId,
     name: projectName,
@@ -107,10 +99,6 @@ export const importProject = asyncHandler(async (req, res) => {
   })
 })
 
-/* ------------------------------------------------------------------ *
- * GET /api/workspace/:projectId/tree
- * ------------------------------------------------------------------ */
-
 export const getTree = asyncHandler(async (req, res) => {
   const { projectId } = req.params
   const project = await findProject(projectId)
@@ -125,10 +113,6 @@ export const getTree = asyncHandler(async (req, res) => {
   })
 })
 
-/* ------------------------------------------------------------------ *
- * GET /api/workspace/:projectId/file?path=...
- * ------------------------------------------------------------------ */
-
 export const getFile = asyncHandler(async (req, res) => {
   const { projectId } = req.params
   const filePath = requirePath(req.query.path)
@@ -138,10 +122,6 @@ export const getFile = asyncHandler(async (req, res) => {
 
   res.json({ path: filePath, content })
 })
-
-/* ------------------------------------------------------------------ *
- * PUT /api/workspace/:projectId/file   { path, content }
- * ------------------------------------------------------------------ */
 
 export const saveFile = asyncHandler(async (req, res) => {
   const { projectId } = req.params
@@ -153,10 +133,6 @@ export const saveFile = asyncHandler(async (req, res) => {
 
   res.json({ path: savedPath, saved: true, bytes: Buffer.byteLength(content, 'utf8') })
 })
-
-/* ------------------------------------------------------------------ *
- * POST /api/workspace/:projectId/create   { path, type }
- * ------------------------------------------------------------------ */
 
 export const createEntry = asyncHandler(async (req, res) => {
   const { projectId } = req.params
@@ -177,10 +153,6 @@ export const createEntry = asyncHandler(async (req, res) => {
   res.status(201).json({ path: targetPath, type })
 })
 
-/* ------------------------------------------------------------------ *
- * DELETE /api/workspace/:projectId/delete   { path }
- * ------------------------------------------------------------------ */
-
 export const deleteEntry = asyncHandler(async (req, res) => {
   const { projectId } = req.params
   const targetPath = requirePath(req.body?.path)
@@ -190,10 +162,6 @@ export const deleteEntry = asyncHandler(async (req, res) => {
 
   res.json({ path: deleted, deleted: true })
 })
-
-/* ------------------------------------------------------------------ *
- * PATCH /api/workspace/:projectId/rename   { oldPath, newPath }
- * ------------------------------------------------------------------ */
 
 export const renameEntry = asyncHandler(async (req, res) => {
   const { projectId } = req.params
@@ -205,10 +173,6 @@ export const renameEntry = asyncHandler(async (req, res) => {
 
   res.json({ ...result, renamed: true })
 })
-
-/* ------------------------------------------------------------------ *
- * GET /api/workspace/:projectId/export
- * ------------------------------------------------------------------ */
 
 function sanitizeFileName(name) {
   return (
@@ -235,14 +199,11 @@ export const exportWorkspace = asyncHandler(async (req, res, next) => {
   })
 
   archive.on('error', (error) => {
-    // Headers are usually already sent by the time a zlib error surfaces, so we
-    // can only tear the response down.
     if (!res.headersSent) next(error)
     else res.destroy(error)
   })
 
   archive.pipe(res)
-  // `false` keeps the archive relative to the workspace root (no extra top folder).
   archive.directory(workspacePath, false)
   await archive.finalize()
 })

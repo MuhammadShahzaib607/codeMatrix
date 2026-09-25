@@ -1,25 +1,26 @@
-import { FileCode2, FolderOpen, FolderTree, Sparkles } from 'lucide-react'
+import { FileCode2, FolderInput, FolderTree } from 'lucide-react'
 import { useSelector } from 'react-redux'
-import { UNSUPPORTED_MESSAGE } from '../../utils/messages'
 import { isFileSystemAccessSupported } from '../../services/fileSystemAccess'
+import { UNSUPPORTED_MESSAGE } from '../../utils/messages'
+import Logo from '../Logo/Logo'
 import './Editor.css'
 
 const SHORTCUTS = [
   { keys: 'Ctrl + B', label: 'Toggle the file explorer' },
+  { keys: 'Ctrl + P', label: 'Quick open a file' },
   { keys: 'Ctrl + S', label: 'Save the active file' },
-  { keys: 'Ctrl + J', label: 'Toggle the AI assistant' },
 ]
 
 export default function EmptyState() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
-  const isCloud = workspace.source === 'cloud'
+  const hasProject = workspace.source === 'cloud'
   const isSupported = isFileSystemAccessSupported()
 
   return (
     <div className="empty-state">
       <div className="empty-state-card">
         <div className="empty-state-logo">
-          <Sparkles size={34} />
+          <Logo size={68} />
         </div>
         <h2 className="empty-state-title">No file selected</h2>
         <p className="empty-state-subtitle">
@@ -32,17 +33,17 @@ export default function EmptyState() {
 
         {!isSupported && (
           <div className="empty-state-banner is-warning">
-            <FolderOpen size={15} />
+            <FolderInput size={15} />
             <span>{UNSUPPORTED_MESSAGE}</span>
           </div>
         )}
 
-        {isSupported && !isCloud && (
+        {isSupported && !hasProject && (
           <div className="empty-state-banner">
-            <FolderOpen size={15} />
+            <FolderInput size={15} />
             <span>
-              No project imported. Click <strong>Open Folder</strong> in the top bar to import a
-              folder from your laptop — the explorer is showing demo files for now.
+              No project imported. Click <strong>Import Folder</strong> in the top bar to import a
+              folder from your device.
             </span>
           </div>
         )}
@@ -59,9 +60,7 @@ export default function EmptyState() {
         <div className="empty-state-footer">
           <FolderTree size={14} />
           <span>
-            {isCloud
-              ? `Cloud workspace: ${workspace.name}`
-              : 'Demo workspace — import a folder to start editing real files'}
+            {hasProject ? `Cloud workspace: ${workspace.name}` : 'No project imported yet'}
           </span>
         </div>
       </div>

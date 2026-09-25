@@ -1,5 +1,3 @@
-// Shared user-facing strings, kept in one place so the wording stays consistent.
-
 export const UNSUPPORTED_MESSAGE =
   "Your browser doesn't support local folder access. Please use Chrome, Edge, or Brave."
 

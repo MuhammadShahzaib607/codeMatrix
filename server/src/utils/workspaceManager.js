@@ -4,37 +4,21 @@ import { fileURLToPath } from 'node:url'
 import { env } from '../config/env.js'
 import ApiError from './ApiError.js'
 
-/**
- * Owns everything that touches the on-disk project storage.
- *
- * Layout: <workspaces root>/<projectId>/...
- * The workspaces root defaults to server/workspaces and can be overridden with
- * the WORKSPACES_ROOT env var.
- *
- * IMPORTANT: on Replit's free Autoscale tier this directory is EPHEMERAL. It is
- * wiped whenever the server restarts or wakes from sleep, which is why every
- * read/write here checks that the workspace still exists and throws a clear 404
- * (code WORKSPACE_MISSING) when it does not.
- *
- * All functions are synchronous on purpose: they are only used by the
- * workspace controller, and sync fs calls keep the folder-walk simple.
- */
-
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-/** <server>/ */
 export const SERVER_ROOT = path.resolve(here, '..', '..')
 
-/** <server>/workspaces (or WORKSPACES_ROOT when set). */
 export const WORKSPACES_ROOT = env.workspacesRoot
   ? path.resolve(env.workspacesRoot)
   : path.join(SERVER_ROOT, 'workspaces')
 
-// projectIds are used as directory names, so they must not contain separators
-// or traversal sequences. UUIDs and simple slugs both pass.
 const PROJECT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 
-// Walking these would be slow and would leak dependency trees into the editor.
+// Scratch workspaces ("scratch-<userId>") are throwaway folders used as the
+// cwd for terminals opened without an imported project. They are created
+// on demand and never registered in MongoDB.
+const SCRATCH_ID_PATTERN = /^scratch-[A-Za-z0-9_-]{1,100}$/
+
 const SKIP_DIRECTORIES = new Set(['node_modules', '.git'])
 
 export const WORKSPACE_MISSING_MESSAGE =
@@ -43,6 +27,19 @@ export const WORKSPACE_MISSING_MESSAGE =
 
 export function isValidProjectId(projectId) {
   return typeof projectId === 'string' && PROJECT_ID_PATTERN.test(projectId)
+}
+
+export function isScratchProjectId(projectId) {
+  return typeof projectId === 'string' && SCRATCH_ID_PATTERN.test(projectId)
+}
+
+export function ensureScratchWorkspace(projectId) {
+  if (!isScratchProjectId(projectId)) {
+    throw new ApiError(400, 'Not a scratch workspace id.', 'INVALID_PROJECT_ID')
+  }
+  const directory = path.join(WORKSPACES_ROOT, projectId)
+  fs.mkdirSync(directory, { recursive: true })
+  return directory
 }
 
 export function assertValidProjectId(projectId) {
@@ -55,10 +52,6 @@ export function assertValidProjectId(projectId) {
   }
 }
 
-/**
- * Resolves a path inside a workspace and refuses anything that would escape it.
- * Returns the absolute path and the normalised (POSIX) relative path.
- */
 function resolveInsideWorkspace(projectId, relativePath = '') {
   const root = getWorkspacePath(projectId)
   const cleaned = String(relativePath ?? '')
@@ -74,11 +67,6 @@ function resolveInsideWorkspace(projectId, relativePath = '') {
   return { root, absolute, relative: relative.split(path.sep).join('/') }
 }
 
-/* ------------------------------------------------------------------ *
- * Folder lifecycle
- * ------------------------------------------------------------------ */
-
-/** Resolved absolute path for a workspace, e.g. <server>/workspaces/<projectId>. */
 export function getWorkspacePath(projectId) {
   assertValidProjectId(projectId)
   return path.join(WORKSPACES_ROOT, projectId)
@@ -100,7 +88,6 @@ export function assertWorkspaceExists(projectId) {
   }
 }
 
-/** Creates the workspace folder (and the workspaces root) if needed. */
 export function createWorkspaceFolder(projectId) {
   assertValidProjectId(projectId)
   const directory = getWorkspacePath(projectId)
@@ -108,7 +95,6 @@ export function createWorkspaceFolder(projectId) {
   return directory
 }
 
-/** Removes a workspace folder recursively. Returns false when it was already gone. */
 export function deleteWorkspaceFolder(projectId) {
   assertValidProjectId(projectId)
   const directory = getWorkspacePath(projectId)
@@ -117,14 +103,6 @@ export function deleteWorkspaceFolder(projectId) {
   return true
 }
 
-/* ------------------------------------------------------------------ *
- * File operations
- * ------------------------------------------------------------------ */
-
-/**
- * Writes a file, creating any nested folders on the way. Returns the normalised
- * relative path that was written.
- */
 export function writeFileToWorkspace(projectId, relativeFilePath, content = '') {
   assertWorkspaceExists(projectId)
   const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFilePath)
@@ -135,7 +113,6 @@ export function writeFileToWorkspace(projectId, relativeFilePath, content = '') 
   return relative
 }
 
-/** Reads a file as a UTF-8 string. */
 export function readFileFromWorkspace(projectId, relativeFilePath) {
   assertWorkspaceExists(projectId)
   const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFilePath)
@@ -151,7 +128,6 @@ export function readFileFromWorkspace(projectId, relativeFilePath) {
   return fs.readFileSync(absolute, 'utf8')
 }
 
-/** Creates an empty folder (and its parents) inside the workspace. */
 export function createFolderInWorkspace(projectId, relativeFolderPath) {
   assertWorkspaceExists(projectId)
   const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFolderPath)
@@ -163,7 +139,6 @@ export function createFolderInWorkspace(projectId, relativeFolderPath) {
   return relative
 }
 
-/** Deletes a file, or a folder recursively. */
 export function deleteFromWorkspace(projectId, relativeFilePath) {
   assertWorkspaceExists(projectId)
   const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFilePath)
@@ -181,7 +156,6 @@ export function deleteFromWorkspace(projectId, relativeFilePath) {
   return relative
 }
 
-/** Renames (or moves) a file/folder inside the workspace. */
 export function renamePathInWorkspace(projectId, oldRelativePath, newRelativePath) {
   assertWorkspaceExists(projectId)
   const from = resolveInsideWorkspace(projectId, oldRelativePath)
@@ -202,10 +176,6 @@ export function renamePathInWorkspace(projectId, oldRelativePath, newRelativePat
   return { oldPath: from.relative, newPath: to.relative }
 }
 
-/* ------------------------------------------------------------------ *
- * Tree
- * ------------------------------------------------------------------ */
-
 function sortChildren(children) {
   children.sort((a, b) => {
     if (a.type !== b.type) return a.type === 'folder' ? -1 : 1
@@ -220,8 +190,6 @@ function walkDirectory(directory, rootName, relativePath) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name
 
-    // Symlinks are skipped: isDirectory()/isFile() are false for them, and
-    // following them could escape the workspace.
     if (entry.isDirectory()) {
       if (SKIP_DIRECTORIES.has(entry.name)) continue
       children.push(walkDirectory(path.join(directory, entry.name), rootName, childRelative))
@@ -238,12 +206,6 @@ function walkDirectory(directory, rootName, relativePath) {
   }
 }
 
-/**
- * Returns the nested tree:
- *   { name, type: 'file' | 'folder', path, children? }
- * `path` is relative to the workspace root; the root itself has path ''.
- * Pass `{ name }` to label the root node (the controller uses the project name).
- */
 export function getWorkspaceTree(projectId, options = {}) {
   assertWorkspaceExists(projectId)
   const root = getWorkspacePath(projectId)
@@ -251,9 +213,6 @@ export function getWorkspaceTree(projectId, options = {}) {
   return walkDirectory(root, rootName, '')
 }
 
-/**
- * Flattens a tree into file entries, used by the export/sync helpers and tests.
- */
 export function flattenTree(node, files = []) {
   if (!node) return files
   if (node.type === 'file') {

@@ -4,10 +4,6 @@ import { showToast } from '../features/uiSlice'
 import { saveWorkspaceFile } from '../features/workspaceThunks'
 import { findNode } from '../utils/tree'
 
-/**
- * Writes the active editor buffer back to the server workspace.
- * Shared by the Topbar save button and the Ctrl/Cmd+S shortcut.
- */
 export default function useSaveActiveFile() {
   const dispatch = useDispatch()
   const activeFileId = useSelector((state) => state.fileSystem.activeFileId)
@@ -28,12 +24,7 @@ export default function useSaveActiveFile() {
     const fileName = findNode(tree, activeFileId)?.name ?? 'file'
 
     if (workspace.source !== 'cloud' || !workspace.projectId) {
-      dispatch(
-        showToast({
-          message: 'This is the demo workspace — import a folder to save real files.',
-          type: 'info',
-        }),
-      )
+      dispatch(showToast({ message: 'Import a project to save files.', type: 'info' }))
       return
     }
 

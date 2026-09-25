@@ -1,11 +1,6 @@
 import { isDatabaseConnected } from '../config/db.js'
 import Project from './Project.model.js'
 
-/**
- * Metadata helpers. Every one of them degrades to a no-op when MongoDB is not
- * configured, so a database outage never breaks file operations.
- */
-
 export async function upsertProject({ projectId, name, owner, diskPath }) {
   if (!isDatabaseConnected()) return null
   try {
@@ -27,6 +22,23 @@ export async function upsertProject({ projectId, name, owner, diskPath }) {
   }
 }
 
+export async function createProject({ projectId, name, owner, diskPath }) {
+  if (!isDatabaseConnected()) return null
+  try {
+    const project = await Project.create({
+      projectId,
+      name: name || 'Untitled Project',
+      owner,
+      diskPath,
+      lastAccessedAt: new Date(),
+    })
+    return project.toObject()
+  } catch (error) {
+    console.warn(`[project] could not create ${projectId}: ${error.message}`)
+    return null
+  }
+}
+
 export async function findProject(projectId) {
   if (!isDatabaseConnected()) return null
   try {
@@ -34,6 +46,16 @@ export async function findProject(projectId) {
   } catch (error) {
     console.warn(`[project] could not load ${projectId}: ${error.message}`)
     return null
+  }
+}
+
+export async function listProjectsByOwner(owner) {
+  if (!isDatabaseConnected()) return []
+  try {
+    return await Project.find({ owner }).sort({ lastAccessedAt: -1 }).lean()
+  } catch (error) {
+    console.warn(`[project] could not list projects: ${error.message}`)
+    return []
   }
 }
 

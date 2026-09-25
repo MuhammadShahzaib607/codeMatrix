@@ -56,6 +56,22 @@ button {
   animation: spin 0.9s linear infinite;
 }
 
+/* Logo fallback badge shown when /logo.png fails to load (see Logo.jsx). */
+.logo-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: 22%;
+  background: linear-gradient(135deg, var(--accent) 0%, #6366f1 100%);
+  color: #ffffff;
+  font-size: 0.42em;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  user-select: none;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

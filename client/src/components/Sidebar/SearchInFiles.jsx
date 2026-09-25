@@ -8,11 +8,9 @@ import { collectAncestorFolderIds, flattenTreeNodes } from '../../utils/tree'
 import './SearchInFiles.css'
 
 const DEBOUNCE_MS = 300
-// Guards against freezing the tab on a huge project.
 const MAX_FILES_TO_SEARCH = 400
 const MAX_LINES_PER_FILE = 50
 
-/** Renders `text` with the first occurrence of `query` wrapped in a <mark>. */
 function HighlightedText({ text, query }) {
   const index = text.toLowerCase().indexOf(query.toLowerCase())
   if (index === -1) return text
@@ -32,7 +30,6 @@ export default function SearchInFiles() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const contentByFileId = useSelector((state) => state.editor.contentByFileId)
 
-  // Read through a ref so typing in the editor does not re-run the search.
   const contentRef = useRef(contentByFileId)
   useEffect(() => {
     contentRef.current = contentByFileId
@@ -45,15 +42,12 @@ export default function SearchInFiles() {
   const [isSearching, setIsSearching] = useState(false)
   const [collapsed, setCollapsed] = useState({})
 
-  // Debounce the input so a big project is not re-walked on every keystroke.
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(query.trim()), DEBOUNCE_MS)
     return () => clearTimeout(timer)
   }, [query])
 
   useEffect(() => {
-    // The empty case is handled by the input handlers, not here, so this effect
-    // never sets state just because the query was cleared.
     if (!debounced) return undefined
 
     let cancelled = false
@@ -64,14 +58,12 @@ export default function SearchInFiles() {
       const nodes = flattenTreeNodes(tree)
       const found = new Map()
 
-      // (a) name matches — files and folders.
       for (const node of nodes) {
         if (node.name.toLowerCase().includes(needle)) {
           found.set(node.id, { ...node, lines: [], nameMatch: true })
         }
       }
 
-      // (b) content matches — files only.
       const files = nodes.filter((node) => node.type === 'file').slice(0, MAX_FILES_TO_SEARCH)
       for (const file of files) {
         if (cancelled) return
@@ -137,7 +129,6 @@ export default function SearchInFiles() {
   }
 
   function revealNode(id) {
-    // Search mode shares the sidebar slot, so switch back to the tree first.
     dispatch(setActiveSidebarView('explorer'))
     for (const ancestorId of collectAncestorFolderIds(tree, id) ?? []) {
       dispatch(setFolderOpen({ id: ancestorId, isOpen: true }))
@@ -167,7 +158,7 @@ export default function SearchInFiles() {
           ref={inputRef}
           className="sif-input"
           value={query}
-          placeholder="Search"
+          placeholder="Search across all files..."
           spellCheck={false}
           autoComplete="off"
           onChange={(event) => handleQueryChange(event.target.value)}
@@ -195,9 +186,7 @@ export default function SearchInFiles() {
       </div>
 
       <div className="sif-body">
-        {!debounced && (
-          <div className="sif-state">Search across all files in your project</div>
-        )}
+        {!debounced && <div className="sif-state">Search across all files in your project</div>}
 
         {debounced && isSearching && (
           <div className="sif-state">

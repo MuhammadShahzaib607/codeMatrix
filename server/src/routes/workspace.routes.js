@@ -7,10 +7,6 @@ import validateProjectId from '../middlewares/validateProjectId.js'
 
 const router = Router()
 
-// Every workspace route requires a signed-in user. The projectId is validated
-// next (it becomes a directory name), then ownership is checked, then the disk
-// folder is confirmed to still exist. `import` is the only route allowed to run
-// before the folder exists, so it skips ensureWorkspace.
 router.use(protect)
 router.use('/:projectId', validateProjectId, authorizeProject)
 

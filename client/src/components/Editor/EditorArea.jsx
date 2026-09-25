@@ -15,20 +15,17 @@ export default function EditorArea() {
   const { tree, activeFileId, workspace } = useSelector((state) => state.fileSystem)
   const contentByFileId = useSelector((state) => state.editor.contentByFileId)
   const revealLine = useSelector((state) => state.ui.revealLine)
-  // Kept per file id so switching tabs does not need a state reset in an effect.
-  const [failure, setFailure] = useState(null) // { fileId, message }
+  const [failure, setFailure] = useState(null)
 
-  // Monaco instance + the latest reveal request, so search results can jump to a
-  // line no matter whether the editor mounted before or after the request.
   const editorRef = useRef(null)
   const monacoRef = useRef(null)
   const revealRef = useRef(revealLine)
   const activeFileIdRef = useRef(activeFileId)
 
-  // Mirror the latest values into refs without writing during render.
   useEffect(() => {
     revealRef.current = revealLine
   }, [revealLine])
+
   useEffect(() => {
     activeFileIdRef.current = activeFileId
   }, [activeFileId])
@@ -50,34 +47,25 @@ export default function EditorArea() {
       options: { isWholeLine: true, className: 'editor-line-highlight' },
     }
 
-    // `createDecorationsCollection` is the modern API; older Monaco builds only
-    // expose `deltaDecorations`.
     if (typeof editor.createDecorationsCollection === 'function') {
       const collection = editor.createDecorationsCollection([decoration])
       window.setTimeout(() => {
         try {
           collection.clear()
-        } catch {
-          // The editor was disposed before the highlight expired.
-        }
+        } catch {}
       }, 2000)
       return
     }
 
     const decorationIds = editor.deltaDecorations([], [decoration])
-    // The line flash is temporary, like VS Code's search highlight.
     window.setTimeout(() => {
       try {
         editor.deltaDecorations(decorationIds, [])
-      } catch {
-        // The editor was disposed before the highlight expired.
-      }
+      } catch {}
     }, 2000)
   }, [])
 
   const activeNode = activeFileId ? findNode(tree, activeFileId) : null
-  // A file already present in the buffer map has been loaded (from the server or
-  // from the demo tree) and does not need reading again.
   const isLoaded = activeFileId ? Object.hasOwn(contentByFileId, activeFileId) : false
   const content = isLoaded ? contentByFileId[activeFileId] : ''
   const loadError = failure?.fileId === activeFileId ? failure.message : null
@@ -85,7 +73,6 @@ export default function EditorArea() {
   useEffect(() => {
     if (!activeNode || activeNode.type !== 'file' || isLoaded) return undefined
 
-    // Demo tree: there is nothing to fetch, seed an empty buffer.
     if (workspace.source !== 'cloud' || !workspace.projectId) {
       dispatch(setContent({ fileId: activeNode.id, content: '' }))
       return undefined
@@ -114,7 +101,6 @@ export default function EditorArea() {
     }
   }, [activeNode, isLoaded, workspace, dispatch])
 
-  // Covers the case where the editor is already mounted when a reveal arrives.
   useEffect(() => {
     applyReveal()
   }, [applyReveal, revealLine, activeFileId, isLoaded])
@@ -146,8 +132,6 @@ export default function EditorArea() {
 
         {activeNode && !loadError && isLoaded && (
           <Editor
-            // `path` gives every file its own model, so undo history and the
-            // scroll position survive tab switches.
             path={activeNode.id}
             keepCurrentModel
             value={content}

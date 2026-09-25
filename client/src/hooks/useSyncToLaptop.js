@@ -5,12 +5,6 @@ import { workspaceApi } from '../services/api'
 import { getRootHandle, writeFilesToDirectory } from '../services/fileSystemAccess'
 import { collectFilePaths } from '../utils/cloudTree'
 
-/**
- * Pulls the whole workspace down from the server and writes it back into the
- * folder the user originally imported, overwriting files and creating new ones.
- * Only possible while the picker's folder handle is still in memory — it is lost
- * on a page reload (the File System Access API drops it intentionally).
- */
 export default function useSyncToLaptop() {
   const dispatch = useDispatch()
   const workspace = useSelector((state) => state.fileSystem.workspace)
@@ -18,7 +12,7 @@ export default function useSyncToLaptop() {
 
   const syncToLaptop = useCallback(async () => {
     if (workspace.source !== 'cloud' || !workspace.projectId) {
-      dispatch(showToast({ message: 'Import a folder before syncing.', type: 'info' }))
+      dispatch(showToast({ message: 'Import a project before syncing.', type: 'info' }))
       return
     }
 

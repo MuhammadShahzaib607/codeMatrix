@@ -4,7 +4,6 @@ import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef } from 'react'
 import { getSocket } from '../../services/socket'
 
-// Matches the editor's dark theme (#1e1e1e) per the design.
 const THEME = {
   background: '#1e1e1e',
   foreground: '#cccccc',
@@ -15,14 +14,8 @@ const THEME = {
   brightBlack: '#767676',
 }
 
-const FONT_FAMILY =
-  "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace"
+const FONT_FAMILY = "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace"
 
-/**
- * One real terminal: an xterm.js instance wired to a single server-side pty.
- * The instance stays mounted while the tab exists (even when hidden), so its
- * shell process is never torn down just because the user switched tabs.
- */
 export default function TerminalView({ terminalId, projectId, isActive }) {
   const containerRef = useRef(null)
   const termRef = useRef(null)
@@ -57,8 +50,7 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
     }
     const handleExit = (payload) => {
       if (payload?.terminalId !== terminalId) return
-      const detail =
-        payload.exitCode === undefined ? '' : ` with code ${payload.exitCode}`
+      const detail = payload.exitCode === undefined ? '' : ` with code ${payload.exitCode}`
       term.write(`\r\n\x1b[90m[process exited${detail}]\x1b[0m\r\n`)
     }
     const handleError = (payload) => {
@@ -76,15 +68,10 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
       socket.emit('terminal:input', { terminalId, data })
     })
 
-    // Fit + create on the next frame so the container has a real size. The rAF
-    // is cancelled on unmount, so React StrictMode's mount/unmount/remount cycle
-    // cannot spawn a stray pty.
     const raf = requestAnimationFrame(() => {
       try {
         fitAddon.fit()
-      } catch {
-        // Container not laid out yet — the ResizeObserver below will retry.
-      }
+      } catch {}
       socket.emit('terminal:create', {
         terminalId,
         projectId,
@@ -95,7 +82,6 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
       term.focus()
     })
 
-    // Keep the pty size in step with the panel/window.
     const observer = new ResizeObserver(() => {
       if (container.clientWidth < 20 || container.clientHeight < 20) return
       try {
@@ -103,14 +89,19 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
         if (created) {
           socket.emit('terminal:resize', { terminalId, cols: term.cols, rows: term.rows })
         }
-      } catch {
-        // Ignore transient sizing failures while the panel animates.
-      }
+      } catch {}
     })
     observer.observe(container)
 
     termRef.current = term
     fitRef.current = fitAddon
+
+    // Debug/automation hook: exposes live xterm instances so the console (or
+    // an automated browser test) can read the scrollback buffer.
+    if (typeof window !== 'undefined') {
+      window.__TERMINAL_VIEWS__ = window.__TERMINAL_VIEWS__ ?? new Map()
+      window.__TERMINAL_VIEWS__.set(terminalId, term)
+    }
 
     return () => {
       cancelAnimationFrame(raf)
@@ -120,15 +111,14 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
       socket.off('terminal:ready', handleReady)
       socket.off('terminal:exit', handleExit)
       socket.off('terminal:error', handleError)
-      // Only close a pty we actually told the server to create.
       if (created) socket.emit('terminal:close', { terminalId })
+      window.__TERMINAL_VIEWS__?.delete(terminalId)
       term.dispose()
       termRef.current = null
       fitRef.current = null
     }
   }, [terminalId, projectId])
 
-  // Re-fit and focus whenever this tab becomes active.
   useEffect(() => {
     if (!isActive) return undefined
     const raf = requestAnimationFrame(() => {
@@ -137,9 +127,7 @@ export default function TerminalView({ terminalId, projectId, isActive }) {
       if (!fit || !term) return
       try {
         fit.fit()
-      } catch {
-        // Ignore.
-      }
+      } catch {}
       getSocket().emit('terminal:resize', { terminalId, cols: term.cols, rows: term.rows })
       term.focus()
     })

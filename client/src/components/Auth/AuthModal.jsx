@@ -1,8 +1,9 @@
-import { Loader2, Lock, X } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { clearAuthError, loginUser, registerUser } from '../../features/authSlice'
 import { closeAuthModal, setAuthModalMode, showToast } from '../../features/uiSlice'
+import Logo from '../Logo/Logo'
 import './AuthModal.css'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -32,7 +33,7 @@ export default function AuthModal() {
         </button>
 
         <div className="auth-logo">
-          <Lock size={20} />
+          <Logo size={52} />
         </div>
 
         <h2 className="auth-title">{isSignUp ? 'Create your account' : 'Welcome back'}</h2>
@@ -65,7 +66,6 @@ export default function AuthModal() {
           </button>
         </div>
 
-        {/* key remounts the form on tab change, so its fields reset naturally. */}
         <AuthForm key={mode} mode={mode} />
 
         <p className="auth-switch">
@@ -91,7 +91,6 @@ function AuthForm({ mode }) {
   const [form, setForm] = useState(EMPTY_FORM)
   const [fieldErrors, setFieldErrors] = useState({})
 
-  // Clear any error left over from a previous attempt when the form (re)mounts.
   useEffect(() => {
     dispatch(clearAuthError())
   }, [dispatch])
@@ -133,7 +132,7 @@ function AuthForm({ mode }) {
       }
       dispatch(closeAuthModal())
     } catch {
-      // The message is rendered from auth.error below.
+      return
     }
   }
 
@@ -142,6 +141,7 @@ function AuthForm({ mode }) {
       {isSignUp && (
         <Field
           label="Name"
+          placeholder="Enter your full name"
           value={form.name}
           error={fieldErrors.name}
           autoComplete="name"
@@ -152,6 +152,7 @@ function AuthForm({ mode }) {
       <Field
         label="Email"
         type="email"
+        placeholder="you@example.com"
         value={form.email}
         error={fieldErrors.email}
         autoComplete="email"
@@ -161,6 +162,7 @@ function AuthForm({ mode }) {
       <Field
         label="Password"
         type="password"
+        placeholder="Enter a strong password"
         value={form.password}
         error={fieldErrors.password}
         autoComplete={isSignUp ? 'new-password' : 'current-password'}
@@ -171,6 +173,7 @@ function AuthForm({ mode }) {
         <Field
           label="Confirm password"
           type="password"
+          placeholder="Re-enter your password"
           value={form.confirm}
           error={fieldErrors.confirm}
           autoComplete="new-password"
@@ -188,13 +191,14 @@ function AuthForm({ mode }) {
   )
 }
 
-function Field({ label, value, onChange, error, type = 'text', autoComplete }) {
+function Field({ label, placeholder, value, onChange, error, type = 'text', autoComplete }) {
   return (
     <label className="auth-field">
       <span className="auth-field-label">{label}</span>
       <input
         className={`auth-input ${error ? 'is-invalid' : ''}`}
         type={type}
+        placeholder={placeholder}
         value={value}
         autoComplete={autoComplete}
         spellCheck={false}

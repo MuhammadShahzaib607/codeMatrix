@@ -7,35 +7,35 @@ import {
   resizeTerminal,
   writeToTerminal,
 } from '../utils/terminalManager.js'
-import { isValidProjectId } from '../utils/workspaceManager.js'
+import {
+  ensureScratchWorkspace,
+  isScratchProjectId,
+  isValidProjectId,
+} from '../utils/workspaceManager.js'
 
-/**
- * Registers every terminal-related Socket.IO event for each connected client.
- *
- * Events (client -> server):
- *   terminal:create  { terminalId, projectId }
- *   terminal:input   { terminalId, data }
- *   terminal:resize  { terminalId, cols, rows }
- *   terminal:close   { terminalId }
- *
- * Events (server -> client):
- *   terminal:ready   { terminalId, cwd, shell, pid }
- *   terminal:output  { terminalId, data }
- *   terminal:exit    { terminalId, exitCode, signal }
- *   terminal:error   { terminalId, message }
- */
 export default function registerTerminalSocket(io) {
   io.on('connection', (socket) => {
     socket.on('terminal:create', (payload, acknowledge) => {
       const { terminalId, projectId, cols, rows } = payload ?? {}
       try {
         if (!terminalId) throw new Error('terminalId is required.')
-        if (!isValidProjectId(projectId)) throw new Error('A valid projectId is required.')
         if (!isTerminalAvailable()) {
-          throw new Error(getTerminalUnavailableReason() || 'Terminal is unavailable on this server.')
+          throw new Error(
+            getTerminalUnavailableReason() || 'Terminal is unavailable on this server.',
+          )
         }
 
-        createTerminalSession(terminalId, projectId, socket, { cols, rows })
+        // No project imported -> spawn in a throwaway scratch workspace so the
+        // terminal works even before any folder is imported. Real projectIds
+        // keep the existing behaviour (404 if the workspace folder is gone).
+        let resolvedProjectId = projectId || 'scratch-guest'
+        if (isScratchProjectId(resolvedProjectId)) {
+          ensureScratchWorkspace(resolvedProjectId)
+        } else if (!isValidProjectId(resolvedProjectId)) {
+          throw new Error('A valid projectId is required.')
+        }
+
+        createTerminalSession(terminalId, resolvedProjectId, socket, { cols, rows })
         acknowledge?.({ ok: true, terminalId })
       } catch (error) {
         socket.emit('terminal:error', { terminalId, message: error.message })
@@ -58,7 +58,6 @@ export default function registerTerminalSocket(io) {
       if (terminalId) killTerminal(terminalId)
     })
 
-    // Prevent orphaned shell processes when a tab is closed or the network drops.
     socket.on('disconnect', () => {
       killTerminalsForSocket(socket.id)
     })

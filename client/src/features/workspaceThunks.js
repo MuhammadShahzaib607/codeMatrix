@@ -11,12 +11,6 @@ import {
   setCloudWorkspace,
 } from './fileSystemSlice'
 
-/**
- * Every file operation against a cloud workspace goes through these thunks, so
- * the "server first, then Redux" rule is enforced in one place and a lost
- * workspace always flips the UI into its recovery state.
- */
-
 function handleFailure(error, dispatch) {
   if (isWorkspaceMissingError(error)) dispatch(markWorkspaceMissing())
   return error
@@ -30,13 +24,11 @@ function collectFileIds(nodes, ids = []) {
   return ids
 }
 
-/** File paths present in `previous` but gone from `next`. */
 function vanishedFileIds(previous, next) {
   const keep = new Set(collectFileIds(next))
   return collectFileIds(previous).filter((id) => !keep.has(id))
 }
 
-/** Reloads the tree, preserving each folder's open/closed state. */
 export const refreshWorkspaceTree = createAsyncThunk(
   'workspace/refreshTree',
   async ({ projectId, name }, { dispatch, getState }) => {
@@ -47,8 +39,6 @@ export const refreshWorkspaceTree = createAsyncThunk(
       const removed = vanishedFileIds(previous, tree)
 
       dispatch(refreshTree({ tree, name: data.name ?? name }))
-      // Tab pruning happens inside refreshTree; the editor's buffers do not know
-      // about the tree, so the vanished files are removed explicitly.
       if (removed.length) dispatch(removeContent(removed))
       return data
     } catch (error) {
@@ -57,11 +47,6 @@ export const refreshWorkspaceTree = createAsyncThunk(
   },
 )
 
-/**
- * Reopens the workspace remembered in localStorage after a reload. A 404 here is
- * the expected outcome on the free tier once the server has slept — it marks the
- * workspace missing so the recovery notice is shown.
- */
 export const reopenWorkspace = createAsyncThunk(
   'workspace/reopen',
   async ({ projectId, name }, { dispatch }) => {
@@ -81,13 +66,23 @@ export const reopenWorkspace = createAsyncThunk(
   },
 )
 
+export const importWorkspace = createAsyncThunk(
+  'workspace/import',
+  async ({ projectId, name, files }, { dispatch }) => {
+    try {
+      return await workspaceApi.importProject(projectId, { name, files })
+    } catch (error) {
+      throw handleFailure(error, dispatch)
+    }
+  },
+)
+
 export const createWorkspaceEntry = createAsyncThunk(
   'workspace/createEntry',
   async ({ projectId, path, type }, { dispatch }) => {
     try {
       await workspaceApi.createEntry(projectId, path, type)
       await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
-      // A brand new file opens straight away, like in a desktop editor.
       if (type === 'file') dispatch(addTab(path))
       return { path, type }
     } catch (error) {
@@ -101,7 +96,6 @@ export const deleteWorkspaceEntry = createAsyncThunk(
   async ({ projectId, path }, { dispatch }) => {
     try {
       await workspaceApi.deleteEntry(projectId, path)
-      // refreshWorkspaceTree prunes any open tab / buffer whose path no longer exists.
       await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
       return { path }
     } catch (error) {
@@ -115,7 +109,6 @@ export const renameWorkspaceEntry = createAsyncThunk(
   async ({ projectId, oldPath, newPath }, { dispatch }) => {
     try {
       await workspaceApi.renameEntry(projectId, oldPath, newPath)
-      // Open tabs and buffers are keyed by path, so they follow the rename.
       dispatch(remapPaths({ oldPath, newPath }))
       await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
       return { oldPath, newPath }
@@ -130,7 +123,6 @@ export const saveWorkspaceFile = createAsyncThunk(
   async ({ projectId, path, content }, { dispatch }) => {
     try {
       const result = await workspaceApi.saveFile(projectId, path, content)
-      // Keep the search cache in step with what is now on the server.
       setCachedFileContent(projectId, path, content)
       dispatch(markSaved(path))
       return result
@@ -147,26 +139,6 @@ export const readWorkspaceFile = createAsyncThunk(
       const data = await workspaceApi.getFile(projectId, path)
       dispatch(setContent({ fileId: fileId ?? path, content: data.content }))
       return data
-    } catch (error) {
-      throw handleFailure(error, dispatch)
-    }
-  },
-)
-
-export const importWorkspace = createAsyncThunk(
-  'workspace/import',
-  async ({ projectId, name, files }, { dispatch }) => {
-    try {
-      const result = await workspaceApi.importProject(projectId, { name, files })
-      dispatch(
-        // Replaced wholesale: a fresh import starts with no open tabs.
-        setCloudWorkspace({
-          projectId,
-          name: result.name,
-          tree: [toReduxTree(result.tree)],
-        }),
-      )
-      return result
     } catch (error) {
       throw handleFailure(error, dispatch)
     }

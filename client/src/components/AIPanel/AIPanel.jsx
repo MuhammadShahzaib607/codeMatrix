@@ -2,7 +2,6 @@ import { Bot, Send, Sparkles, User } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import './AIPanel.css'
 
-// Static sample conversation — no real model calls yet.
 const initialMessages = [
   {
     id: 'm1',

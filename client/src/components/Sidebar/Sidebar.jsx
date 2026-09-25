@@ -1,23 +1,16 @@
-import { AlertTriangle, ChevronsUp, FilePlus, FolderPlus, Info } from 'lucide-react'
+import { ChevronsUp, FilePlus, FolderPlus, Info } from 'lucide-react'
 import { useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import {
-  addNode,
-  collapseAll,
-  deleteNode,
-  renameNode,
-  setFolderOpen,
-} from '../../features/fileSystemSlice'
+import { collapseAll, setFolderOpen } from '../../features/fileSystemSlice'
 import { showToast } from '../../features/uiSlice'
 import {
   createWorkspaceEntry,
   deleteWorkspaceEntry,
   renameWorkspaceEntry,
 } from '../../features/workspaceThunks'
-import { UNSUPPORTED_MESSAGE } from '../../hooks/useOpenFolder'
-import { ROOT_ID, isFileSystemAccessSupported } from '../../services/fileSystemAccess'
+import { ROOT_ID } from '../../services/fileSystemAccess'
 import { joinPath, parentPathOf } from '../../utils/cloudTree'
-import { collectFileIds, findNode, findParentId } from '../../utils/tree'
+import { findNode, findParentId } from '../../utils/tree'
 import FileTree from './FileTree'
 import './Sidebar.css'
 
@@ -25,31 +18,26 @@ export default function Sidebar() {
   const dispatch = useDispatch()
   const tree = useSelector((state) => state.fileSystem.tree)
   const workspace = useSelector((state) => state.fileSystem.workspace)
+  const hasProject = workspace.source === 'cloud' && Boolean(workspace.projectId)
 
-  const isCloud = workspace.source === 'cloud'
-  const isSupported = isFileSystemAccessSupported()
-
-  // The row the user last clicked drives where new nodes get created.
   const [selectedId, setSelectedId] = useState(null)
-  const [creating, setCreating] = useState(null) // { parentId, type }
+  const [creating, setCreating] = useState(null)
 
   function reportError(message) {
     dispatch(showToast({ message, type: 'error' }))
   }
 
-  // New nodes land in the selected folder, in the selected file's folder, or at
-  // the workspace root when nothing is selected.
   function resolveTargetParentId() {
-    const rootId = isCloud ? ROOT_ID : null
-    if (!selectedId) return rootId
+    if (!selectedId) return ROOT_ID
     const selected = findNode(tree, selectedId)
-    if (!selected) return rootId
+    if (!selected) return ROOT_ID
     if (selected.type === 'folder') return selected.id
     const parentId = findParentId(tree, selectedId)
-    return parentId === undefined ? rootId : parentId
+    return parentId === undefined ? ROOT_ID : parentId
   }
 
   function startCreating(type) {
+    if (!hasProject) return
     const parentId = resolveTargetParentId()
     setCreating({ parentId, type })
     if (parentId) dispatch(setFolderOpen({ id: parentId, isOpen: true }))
@@ -60,23 +48,8 @@ export default function Sidebar() {
     setCreating(null)
 
     const name = rawName.trim()
-    if (!name) return
+    if (!name || !hasProject) return
 
-    // Demo workspace: keep the change in Redux only.
-    if (!isCloud) {
-      dispatch(
-        addNode({
-          parentId,
-          node:
-            type === 'folder'
-              ? { id: crypto.randomUUID(), name, type, isOpen: true, children: [] }
-              : { id: crypto.randomUUID(), name, type },
-        }),
-      )
-      return
-    }
-
-    // Cloud node ids are relative paths; the root's id is ROOT_ID, i.e. path ''.
     const parentPath = parentId === ROOT_ID ? '' : parentId
     try {
       await dispatch(
@@ -92,11 +65,7 @@ export default function Sidebar() {
   }
 
   async function handleRename(node, nextName) {
-    // Demo tree, or the immutable workspace root: Redux only.
-    if (!isCloud || node.id === ROOT_ID) {
-      dispatch(renameNode({ id: node.id, name: nextName }))
-      return
-    }
+    if (!hasProject || node.id === ROOT_ID) return
 
     try {
       await dispatch(
@@ -112,10 +81,7 @@ export default function Sidebar() {
   }
 
   async function handleDelete(node) {
-    if (!isCloud || node.id === ROOT_ID) {
-      dispatch(deleteNode({ id: node.id, removedFileIds: collectFileIds(node) }))
-      return
-    }
+    if (!hasProject || node.id === ROOT_ID) return
 
     try {
       await dispatch(
@@ -130,12 +96,13 @@ export default function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-header">
         <span className="sidebar-title">Explorer</span>
-        <div className="sidebar-header-actions">
+        <div className={`sidebar-header-actions ${hasProject ? '' : 'is-disabled'}`}>
           <button
             type="button"
             className="icon-btn-sm"
             title="New File"
             aria-label="New file"
+            disabled={!hasProject}
             onClick={() => startCreating('file')}
           >
             <FilePlus size={16} />
@@ -145,6 +112,7 @@ export default function Sidebar() {
             className="icon-btn-sm"
             title="New Folder"
             aria-label="New folder"
+            disabled={!hasProject}
             onClick={() => startCreating('folder')}
           >
             <FolderPlus size={16} />
@@ -154,6 +122,7 @@ export default function Sidebar() {
             className="icon-btn-sm"
             title="Collapse All"
             aria-label="Collapse all folders"
+            disabled={!hasProject}
             onClick={() => dispatch(collapseAll())}
           >
             <ChevronsUp size={16} />
@@ -161,19 +130,12 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {!isSupported && (
-        <div className="sidebar-notice is-warning">
-          <AlertTriangle size={14} />
-          <span>{UNSUPPORTED_MESSAGE}</span>
-        </div>
-      )}
-
-      {isSupported && !isCloud && (
+      {!hasProject && (
         <div className="sidebar-notice">
           <Info size={14} />
           <span>
-            No project imported — click <strong>Open Folder</strong> to import one. Showing demo
-            files for now.
+            No project imported — click <strong>Import Folder</strong> in the top bar to import
+            one.
           </span>
         </div>
       )}
@@ -188,7 +150,7 @@ export default function Sidebar() {
           onCancelCreate={() => setCreating(null)}
           onRename={handleRename}
           onDelete={handleDelete}
-          lockedId={isCloud ? ROOT_ID : null}
+          lockedId={ROOT_ID}
         />
       </div>
     </aside>

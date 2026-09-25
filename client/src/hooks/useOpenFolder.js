@@ -1,75 +1,86 @@
 import { useCallback, useState } from 'react'
 import { useDispatch } from 'react-redux'
 import { showToast } from '../features/uiSlice'
-import { importWorkspace } from '../features/workspaceThunks'
-import { getRootHandle, isFileSystemAccessSupported, openFolder, readAllFilesFromDirectory } from '../services/fileSystemAccess'
+import { importWorkspace, reopenWorkspace } from '../features/workspaceThunks'
+import { projectApi } from '../services/api'
+import {
+  isFileSystemAccessSupported,
+  openFolder,
+  readAllFilesFromDirectory,
+} from '../services/fileSystemAccess'
 import { saveWorkspaceRef } from '../services/workspaceStorage'
+import { UNSUPPORTED_MESSAGE } from '../utils/messages'
 
-export const UNSUPPORTED_MESSAGE =
-  "Your browser doesn't support local folder access. Please use Chrome, Edge, or Brave."
-
-/**
- * Picks a folder on the user's laptop, reads every file, and imports the whole
- * project into a brand new server-side workspace. The original folder handle is
- * kept in memory so it can later be used to sync the project back down.
- */
 export default function useOpenFolder() {
   const dispatch = useDispatch()
-  const [isOpening, setIsOpening] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
 
-  const openLocalFolder = useCallback(async () => {
+  const importFolder = useCallback(async () => {
     if (!isFileSystemAccessSupported()) {
       dispatch(showToast({ message: UNSUPPORTED_MESSAGE, type: 'error' }))
       return
     }
 
-    setIsOpening(true)
+    setIsImporting(true)
     try {
-      // Must be the first await so the picker still has user activation.
       const directoryHandle = await openFolder()
       const name = directoryHandle.name
-      const files = await readAllFilesFromDirectory(directoryHandle)
+      const { files, skipped } = await readAllFilesFromDirectory(directoryHandle)
 
       if (files.length === 0) {
         dispatch(
           showToast({
-            message: `${name} has no readable files (node_modules and .git are skipped).`,
+            message: `${name} has no importable files (node_modules, .git and build folders are skipped).`,
             type: 'error',
           }),
         )
         return
       }
 
-      // The backend owns the id being valid; generate it here so the UI can
-      // address the workspace before the upload finishes.
-      const projectId = crypto.randomUUID()
+      const { project } = await projectApi.create({ name })
 
-      const result = await dispatch(importWorkspace({ projectId, name, files })).unwrap()
-      saveWorkspaceRef({ projectId, name: result.name ?? name })
+      const result = await dispatch(
+        importWorkspace({ projectId: project.id, name: project.name, files }),
+      ).unwrap()
 
-      const skipped = result.failedCount
+      await dispatch(
+        reopenWorkspace({ projectId: project.id, name: result.name ?? project.name }),
+      ).unwrap()
+
+      saveWorkspaceRef({ projectId: project.id, name: project.name })
+
+      const skippedResult = result.failedCount
         ? ` (${result.failedCount} file${result.failedCount === 1 ? '' : 's'} skipped)`
         : ''
       dispatch(
         showToast({
-          message: `Imported ${result.fileCount} file${result.fileCount === 1 ? '' : 's'} from ${name}${skipped}`,
+          message: `Imported ${result.fileCount} file${result.fileCount === 1 ? '' : 's'} from ${name}${skippedResult}`,
           type: 'success',
         }),
       )
+
+      // Small follow-up notice when the import deliberately left things out.
+      const notices = []
+      if (skipped.directories > 0) {
+        notices.push(
+          'Skipped node_modules and other build folders — run npm install in the terminal to regenerate them',
+        )
+      }
+      if (skipped.oversizedFiles > 0) {
+        notices.push(
+          `Skipped ${skipped.oversizedFiles} file${skipped.oversizedFiles === 1 ? '' : 's'} larger than 2MB`,
+        )
+      }
+      if (notices.length > 0) {
+        dispatch(showToast({ message: notices.join('  •  '), type: 'info' }))
+      }
     } catch (error) {
-      // Cancelling the picker is not an error worth reporting.
       if (error?.name === 'AbortError') return
       dispatch(showToast({ message: `Could not import folder: ${error.message}`, type: 'error' }))
     } finally {
-      setIsOpening(false)
+      setIsImporting(false)
     }
   }, [dispatch])
 
-  return {
-    openLocalFolder,
-    isOpening,
-    isSupported: isFileSystemAccessSupported(),
-    // Used by "Sync to Laptop" to know whether the source folder is still known.
-    hasLocalFolder: Boolean(getRootHandle()),
-  }
+  return { importFolder, isImporting, isSupported: isFileSystemAccessSupported() }
 }

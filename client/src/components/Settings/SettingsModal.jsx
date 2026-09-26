@@ -1,5 +1,15 @@
-import { Check, LogOut, Palette, Settings2, TerminalSquare, Trash2, User, X } from 'lucide-react'
-import { useEffect } from 'react'
+import {
+  Check,
+  LogOut,
+  Palette,
+  Search,
+  Settings2,
+  TerminalSquare,
+  Trash2,
+  User,
+  X,
+} from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { logout } from '../../features/authSlice'
 import {
@@ -10,8 +20,9 @@ import {
   updateEditorSetting,
   updateTerminalSetting,
 } from '../../features/settingsSlice'
-import { showToast } from '../../features/uiSlice'
+import { openDeleteProjectModal, showToast } from '../../features/uiSlice'
 import { THEMES } from '../../utils/themes'
+import { isCloudWorkspace } from '../../utils/workspace'
 import './SettingsModal.css'
 
 const SECTIONS = [
@@ -21,12 +32,19 @@ const SECTIONS = [
   { id: 'general', label: 'General', icon: User },
 ]
 
+// The order categories are shown in. Anything not listed falls to the end.
+const CATEGORY_ORDER = ['dark', 'light', 'colorful', 'high-contrast']
+
 const FONT_OPTIONS = [
-  { value: '', label: 'System default (SF Mono / Cascadia)' },
-  { value: "'JetBrains Mono', 'SF Mono', Menlo, monospace", label: 'JetBrains Mono' },
+  { value: '', label: 'System Default (monospace)' },
+  { value: "'Cascadia Code', 'Cascadia Mono', Consolas, monospace", label: 'Cascadia Code' },
   { value: "'Fira Code', 'Cascadia Code', monospace", label: 'Fira Code' },
-  { value: "'Cascadia Code', Consolas, monospace", label: 'Cascadia Code' },
-  { value: "'Menlo', 'Consolas', 'Courier New', monospace", label: 'Menlo / Consolas' },
+  { value: "'JetBrains Mono', 'Cascadia Code', monospace", label: 'JetBrains Mono' },
+  { value: "'Consolas', 'Courier New', monospace", label: 'Consolas' },
+  { value: "'Source Code Pro', 'Cascadia Code', monospace", label: 'Source Code Pro' },
+  { value: "'Monaco', 'Menlo', 'Consolas', monospace", label: 'Monaco' },
+  { value: "'Menlo', 'Consolas', monospace", label: 'Menlo' },
+  { value: "'Courier New', monospace", label: 'Courier New' },
 ]
 
 function Toggle({ checked, onChange, label }) {
@@ -89,7 +107,9 @@ export default function SettingsModal() {
     (state) => state.settings,
   )
   const { availableShells, defaultShell } = useSelector((state) => state.terminal)
+  const workspace = useSelector((state) => state.fileSystem.workspace)
   const user = useSelector((state) => state.auth.user)
+  const [themeQuery, setThemeQuery] = useState('')
 
   useEffect(() => {
     if (!isOpen) return undefined
@@ -100,9 +120,38 @@ export default function SettingsModal() {
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [isOpen, dispatch])
 
+  // Filter + group the full theme list. The list is data-driven, so this works
+  // no matter how many themes utils/themes.js contains.
+  const themeGroups = useMemo(() => {
+    const query = themeQuery.trim().toLowerCase()
+    const matching = query
+      ? THEMES.filter(
+          (option) =>
+            option.name.toLowerCase().includes(query) ||
+            option.categoryLabel.toLowerCase().includes(query),
+        )
+      : THEMES
+
+    const byCategory = new Map()
+    for (const option of matching) {
+      if (!byCategory.has(option.category)) byCategory.set(option.category, [])
+      byCategory.get(option.category).push(option)
+    }
+
+    const known = CATEGORY_ORDER.filter((key) => byCategory.has(key))
+    const extra = [...byCategory.keys()].filter((key) => !CATEGORY_ORDER.includes(key))
+    return [...known, ...extra].map((key) => ({
+      key,
+      label: byCategory.get(key)[0].categoryLabel,
+      themes: byCategory.get(key),
+    }))
+  }, [themeQuery])
+
   if (!isOpen) return null
 
   const selectedShell = terminal.preferredShell ?? defaultShell ?? ''
+  const activeTheme = THEMES.find((option) => option.id === theme)
+  const canDeleteProject = isCloudWorkspace(workspace)
 
   return (
     <div className="settings-overlay" onMouseDown={() => dispatch(closeSettings())}>
@@ -145,37 +194,79 @@ export default function SettingsModal() {
               <section className="settings-section">
                 <h3 className="settings-section-title">Theme</h3>
                 <p className="settings-section-desc">
-                  Applies to the whole app immediately and is saved for next time.
+                  {THEMES.length} themes, applied to the whole app immediately and saved for
+                  next time.
+                  {activeTheme && (
+                    <>
+                      {' '}
+                      Active: <strong>{activeTheme.name}</strong>.
+                    </>
+                  )}
                 </p>
-                <div className="theme-grid">
-                  {THEMES.map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      className={`theme-swatch ${theme === option.id ? 'is-active' : ''}`}
-                      onClick={() => dispatch(setTheme(option.id))}
-                      aria-pressed={theme === option.id}
-                    >
-                      <span className="theme-swatch-preview">
-                        {option.swatches.map((color, index) => (
-                          <span key={index} style={{ background: color }} />
-                        ))}
-                        {theme === option.id && (
-                          <span className="theme-swatch-check">
-                            <Check size={13} />
+
+                <label className="theme-search">
+                  <Search size={14} />
+                  <input
+                    type="search"
+                    className="theme-search-input"
+                    placeholder="Search themes…"
+                    value={themeQuery}
+                    spellCheck={false}
+                    onChange={(event) => setThemeQuery(event.target.value)}
+                  />
+                </label>
+
+                {themeGroups.length === 0 && (
+                  <p className="settings-section-desc">No themes match “{themeQuery}”.</p>
+                )}
+
+                {themeGroups.map((group) => (
+                  <div key={group.key} className="theme-group">
+                    <h4 className="theme-group-title">{group.label}</h4>
+                    <div className="theme-grid">
+                      {group.themes.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={`theme-swatch ${theme === option.id ? 'is-active' : ''}`}
+                          onClick={() => dispatch(setTheme(option.id))}
+                          aria-pressed={theme === option.id}
+                          title={option.name}
+                        >
+                          <span className="theme-swatch-preview">
+                            {option.swatches.map((color, index) => (
+                              <span key={index} style={{ background: color }} />
+                            ))}
+                            {theme === option.id && (
+                              <span className="theme-swatch-check">
+                                <Check size={13} />
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </span>
-                      <span className="theme-swatch-name">{option.name}</span>
-                    </button>
-                  ))}
-                </div>
+                          <span className="theme-swatch-name">{option.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </section>
             )}
 
             {activeSection === 'editor' && (
               <section className="settings-section">
                 <h3 className="settings-section-title">Editor</h3>
+                <Row
+                  label="Auto Save"
+                  hint="Save the active file automatically after you stop typing"
+                >
+                  <Toggle
+                    label="Auto Save"
+                    checked={editor.autoSave}
+                    onChange={(value) =>
+                      dispatch(updateEditorSetting({ key: 'autoSave', value }))
+                    }
+                  />
+                </Row>
                 <Row label="Font size">
                   <Stepper
                     value={editor.fontSize}
@@ -186,7 +277,7 @@ export default function SettingsModal() {
                     }
                   />
                 </Row>
-                <Row label="Font family">
+                <Row label="Font family" hint="Fonts not installed fall back to monospace">
                   <select
                     className="settings-select"
                     value={editor.fontFamily}
@@ -297,6 +388,29 @@ export default function SettingsModal() {
                   </div>
                 ) : (
                   <p className="settings-section-desc">Not signed in.</p>
+                )}
+
+                {canDeleteProject && (
+                  <>
+                    <h3 className="settings-section-title settings-section-title-spaced">
+                      Project
+                    </h3>
+                    <p className="settings-section-desc">
+                      Permanently deletes “{workspace.name}” — every file in its workspace folder
+                      plus its project record. This cannot be undone.
+                    </p>
+                    <button
+                      type="button"
+                      className="settings-btn is-danger"
+                      onClick={() => {
+                        dispatch(closeSettings())
+                        dispatch(openDeleteProjectModal())
+                      }}
+                    >
+                      <Trash2 size={14} />
+                      <span>Delete this project</span>
+                    </button>
+                  </>
                 )}
 
                 <h3 className="settings-section-title settings-section-title-spaced">

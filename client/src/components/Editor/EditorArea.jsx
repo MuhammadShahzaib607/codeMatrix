@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { setContent, updateContent } from '../../features/editorSlice'
 import { readWorkspaceFile } from '../../features/workspaceThunks'
+import useAutoSave from '../../hooks/useAutoSave'
 import { getLanguageFromFilename } from '../../utils/language'
 import { defineAppMonacoThemes, monacoThemeFor } from '../../utils/monacoThemes'
 import { applyMonacoTsConfig } from '../../utils/monacoTsconfig'
@@ -13,7 +14,13 @@ import EmptyState from './EmptyState'
 import TabBar from './TabBar'
 import './Editor.css'
 
+// The monospace stack used when the font setting is "System Default".
+const DEFAULT_MONO_FONT =
+  "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace"
+
 export default function EditorArea() {
+  // Auto-save runs as a component-level hook so it stays active for every open
+  // file, not just the one Monaco currently renders.
   const dispatch = useDispatch()
   const { tree, activeFileId, workspace } = useSelector((state) => state.fileSystem)
   const contentByFileId = useSelector((state) => state.editor.contentByFileId)
@@ -30,9 +37,27 @@ export default function EditorArea() {
   const tsConfigRef = useRef(monacoTsConfig)
   const themeRef = useRef(appTheme)
 
+  useAutoSave()
+
   useEffect(() => {
     revealRef.current = revealLine
   }, [revealLine])
+
+  // Editor preferences are applied to the LIVE Monaco instance here. They are
+  // also on `options={...}` for the first mount, but that prop only takes effect
+  // on mount — without this effect, toggling word wrap (or changing the font,
+  // size, tab size or minimap) while a file is open did nothing visible.
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    editor.updateOptions({
+      fontSize: editorSettings.fontSize,
+      fontFamily: editorSettings.fontFamily || DEFAULT_MONO_FONT,
+      minimap: { enabled: editorSettings.minimap, renderCharacters: false },
+      wordWrap: editorSettings.wordWrap ? 'on' : 'off',
+      tabSize: editorSettings.tabSize,
+    })
+  }, [editorSettings])
 
   // Keep the language service in step with the project's tsconfig: apply it as
   // soon as Monaco is ready and re-apply whenever the workspace config changes.
@@ -192,9 +217,7 @@ export default function EditorArea() {
             options={{
               automaticLayout: true,
               fontSize: editorSettings.fontSize,
-              fontFamily:
-                editorSettings.fontFamily ||
-                "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace",
+              fontFamily: editorSettings.fontFamily || DEFAULT_MONO_FONT,
               fontLigatures: true,
               minimap: { enabled: editorSettings.minimap, renderCharacters: false },
               wordWrap: editorSettings.wordWrap ? 'on' : 'off',

@@ -1,6 +1,7 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
-import { isWorkspaceMissingError, workspaceApi } from '../services/api'
-import { setCachedFileContent } from '../services/fileContentCache'
+import { isWorkspaceMissingError, projectApi, workspaceApi } from '../services/api'
+import { clearFileContentCache, setCachedFileContent } from '../services/fileContentCache'
+import { clearWorkspaceRef } from '../services/workspaceStorage'
 import { toReduxTree } from '../utils/cloudTree'
 import {
   TS_CONFIG_FILENAMES,
@@ -11,6 +12,7 @@ import { markSaved, removeContent, setContent } from './editorSlice'
 import { clearTsConfig, setTsConfig } from './tsconfigSlice'
 import {
   addTab,
+  clearWorkspace,
   markWorkspaceMissing,
   refreshTree,
   remapPaths,
@@ -226,5 +228,23 @@ export const readWorkspaceFile = createAsyncThunk(
     } catch (error) {
       throw handleFailure(error, dispatch)
     }
+  },
+)
+
+/**
+ * Deletes the whole active project: the server removes the workspace folder
+ * (recursive) and the MongoDB record, then the client drops every trace of it —
+ * the remembered workspace ref, the editor buffers/content cache and finally the
+ * workspace itself, which returns the Explorer to its "No project imported"
+ * empty state.
+ */
+export const deleteWorkspaceProject = createAsyncThunk(
+  'workspace/deleteProject',
+  async ({ projectId }, { dispatch }) => {
+    await projectApi.remove(projectId)
+    clearWorkspaceRef()
+    clearFileContentCache()
+    dispatch(clearWorkspace())
+    return { projectId }
   },
 )

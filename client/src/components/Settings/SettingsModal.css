@@ -245,7 +245,48 @@
   color: var(--text);
 }
 
-/* ---------- Theme swatches ---------- */
+/* ---------- Theme search + swatches ---------- */
+
+.theme-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  margin-bottom: 16px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+}
+
+.theme-search:focus-within {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.theme-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.theme-group {
+  margin-bottom: 18px;
+}
+
+.theme-group-title {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
 
 .theme-grid {
   display: grid;

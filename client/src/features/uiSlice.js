@@ -24,6 +24,10 @@ const initialState = {
   revealedNode: null,
   revealLine: null,
   authModal: { isOpen: false, mode: 'signin', message: null },
+  // Opened from the Explorer root context menu or Settings > General. The
+  // Sidebar owns the modal + the actual deletion so both entry points share one
+  // code path.
+  isDeleteProjectModalOpen: false,
 }
 
 const uiSlice = createSlice({
@@ -92,6 +96,14 @@ const uiSlice = createSlice({
       state.authModal = { isOpen: false, mode: 'signin', message: null }
     },
 
+    openDeleteProjectModal(state) {
+      state.isDeleteProjectModalOpen = true
+    },
+
+    closeDeleteProjectModal(state) {
+      state.isDeleteProjectModalOpen = false
+    },
+
     setAuthModalMode(state, action) {
       state.authModal = { ...state.authModal, mode: action.payload, message: null }
     },
@@ -111,6 +123,8 @@ export const {
   openAuthModal,
   closeAuthModal,
   setAuthModalMode,
+  openDeleteProjectModal,
+  closeDeleteProjectModal,
 } = uiSlice.actions
 
 export { SIDEBAR_WIDTH_KEY }

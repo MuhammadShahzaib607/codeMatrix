@@ -6,7 +6,6 @@ import {
   FolderSync,
   Loader2,
   LogOut,
-  PanelLeft,
   Save,
   Settings,
   TerminalSquare,
@@ -16,7 +15,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { logout } from '../../features/authSlice'
 import { openSettings } from '../../features/settingsSlice'
 import { togglePanel } from '../../features/terminalSlice'
-import { openAuthModal, showToast, toggleAIPanel, toggleSidebar } from '../../features/uiSlice'
+import { openAuthModal, showToast, toggleAIPanel } from '../../features/uiSlice'
 import useAuthGuard from '../../hooks/useAuthGuard'
 import useExportToFolder from '../../hooks/useExportToFolder'
 import useExportWorkspace from '../../hooks/useExportWorkspace'
@@ -42,7 +41,6 @@ export default function Topbar() {
   const { syncToLaptop, isSyncing } = useSyncToLaptop()
   const { importFolder, isImporting, isSupported } = useOpenFolder()
 
-  const isSidebarOpen = useSelector((state) => state.ui.isSidebarOpen)
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
   const isTerminalOpen = useSelector((state) => state.terminal.isTerminalPanelOpen)
   const activeFileId = useSelector((state) => state.fileSystem.activeFileId)
@@ -62,17 +60,7 @@ export default function Topbar() {
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <Tooltip label="Toggle sidebar">
-          <button
-            type="button"
-            className={`icon-btn ${isSidebarOpen ? 'is-active' : ''}`}
-            aria-label="Toggle sidebar"
-            onClick={() => dispatch(toggleSidebar())}
-          >
-            <PanelLeft size={18} />
-          </button>
-        </Tooltip>
-
+        {/* The sidebar toggle now lives at the top of the Activity Bar. */}
         <Logo size={26} className="topbar-logo" />
         <span className="topbar-brand-name">CodeMatrix</span>
 

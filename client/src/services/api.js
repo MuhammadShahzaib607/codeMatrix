@@ -126,6 +126,11 @@ export const projectApi = {
   list() {
     return request('/api/projects')
   },
+
+  // Permanently deletes a project: its workspace folder on disk plus its record.
+  remove(projectId) {
+    return request(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' })
+  },
 }
 
 export const workspaceApi = {

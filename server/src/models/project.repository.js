@@ -89,6 +89,20 @@ export async function listProjectsByOwner(owner) {
   }
 }
 
+/**
+ * Permanently removes a project's metadata record. Returns the deleted document
+ * (lean) or null when there was nothing to delete / the DB is unavailable.
+ */
+export async function deleteProject(projectId) {
+  if (!isDatabaseConnected()) return null
+  try {
+    return await Project.findOneAndDelete({ projectId }).lean()
+  } catch (error) {
+    console.warn(`[project] could not delete ${projectId}: ${error.message}`)
+    return null
+  }
+}
+
 export async function touchProject(projectId) {
   if (!isDatabaseConnected()) return null
   try {

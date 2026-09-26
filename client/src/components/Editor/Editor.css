@@ -112,6 +112,23 @@
   display: block;
 }
 
+/* In-flight save (auto-save or Ctrl+S): swap the dot for a quiet spinner. */
+.tab-saving-spinner {
+  display: none;
+}
+
+.tab-close.is-saving .tab-saving-spinner {
+  display: block;
+  color: var(--accent);
+}
+
+.tab-close.is-saving .tab-dirty-dot,
+.tab-close.is-saving .tab-close-icon,
+.tab-close.is-saving:hover .tab-dirty-dot,
+.tab-close.is-saving:hover .tab-close-icon {
+  display: none;
+}
+
 /* ---------- Editor body ---------- */
 
 .editor-body {

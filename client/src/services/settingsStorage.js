@@ -3,24 +3,24 @@
  * and App.jsx can save on every change. Values are validated/clamped on read so
  * a hand-edited or corrupt localStorage entry can never break the UI.
  */
+import { DEFAULT_THEME_ID, THEME_IDS as ALL_THEME_IDS } from '../utils/themes'
+
 export const SETTINGS_KEY = 'code-matrix:settings'
 
-export const THEME_IDS = [
-  'default-purple',
-  'midnight-black',
-  'light',
-  'golden-arches',
-  'forest-green',
-]
+// The single source of truth for theme ids is utils/themes.js — the palette
+// data, the Settings grid and this validator all read the same list, so a new
+// theme can never be "unknown" here.
+export const THEME_IDS = ALL_THEME_IDS
 
 export const DEFAULT_SETTINGS = {
-  theme: 'default-purple',
+  theme: DEFAULT_THEME_ID,
   editor: {
     fontSize: 14,
     tabSize: 2,
     wordWrap: false,
     minimap: true,
     fontFamily: '',
+    autoSave: true,
   },
   terminal: {
     preferredShell: null,
@@ -52,6 +52,9 @@ export function sanitizeSettings(raw) {
       wordWrap: Boolean(editor.wordWrap),
       minimap: editor.minimap === undefined ? true : Boolean(editor.minimap),
       fontFamily: typeof editor.fontFamily === 'string' ? editor.fontFamily : '',
+      // Auto Save defaults to ON for both a fresh profile and an existing one
+      // saved before the setting existed.
+      autoSave: editor.autoSave === undefined ? true : Boolean(editor.autoSave),
     },
     terminal: {
       preferredShell:

@@ -7,5 +7,7 @@ const router = Router()
 router.use(protect)
 router.post('/', projectController.createProjectHandler)
 router.get('/', projectController.listProjectsHandler)
+// Deletes a whole project: workspace folder (recursive) + MongoDB record.
+router.delete('/:projectId', projectController.deleteProjectHandler)
 
 export default router

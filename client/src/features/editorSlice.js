@@ -5,6 +5,10 @@ import { remapPaths, setCloudWorkspace } from './fileSystemSlice'
 const initialState = {
   contentByFileId: {},
   unsavedFileIds: [],
+  // Files with an in-flight write (manual Ctrl+S or the auto-save debounce).
+  // Drives the small spinner on the tab and is cleared by markSaved / a failed
+  // save, never persisted.
+  savingFileIds: [],
 }
 
 const editorSlice = createSlice({
@@ -22,14 +26,26 @@ const editorSlice = createSlice({
       if (!state.unsavedFileIds.includes(fileId)) state.unsavedFileIds.push(fileId)
     },
 
+    /** Marks a file as having a write in flight (shows the tab spinner). */
+    markSaving(state, action) {
+      if (!state.savingFileIds.includes(action.payload)) state.savingFileIds.push(action.payload)
+    },
+
+    /** Clears the in-flight flag without touching the unsaved flag (save failed). */
+    clearSaving(state, action) {
+      state.savingFileIds = state.savingFileIds.filter((fileId) => fileId !== action.payload)
+    },
+
     markSaved(state, action) {
       state.unsavedFileIds = state.unsavedFileIds.filter((fileId) => fileId !== action.payload)
+      state.savingFileIds = state.savingFileIds.filter((fileId) => fileId !== action.payload)
     },
 
     removeContent(state, action) {
       for (const fileId of action.payload ?? []) {
         delete state.contentByFileId[fileId]
         state.unsavedFileIds = state.unsavedFileIds.filter((id) => id !== fileId)
+        state.savingFileIds = state.savingFileIds.filter((id) => id !== fileId)
       }
     },
   },
@@ -38,6 +54,7 @@ const editorSlice = createSlice({
       .addCase(setCloudWorkspace, (state) => {
         state.contentByFileId = {}
         state.unsavedFileIds = []
+        state.savingFileIds = []
       })
       .addCase(remapPaths, (state, action) => {
         const { oldPath, newPath } = action.payload
@@ -47,10 +64,18 @@ const editorSlice = createSlice({
         }
         state.contentByFileId = next
         state.unsavedFileIds = state.unsavedFileIds.map((id) => remapId(oldPath, newPath, id))
+        state.savingFileIds = state.savingFileIds.map((id) => remapId(oldPath, newPath, id))
       })
   },
 })
 
-export const { setContent, updateContent, markSaved, removeContent } = editorSlice.actions
+export const {
+  setContent,
+  updateContent,
+  markSaving,
+  clearSaving,
+  markSaved,
+  removeContent,
+} = editorSlice.actions
 
 export default editorSlice.reducer

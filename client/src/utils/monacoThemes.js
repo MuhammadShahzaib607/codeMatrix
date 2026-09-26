@@ -1,51 +1,48 @@
 /**
- * Monaco does not read CSS variables, so each app theme has an explicit Monaco
- * theme here. They are registered once on editor mount and then selected via
- * the <Editor theme={...}> prop, which makes @monaco-editor/react call
- * monaco.editor.setTheme() — that is the real-time switch.
+ * Monaco does not read CSS variables, so every app theme gets a matching Monaco
+ * theme built from the SAME data (utils/themes.js). All of them are registered
+ * once when the editor mounts; switching is then just the <Editor theme={...}>
+ * prop, which makes @monaco-editor/react call monaco.editor.setTheme() — that is
+ * the real-time switch. Adding a theme to themes.js is enough; nothing here
+ * needs editing.
+ *
+ * Monaco's theme color map is hex-only, which is why themes.js exposes a
+ * separate `monacoColors` object rather than reusing the rgba CSS palette.
  */
-const DARK_THEMES = {
-  'default-purple': {
-    background: '#1e1e1e',
-    accent: '#8b5cf6',
-    lineHighlight: '#262626',
-  },
-  'midnight-black': {
-    background: '#0a0a0a',
-    accent: '#8b5cf6',
-    lineHighlight: '#151515',
-  },
-  'golden-arches': {
-    background: '#1c1512',
-    accent: '#da291c',
-    lineHighlight: '#2a1d18',
-  },
-  'forest-green': {
-    background: '#0f1712',
-    accent: '#2e7d32',
-    lineHighlight: '#17261d',
-  },
-}
+import { THEMES, getTheme } from './themes'
 
 export function monacoThemeFor(themeId) {
-  if (themeId === 'light') return 'vs'
-  return DARK_THEMES[themeId] ? `cm-${themeId}` : 'vs-dark'
+  return `cm-${getTheme(themeId).id}`
 }
 
-/** Registers every custom theme. Safe to call more than once. */
+/** Registers every app theme with Monaco. Safe to call more than once. */
 export function defineAppMonacoThemes(monaco) {
   if (!monaco?.editor?.defineTheme) return
-  for (const [id, palette] of Object.entries(DARK_THEMES)) {
-    monaco.editor.defineTheme(`cm-${id}`, {
-      base: 'vs-dark',
+
+  for (const theme of THEMES) {
+    const c = theme.monacoColors
+    monaco.editor.defineTheme(`cm-${theme.id}`, {
+      base: theme.monacoBase,
       inherit: true,
-      rules: [],
+      rules: [
+        { token: 'comment', foreground: c.lineNumber, fontStyle: 'italic' },
+        { token: 'keyword', foreground: theme.monacoAccent },
+        { token: 'string', foreground: c.foreground },
+      ],
       colors: {
-        'editor.background': palette.background,
-        'editor.lineHighlightBackground': palette.lineHighlight,
-        'editorCursor.foreground': palette.accent,
-        'editorLineNumber.foreground': '#6b6b6b',
-        'editorIndentGuide.background1': '#333333',
+        'editor.background': c.background,
+        'editor.foreground': c.foreground,
+        'editor.lineHighlightBackground': c.lineHighlight,
+        'editor.selectionBackground': c.selection,
+        'editorCursor.foreground': c.cursor,
+        'editorLineNumber.foreground': c.lineNumber,
+        'editorLineNumber.activeForeground': c.lineNumberActive,
+        'editorIndentGuide.background1': c.indentGuide,
+        'editorIndentGuide.activeBackground1': c.lineNumberActive,
+        'editorWidget.background': c.widgetBackground,
+        'editorWidget.border': c.widgetBorder,
+        'scrollbarSlider.background': c.scrollbar,
+        'scrollbarSlider.hoverBackground': c.lineNumberActive,
       },
     })
   }

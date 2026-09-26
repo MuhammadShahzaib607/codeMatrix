@@ -3287,3 +3287,176 @@ primarily RC1 (synchronous recursive delete) with RC2 (deep chokidar watching of
 build dirs) and RC3 (doubled tree walks per action) compounding the lag. All
 three were addressed together; no speculative features were added.
 
+
+================================================================================
+AI Code Editor — Phase 8: Project Deletion, Auto Save, Sidebar Toggle Move,
+               Word Wrap / Font Fixes, 50-Theme Data-Driven System
+================================================================================
+
+STATUS: complete. Six items requested and delivered. Verified with 21 client
+        checks (data/reducer/hook/markup), 8 server checks (real fs delete +
+        route/repo wiring), oxlint 0/0 (65 files) and a passing vite build.
+
+--------------------------------------------------------------------------------
+1. DELETE THE WHOLE PROJECT
+--------------------------------------------------------------------------------
+SERVER
+  - server/src/models/project.repository.js   NEW deleteProject(projectId):
+    Project.findOneAndDelete({ projectId }).lean(); degrades to null with no DB.
+  - server/src/controllers/project.controller.js  NEW deleteProjectHandler:
+    requires a DB, 404 PROJECT_NOT_FOUND when the record is missing, 403
+    FORBIDDEN when the record belongs to another user, then
+    suppressWatcher(projectId) -> deleteWorkspaceFolder(projectId) (async,
+    recursive) -> deleteProject(projectId). Returns { deleted: true, projectId }.
+    suppressWatcher runs first so the folder's unlinkDir events cannot schedule a
+    redundant tree refresh for a workspace the client is about to clear anyway.
+  - server/src/routes/project.routes.js  NEW DELETE /api/projects/:projectId
+    (behind the existing `protect` JWT middleware).
+
+CLIENT
+  - services/api.js            projectApi.remove(projectId) -> DELETE.
+  - features/workspaceThunks.js  NEW deleteWorkspaceProject thunk: calls the API,
+    then clearWorkspaceRef() (forget the localStorage workspace), clears the
+    file-content cache, and dispatches clearWorkspace() — which resets
+    workspace to { source:'none' }, empties the tree, close every tab and clears
+    the active file. That is what returns the Explorer to its "No project
+    imported" empty state.
+  - features/uiSlice.js        isDeleteProjectModalOpen + open/closeDeleteProjectModal
+    so BOTH entry points share one modal + one code path.
+  - components/Common/ConfirmModal.jsx  NEW confirmPhrase prop. When set, the
+    dialog renders a text input and the confirm button stays disabled until the
+    user types the exact phrase (Enter confirms when it matches). Without the
+    prop it behaves exactly as before (autoFocus on the confirm button).
+  - components/Sidebar/Sidebar.jsx  Owns the project-delete modal. It reads
+    canDeleteProject = isCloudWorkspace(workspace) and confirmDeleteProject()
+    dispatches deleteWorkspaceProject. The confirm phrase is the project name.
+  - components/Sidebar/FileTree.jsx  The ROOT (locked) context-menu branch now
+    ends with a danger "Delete Project" item, shown only when canDeleteProject.
+    New props canDeleteProject / onDeleteProject (the latter is a stable
+    useCallback so the memoized tree is not re-rendered).
+  - components/Settings/SettingsModal.jsx  Settings > General gained a Project
+    section (only for an imported project) with a "Delete this project" button
+    that closes Settings and opens the same modal.
+
+Typed confirmation text: "Delete project '<name>'?".
+
+--------------------------------------------------------------------------------
+2. AUTO SAVE
+--------------------------------------------------------------------------------
+  - services/settingsStorage.js  editor.autoSave added, DEFAULT true, and
+    sanitizeSettings treats a missing value as true (so existing profiles get it
+    enabled too).
+  - components/Settings/SettingsModal.jsx  NEW "Auto Save" toggle row at the top
+    of Settings > Editor.
+  - hooks/useAutoSave.js (NEW)  Debounced silent save. It watches the active
+    file's content, its dirty flag, the autoSave setting and the workspace.
+    Every keystroke re-runs the effect (clearing the previous timer), so the
+    write only fires AUTO_SAVE_DELAY_MS (1200ms) after typing pauses. It calls
+    the SAME saveWorkspaceFile thunk as Ctrl+S (so the server's suppressWatcher
+    path applies and auto-save cannot spam the chokidar/refresh system), sets a
+    per-file "saving" flag, and clears it on success or failure. No toast.
+    AUTO-SAVE-OFF = the existing manual Ctrl+S / Save button only.
+  - features/editorSlice.js  NEW savingFileIds + markSaving / clearSaving;
+    markSaved and removeContent clear it too.
+  - components/Editor/TabBar.jsx + Editor.css  A tab with a save in flight shows
+    a small accent-coloured spinner in place of the unsaved dot (understated,
+    gone the moment the write lands) — no toast per save.
+  - components/Editor/EditorArea.jsx  Calls useAutoSave() so it works for every
+    open file, not only the one Monaco currently renders.
+
+--------------------------------------------------------------------------------
+3. SIDEBAR COLLAPSE BUTTON MOVED INTO THE ACTIVITY BAR
+--------------------------------------------------------------------------------
+  - components/ActivityBar/ActivityBar.jsx  The toggle (PanelLeft) is now the
+    FIRST item in the rail, above the Explorer/Search view icons, separated by a
+    thin divider. Its behaviour is unchanged (ui.isSidebarOpen toggle).
+  - components/Topbar/Topbar.jsx  The old PanelLeft button (and its now-unused
+    imports/selector) was removed from .topbar-left.
+
+--------------------------------------------------------------------------------
+4. WORD WRAP (and every other editor option) NOW APPLIES LIVE
+--------------------------------------------------------------------------------
+ROOT CAUSE: the editor settings only ever reached Monaco through the <Editor>
+options={...} prop. That is an initial-mount path; changing a setting afterwards
+never re-applied the option to the live instance, so toggling Word wrap visibly
+did nothing until the tab was re-opened.
+FIX: components/Editor/EditorArea.jsx gained an effect keyed on the editor
+settings object that calls the live instance directly:
+
+    useEffect(() => {
+      const editor = editorRef.current
+      if (!editor) return
+      editor.updateOptions({ fontSize, fontFamily, minimap: { enabled },
+                             wordWrap: wordWrap ? 'on' : 'off', tabSize })
+    }, [editorSettings])
+
+The options prop still seeds the first mount. Result: Word wrap, font family,
+font size, tab size and minimap now change immediately in the open editor.
+
+--------------------------------------------------------------------------------
+5. EXPANDED FONT FAMILY OPTIONS
+--------------------------------------------------------------------------------
+Settings > Editor > Font family now offers 9 choices: System Default,
+Cascadia Code, Fira Code, JetBrains Mono, Consolas, Source Code Pro, Monaco,
+Menlo and Courier New, each with a monospace fallback chain. Fonts not installed
+fall back gracefully (no font files are bundled). Because of the effect in item
+4, changing the font updates Monaco in real time — the fontFamily was wired the
+exact same way the word wrap bug was, so it is fixed by the same change.
+
+--------------------------------------------------------------------------------
+6. 40-50 THEMES, DATA-DRIVEN
+--------------------------------------------------------------------------------
+  - utils/themes.js is the SINGLE source of truth: a SPECS array of compact
+    specs ({ id, name, cat, dark, accent, bg, surface, … optional overrides })
+    that buildTheme() expands into a COMPLETE CSS-variable palette plus
+    monacoBase / monacoColors / swatches. THEMES.length is 50, spanning
+    categories dark, light, colorful and high-contrast. The original five
+    (Default Purple, Midnight Black, Light, Golden Arches, Forest Green) are
+    kept, plus Dracula, Nord, Solarized (dark/light), Monokai, GitHub (dark/
+    light), One Dark, Gruvbox, Tokyo Night, Catppuccin, Rosé Pine, Synthwave,
+    High Contrast Dark/Light and many more. Each palette derives its text/dim/
+    border/hover/semantic colours from the core pair with contrast-aware helpers
+    so every theme stays readable.
+  - APPLY PATH (generic, one code path for all 50): App.jsx writes
+    theme.palette onto <html> as inline CSS custom properties (plus data-theme
+    and color-scheme). index.css now keeps only the default fallback palette and
+    the structural CSS — the four hardcoded [data-theme] blocks were deleted.
+  - services/settingsStorage.js  THEME_IDS is imported from utils/themes.js, so
+    the validator, the Settings grid and the palette data can never drift apart.
+  - utils/monacoThemes.js  deriveAppMonacoThemes registers one Monaco theme per
+    entry (cm-<id>, base vs/vs-dark, hex-only colours from monacoColors) and
+    monacoThemeFor(id) returns cm-<id>; TerminalView's theme path is untouched.
+  - utils/terminalThemes.js  terminalThemeFor(id) derives background/foreground/
+    cursor/selection from the same palette and picks the dark or light ANSI set.
+  - components/Settings/SettingsModal.jsx  Appearance now has a search input and
+    a scrollable grid grouped by category, with the active theme badge. It reads
+    THEMES directly, so adding a spec adds it to the picker automatically.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (65 files).  vite build: succeeds.
+  - node --check on every changed server file: passes.
+  - 21 client checks (vite ssrLoadModule + jsdom / react-dom/server): exactly
+    50 themes, unique ids, complete palettes, all four categories, the five
+    original themes kept, getTheme fallback; settingsStorage THEME_IDS parity +
+    autoSave default true + a new theme id survives sanitize; monacoThemeFor maps
+    every id and defineAppMonacoThemes registers all 50 with valid hex colours;
+    terminalThemeFor follows the palette; editorSlice saving-file lifecycle;
+    uiSlice delete-modal open/close; clearWorkspace resets to source 'none';
+    the auto-save hook fires NOTHING before 1200ms and writes once after it with
+    the right project/path/content and clears both flags, and makes no request
+    when Auto Save is off; ConfirmModal renders a disabled button + input with a
+    phrase and a plain enabled button without one.
+  - 8 server checks against the real filesystem: createWorkspaceFolder ->
+    nested files -> deleteWorkspaceFolder removes the tree and drops the registry
+    entry, a second delete is a false no-op, DELETE /:projectId is registered to
+    the new handler, the repository exposes deleteProject, and deleteProject
+    degrades to null with no DB.
+
+NOTE: the live browser assertions (import a project, delete it, watch the
+Explorer reset; type and watch the tab spinner; toggle word wrap / font family)
+need BOTH processes running (`cd server && node server.js`, `cd client &&
+npm run dev`) and a signed-in user with MongoDB available — they cannot be
+exercised headlessly, since Monaco only mounts in a real browser.
+

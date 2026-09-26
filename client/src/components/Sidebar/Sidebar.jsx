@@ -5,9 +5,14 @@ import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
 import { recordExplorerAction } from '../../features/explorerHistorySlice'
 import { deleteExplorerEntry } from '../../features/explorerHistoryThunks'
 import { collapseAll, setFolderOpen } from '../../features/fileSystemSlice'
-import { showToast } from '../../features/uiSlice'
+import {
+  closeDeleteProjectModal,
+  openDeleteProjectModal,
+  showToast,
+} from '../../features/uiSlice'
 import {
   createWorkspaceEntry,
+  deleteWorkspaceProject,
   duplicateWorkspaceEntry,
   openScratchWorkspace,
   renameWorkspaceEntry,
@@ -19,7 +24,7 @@ import { ROOT_ID } from '../../services/fileSystemAccess'
 import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { findNode, findParentId } from '../../utils/tree'
-import { hasActiveWorkspace, scratchProjectIdFor } from '../../utils/workspace'
+import { hasActiveWorkspace, isCloudWorkspace, scratchProjectIdFor } from '../../utils/workspace'
 import FileTree from './FileTree'
 import './Sidebar.css'
 
@@ -30,9 +35,13 @@ export default function Sidebar() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const clipboard = useSelector((state) => state.clipboard)
   const userId = useSelector((state) => state.auth.user?.id)
+  const isDeleteProjectOpen = useSelector((state) => state.ui.isDeleteProjectModalOpen)
   // A scratch workspace counts as an active workspace: everything below treats
   // it exactly like an imported project.
   const hasProject = hasActiveWorkspace(workspace)
+  // Only a real imported project (backed by a Project record) can be deleted as
+  // a whole; the scratch workspace is not a project.
+  const canDeleteProject = isCloudWorkspace(workspace)
 
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(null)
@@ -59,6 +68,12 @@ export default function Sidebar() {
   )
 
   const handleCancelCreate = useCallback(() => setCreating(null), [])
+
+  // Stable identity so the memoized FileTree is not re-rendered by this prop.
+  const requestDeleteProject = useCallback(
+    () => dispatch(openDeleteProjectModal()),
+    [dispatch],
+  )
 
   // Fresh-instance mirrors for the two handlers that genuinely need live
   // component state (clipboard, workspace). The refs are updated in an effect
@@ -274,6 +289,21 @@ export default function Sidebar() {
     }
   }
 
+  /** Deletes the ENTIRE active project (workspace folder + DB record). */
+  async function confirmDeleteProject() {
+    const activeProjectId = projectIdRef.current
+    const name = workspace.name
+    if (!activeProjectId) return
+    try {
+      await dispatch(deleteWorkspaceProject({ projectId: activeProjectId })).unwrap()
+      dispatch(showToast({ message: `Deleted project ${name}.`, type: 'success' }))
+    } catch (error) {
+      reportError(`Could not delete the project: ${error.message}`)
+    } finally {
+      dispatch(closeDeleteProjectModal())
+    }
+  }
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -341,6 +371,8 @@ export default function Sidebar() {
           onCopy={handleCopy}
           onPaste={stablePaste}
           onCopyPath={handleCopyPath}
+          canDeleteProject={canDeleteProject}
+          onDeleteProject={requestDeleteProject}
         />
       </div>
 
@@ -355,6 +387,17 @@ export default function Sidebar() {
           confirmLabel="Delete"
           onConfirm={confirmDelete}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {isDeleteProjectOpen && canDeleteProject && (
+        <ConfirmModal
+          title={`Delete project '${workspace.name}'?`}
+          message="This will delete all files in this project permanently and cannot be undone."
+          confirmLabel="Delete project"
+          confirmPhrase={workspace.name}
+          onConfirm={confirmDeleteProject}
+          onCancel={() => dispatch(closeDeleteProjectModal())}
         />
       )}
     </aside>

@@ -1,9 +1,13 @@
 /**
- * xterm.js renders to a canvas/WebGL layer, so it cannot read our CSS
- * variables. Each app theme maps to an explicit xterm theme object here. The
- * Light theme uses a dark-on-light ANSI palette (the default neon-on-black set
- * is unreadable on white).
+ * xterm.js renders to a canvas/WebGL layer, so it cannot read our CSS variables.
+ * The xterm theme is derived from the SAME data-driven theme palettes in
+ * utils/themes.js: the surface/foreground/cursor/selection come straight from the
+ * palette, and the 16 ANSI colours are the standard dark or light set depending
+ * on whether the theme is dark. Add a theme to themes.js and the terminal
+ * follows automatically.
  */
+import { getTheme } from './themes'
+
 const DARK_ANSI = {
   black: '#1e1e1e',
   red: '#f48771',
@@ -42,56 +46,17 @@ const LIGHT_ANSI = {
   brightWhite: '#000000',
 }
 
-const TERMINAL_THEMES = {
-  'default-purple': {
-    background: '#1e1e1e',
-    foreground: '#cccccc',
-    cursor: '#ffffff',
-    cursorAccent: '#1e1e1e',
-    selectionBackground: 'rgba(139, 92, 246, 0.35)',
-    ...DARK_ANSI,
-  },
-  'midnight-black': {
-    background: '#0a0a0a',
-    foreground: '#d6d6d6',
-    cursor: '#ffffff',
-    cursorAccent: '#0a0a0a',
-    selectionBackground: 'rgba(139, 92, 246, 0.3)',
-    ...DARK_ANSI,
-  },
-  light: {
-    background: '#ffffff',
-    foreground: '#1a1a1a',
-    cursor: '#000000',
-    cursorAccent: '#ffffff',
-    selectionBackground: 'rgba(124, 58, 237, 0.25)',
-    ...LIGHT_ANSI,
-  },
-  'golden-arches': {
-    background: '#1c1512',
-    foreground: '#e8ddd6',
-    cursor: '#ffc72c',
-    cursorAccent: '#1c1512',
-    selectionBackground: 'rgba(218, 41, 28, 0.35)',
-    ...DARK_ANSI,
-    green: '#7bc86c',
-    yellow: '#ffc72c',
-    brightYellow: '#ffdd80',
-  },
-  'forest-green': {
-    background: '#0f1712',
-    foreground: '#d2e3d8',
-    cursor: '#7fd18a',
-    cursorAccent: '#0f1712',
-    selectionBackground: 'rgba(46, 125, 50, 0.35)',
-    ...DARK_ANSI,
-    green: '#7fd18a',
-    brightGreen: '#a7e6b0',
-  },
-}
-
 export function terminalThemeFor(themeId) {
-  return TERMINAL_THEMES[themeId] ?? TERMINAL_THEMES['default-purple']
+  const theme = getTheme(themeId)
+  const p = theme.palette
+  return {
+    background: p['--bg-editor'],
+    foreground: p['--text'],
+    cursor: p['--accent'],
+    cursorAccent: p['--bg-editor'],
+    selectionBackground: p['--accent-soft'],
+    ...(theme.dark ? DARK_ANSI : LIGHT_ANSI),
+  }
 }
 
 export const TERMINAL_FONT_FAMILY =

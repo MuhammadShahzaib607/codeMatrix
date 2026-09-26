@@ -24,6 +24,7 @@ import useWorkspaceWatcher from './hooks/useWorkspaceWatcher'
 import { clearFileContentCache } from './services/fileContentCache'
 import { writeSettings } from './services/settingsStorage'
 import { clearWorkspaceRef } from './services/workspaceStorage'
+import { getTheme } from './utils/themes'
 import { isCloudWorkspace } from './utils/workspace'
 import './App.css'
 
@@ -46,10 +47,19 @@ export default function App() {
     dispatch(fetchCurrentUser())
   }, [dispatch])
 
-  // The theme is a data-attribute on <html>; every component reads it through
-  // the CSS variables in index.css, so switching is instant with no reload.
+  // Themes are DATA: utils/themes.js holds every palette, and applying one just
+  // writes its CSS custom properties onto <html>. index.css keeps the default
+  // palette as a fallback for the first paint, before React has mounted. Keeping
+  // the data-attribute as well means CSS written against [data-theme='…'] still
+  // works for the few structural colours (color-scheme, type).
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', settings.theme)
+    const root = document.documentElement
+    const theme = getTheme(settings.theme)
+    root.setAttribute('data-theme', theme.id)
+    root.style.colorScheme = theme.dark ? 'dark' : 'light'
+    for (const [property, value] of Object.entries(theme.palette)) {
+      root.style.setProperty(property, value)
+    }
   }, [settings.theme])
 
   // Persist preferences whenever they change (theme + editor + terminal only).

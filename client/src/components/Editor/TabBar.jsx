@@ -1,4 +1,4 @@
-import { FileCode2, X } from 'lucide-react'
+import { FileCode2, Loader2, X } from 'lucide-react'
 import { useDispatch, useSelector } from 'react-redux'
 import { closeTab, setActiveFile } from '../../features/fileSystemSlice'
 import { findNode } from '../../utils/tree'
@@ -7,6 +7,7 @@ export default function TabBar() {
   const dispatch = useDispatch()
   const { tree, openTabs, activeFileId } = useSelector((state) => state.fileSystem)
   const unsavedFileIds = useSelector((state) => state.editor.unsavedFileIds)
+  const savingFileIds = useSelector((state) => state.editor.savingFileIds)
 
   if (openTabs.length === 0) return null
 
@@ -18,6 +19,9 @@ export default function TabBar() {
 
         const isActive = fileId === activeFileId
         const isDirty = unsavedFileIds.includes(fileId)
+        // Auto-save (and manual save) briefly flips this on: the unsaved dot is
+        // replaced by a small spinner, then disappears once the write lands.
+        const isSaving = savingFileIds.includes(fileId)
 
         return (
           <div
@@ -32,15 +36,16 @@ export default function TabBar() {
             <span className="tab-name">{node.name}</span>
             <button
               type="button"
-              className={`tab-close ${isDirty ? 'is-dirty' : ''}`}
-              title="Close"
-              aria-label={`Close ${node.name}`}
+              className={`tab-close ${isDirty ? 'is-dirty' : ''} ${isSaving ? 'is-saving' : ''}`}
+              title={isSaving ? 'Saving…' : 'Close'}
+              aria-label={isSaving ? `Saving ${node.name}` : `Close ${node.name}`}
               onClick={(event) => {
                 event.stopPropagation()
                 dispatch(closeTab(fileId))
               }}
             >
               <span className="tab-dirty-dot" />
+              <Loader2 size={13} className="tab-saving-spinner spin" />
               <X size={14} className="tab-close-icon" />
             </button>
           </div>

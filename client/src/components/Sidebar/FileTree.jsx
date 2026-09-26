@@ -294,6 +294,8 @@ function FileTree({
   onCopy,
   onPaste,
   onCopyPath,
+  canDeleteProject = false,
+  onDeleteProject,
 }) {
   const revealedNode = useSelector((state) => state.ui.revealedNode)
   const clipboard = useSelector((state) => state.clipboard)
@@ -374,7 +376,8 @@ function FileTree({
     const canPaste = isFolder && Boolean(clipboard.path)
 
     if (isLocked) {
-      // The workspace root can't be cut, renamed or deleted.
+      // The workspace root can't be cut or renamed, but the whole PROJECT can be
+      // deleted from here (with a typed-name confirm — see the Sidebar).
       return [
         {
           id: 'new-file',
@@ -404,6 +407,16 @@ function FileTree({
           icon: Link,
           onSelect: () => onCopyPath(node),
         },
+        canDeleteProject ? { separator: true } : null,
+        canDeleteProject
+          ? {
+              id: 'delete-project',
+              label: 'Delete Project',
+              icon: Trash2,
+              danger: true,
+              onSelect: () => onDeleteProject?.(node),
+            }
+          : null,
       ]
     }
 

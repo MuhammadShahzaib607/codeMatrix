@@ -55,6 +55,13 @@
   background: var(--accent);
 }
 
+.activity-divider {
+  flex: 0 0 auto;
+  height: 1px;
+  margin: 4px 10px 6px;
+  background: var(--border);
+}
+
 .activity-spacer {
   flex: 1 1 auto;
 }

@@ -51,6 +51,36 @@
   color: var(--text-dim);
 }
 
+/* Extra safety step for irreversible actions (deleting a whole project): the
+   confirm button stays disabled until this exact phrase is typed. */
+.confirm-typed {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 16px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.confirm-typed strong {
+  color: var(--text-strong);
+}
+
+.confirm-typed-input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  outline: none;
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.confirm-typed-input:focus {
+  border-color: var(--accent);
+}
+
 .confirm-actions {
   display: flex;
   justify-content: flex-end;
@@ -71,7 +101,7 @@
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
-.confirm-btn:hover {
+.confirm-btn:hover:not(:disabled) {
   background: var(--bg-hover);
 }
 
@@ -81,7 +111,7 @@
   color: var(--accent-on);
 }
 
-.confirm-btn.is-danger:hover {
+.confirm-btn.is-danger:hover:not(:disabled) {
   background: var(--danger-strong-hover);
 }
 
@@ -91,6 +121,11 @@
   color: var(--accent-on);
 }
 
-.confirm-btn.is-primary:hover {
+.confirm-btn.is-primary:hover:not(:disabled) {
   background: var(--accent-hover);
+}
+
+.confirm-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }

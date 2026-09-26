@@ -144,6 +144,11 @@ export default function EditorArea() {
         )}
 
         {activeNode && !loadError && isLoaded && (
+          // The model URI keeps the REAL file name (…/CustomSelect.tsx) on
+          // purpose: Monaco's TypeScript worker derives the script kind (TSX vs
+          // TS) from the URI's extension, so a URI without ".tsx" is what makes
+          // valid JSX report as syntax errors. `language` must be 'typescript'
+          // for .tsx too (see utils/language.js).
           <Editor
             path={`file:///${activeNode.id}`}
             keepCurrentModel

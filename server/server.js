@@ -5,6 +5,8 @@ import app from './src/app.js'
 import { connectDatabase } from './src/config/db.js'
 import { env, resolveCorsOrigin } from './src/config/env.js'
 import registerTerminalSocket from './src/socket/terminalSocket.js'
+import registerWorkspaceSocket from './src/socket/workspaceSocket.js'
+import { closeAllWatchers } from './src/utils/fileWatcher.js'
 import { killAllTerminals } from './src/utils/terminalManager.js'
 import { migrateWorkspaceFolders } from './src/utils/workspaceMigration.js'
 import { WORKSPACES_ROOT } from './src/utils/workspaceManager.js'
@@ -29,6 +31,7 @@ const io = new Server(server, {
 })
 
 registerTerminalSocket(io)
+registerWorkspaceSocket(io)
 
 async function start() {
   await connectDatabase()
@@ -55,6 +58,7 @@ async function start() {
 function shutdown(signal) {
   console.log(`[server] ${signal} received, shutting down.`)
   killAllTerminals()
+  closeAllWatchers()
   io.close()
   server.close(() => process.exit(0))
 }

@@ -6,17 +6,21 @@
  *
  * These helpers turn a project's tsconfig.json / jsconfig.json `compilerOptions`
  * into Monaco compiler options (paths, baseUrl, jsx, target, module, ...) and
- * push them into BOTH language services. Because the worker still cannot see the
- * unopened files or node_modules, module-resolution diagnostics Monaco cannot
- * possibly satisfy are additionally ignored — see DIAGNOSTIC_CODES_TO_IGNORE.
+ * push them into BOTH language services.
+ *
+ * Because the worker has no node_modules, no React typings and no other open
+ * files to resolve against, SEMANTIC diagnostics are a constant source of false
+ * positives ("cannot find module", unknown JSX intrinsic attributes, type
+ * mismatches on every element …). We therefore keep SYNTAX validation on — that
+ * is what catches genuinely malformed JSX, e.g. an unclosed tag — and disable
+ * semantic validation. See applyMonacoTsConfig.
  */
 
 export const TS_CONFIG_FILENAMES = ['tsconfig.json', 'jsconfig.json']
 
-// Cannot-find-* diagnostics that are always false positives in this editor:
-// the language service has no access to node_modules, type declarations or the
-// files that are not currently open. Syntax errors and real local type/semantic
-// errors are still reported.
+// Schema-level noise that can also surface through syntax validation. Semantic
+// validation is already off (see applyMonacoTsConfig); this list is a belt-and-
+// braces guard if that ever changes.
 const DIAGNOSTIC_CODES_TO_IGNORE = [
   2307, // Cannot find module '…' or its corresponding type declarations.
   2792, // Cannot find module. Did you mean to set the 'moduleResolution' option…?
@@ -71,17 +75,6 @@ const MODULE_RESOLUTIONS = {
   node16: 'Node16',
   nodenext: 'NodeNext',
   bundler: 'Bundler',
-}
-
-const JSX_EMITS = {
-  preserve: 'Preserve',
-  react: 'React',
-  reactnative: 'ReactNative',
-  'react-native': 'ReactNative',
-  reactjsx: 'ReactJSX',
-  'react-jsx': 'ReactJSX',
-  reactjsxdev: 'ReactJSXDev',
-  'react-jsxdev': 'ReactJSXDev',
 }
 
 /**
@@ -190,6 +183,7 @@ export function buildMonacoCompilerOptions(monaco, compilerOptions = null) {
   const options = {
     target:
       enumMember(ts?.ScriptTarget, SCRIPT_TARGETS[String(configured.target ?? '').toLowerCase()]) ??
+      ts?.ScriptTarget?.ES2020 ??
       ts?.ScriptTarget?.ESNext,
     module:
       enumMember(ts?.ModuleKind, MODULES[String(configured.module ?? '').toLowerCase()]) ??
@@ -201,9 +195,12 @@ export function buildMonacoCompilerOptions(monaco, compilerOptions = null) {
       ) ??
       ts?.ModuleResolutionKind?.Bundler ??
       ts?.ModuleResolutionKind?.NodeJs,
-    jsx:
-      enumMember(ts?.JsxEmit, JSX_EMITS[String(configured.jsx ?? '').toLowerCase()]) ??
-      ts?.JsxEmit?.ReactJSX,
+    // ALWAYS react-jsx, even when the project's tsconfig says "preserve" (Next's
+    // default). "preserve" is an EMIT choice for Next's own compiler; for the
+    // language service it means the classic React.createElement factory, which
+    // needs a `React` symbol the worker does not have. react-jsx is the correct
+    // setting for type-checking modern JSX in a single-file worker.
+    jsx: ts?.JsxEmit?.ReactJSX ?? enumMember(ts?.JsxEmit, 'ReactJSX'),
     allowJs: true,
     allowNonTsExtensions: true,
     esModuleInterop: true,
@@ -232,8 +229,12 @@ export function applyMonacoTsConfig(monaco, compilerOptions = null) {
   if (!ts) return
 
   const built = buildMonacoCompilerOptions(monaco, compilerOptions)
+  // Pragmatic middle ground for an editor with no project service:
+  //   * noSyntaxValidation: false  -> real syntax errors (broken JSX etc.) stay
+  //   * noSemanticValidation: true -> the flood of false type errors from missing
+  //     node_modules / React typings / unopened files disappears
   const diagnostics = {
-    noSemanticValidation: false,
+    noSemanticValidation: true,
     noSyntaxValidation: false,
     diagnosticCodesToIgnore: DIAGNOSTIC_CODES_TO_IGNORE,
   }

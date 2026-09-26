@@ -1,9 +1,21 @@
 export const ROOT_ID = 'root'
 
-// Never read or upload these during an import: dependencies, VCS metadata and
-// build output are huge, regenerable, and would blow the API body limit.
-// Checked by folder NAME at every depth.
-const SKIP_DIRECTORIES = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.cache'])
+// IMPORT-TIME EXCLUSION ONLY — this filter applies solely while reading a
+// folder from the user's LOCAL LAPTOP for upload (readAllFilesFromDirectory).
+// Dependencies, VCS metadata and build output are huge, regenerable, and would
+// blow the API body limit. Checked by folder NAME at every depth.
+//
+// This is deliberately independent of the workspace tree shown in the Explorer:
+// the server walks the workspace folder on disk with NO exclusions, so a
+// node_modules/.git/dist created by the terminal still appears in the tree.
+const IMPORT_SKIP_DIRECTORIES = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  '.next',
+  '.cache',
+])
 
 // Files above this size are skipped entirely (content is never read).
 export const MAX_IMPORT_FILE_BYTES = 2 * 1024 * 1024 // 2MB
@@ -48,7 +60,7 @@ export async function readAllFilesFromDirectory(directoryHandle, basePath = '') 
     const relativePath = basePath ? `${basePath}/${name}` : name
 
     if (handle.kind === 'directory') {
-      if (SKIP_DIRECTORIES.has(name)) {
+      if (IMPORT_SKIP_DIRECTORIES.has(name)) {
         skipped.directories += 1
         continue
       }

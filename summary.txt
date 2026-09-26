@@ -2604,3 +2604,213 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
     name). A name with spaces needs shell quoting (`cd My\ Project`), which is
     normal; names without spaces (the common case) work unquoted.
 
+================================================================================
+AI Code Editor — Phase 15: Live Tree Auto-Refresh (chokidar + Socket.IO) and the
+               TSX False-Error Root Cause + Monaco Diagnostics Fix
+================================================================================
+
+STATUS: complete. `node --check` on every server file passes; client oxlint (0/0)
+        and `vite build` pass. Both features verified live (real npm install +
+        real Socket.IO client).
+
+--------------------------------------------------------------------------------
+1. EXPLORER AUTO-REFRESHES WHEN THE FOLDER CHANGES ON DISK
+--------------------------------------------------------------------------------
+WHY: the tree was only re-read on an explicit app action, so anything the
+terminal did (npm install, git checkout, a build) left the Explorer stale.
+
+NEW DEPENDENCY: chokidar ^4.0.3 (server). v4 rather than v5 on purpose — v5
+requires Node >= 20.19, v4 works on Node >= 14.16, which is safer for the deploy.
+
+NEW server/src/utils/fileWatcher.js
+  - One refcounted chokidar watcher per ACTIVE project:
+      startWatchingProject(projectId, notify)  -> +1 ref (starts on first call)
+      stopWatchingProject(projectId)           -> -1 ref (closes at zero)
+      closeAllWatchers()                       -> server shutdown
+  - Watches the project folder (getWorkspacePath) and listens to add / addDir /
+    unlink / unlinkDir / change.
+  - DEBOUNCE: every event resets a 750ms timer; only when things go quiet is the
+    single notify(projectId) fired. A burst of thousands of events (npm install)
+    therefore collapses into ONE refresh.
+  - node_modules/.git are never descended into: the top-level directory's own
+    addDir/unlinkDir still fires, but nothing inside is watched.
+  - Defence in depth: the same ignore rules are ALSO applied to every incoming
+    event before it can schedule a refresh, because a directory created AFTER the
+    watcher started (npm install creating node_modules) can otherwise leak events
+    for its children.
+  - The watched root itself is never ignored (chokidar calls `ignored` for it;
+    returning true there silently watches nothing).
+  - If the project folder does not exist yet (fresh scratch workspace, import in
+    progress) it watches the parent container instead and scopes events to the
+    project path, so it starts reporting the moment the folder is created.
+
+NEW server/src/socket/workspaceSocket.js
+  client -> server:  workspace:watch   { projectId }  (project became active)
+                     workspace:unwatch { projectId }  (project changed/closed)
+  server -> client:  workspace:treeChanged { projectId }  (debounced, emitted to
+                     the project's room `workspace:<projectId>`)
+  Watching is reference-counted per socket, so several tabs never create duplicate
+  watchers and the watcher is released on unwatch or disconnect.
+  Registered from server.js next to the terminal socket; shutdown also calls
+  closeAllWatchers().
+
+NEW client/src/hooks/useWorkspaceWatcher.js  (called from App.jsx)
+  - On an active workspace it emits workspace:watch; on change/unmount it emits
+    workspace:unwatch. It depends only on projectId + source (not the workspace
+    object, whose identity changes on every refresh) so the subscription is not
+    torn down repeatedly.
+  - On workspace:treeChanged for the CURRENT project it debounces 400ms and then
+    dispatches refreshWorkspaceTree({ projectId }) — i.e. GET
+    /api/workspace/:projectId/tree — which replaces the tree in Redux and prunes
+    dead tabs/buffers exactly like a manual refresh.
+
+--------------------------------------------------------------------------------
+2. TSX FALSE ERRORS — ROOT CAUSE AND FIX
+--------------------------------------------------------------------------------
+INVESTIGATION
+  - Confirmed the model IS created with a real file URI and the correct language:
+    EditorArea passes path={`file:///${activeNode.id}`} (so the URI ends in
+    ".tsx") and language = getLanguageFromFilename(name), which is 'typescript'
+    for .tsx (utils/language.js). Monaco's TS worker derives the script kind (TSX
+    vs TS) from the URI extension, so JSX PARSING was already enabled — the
+    remaining red squiggles were NOT syntax errors.
+  - The persistent errors were SEMANTIC: Monaco runs the language service in a
+    single-file worker with no node_modules, no @types/react and no other open
+    files, so it reports unknown types, unresolved modules and JSX-attribute type
+    errors on perfectly valid code.
+  - Second contributor: buildMonacoCompilerOptions honoured the project's own
+    tsconfig `"jsx"` value, and Next.js writes `"jsx": "preserve"`. For the
+    language service "preserve" means the classic React.createElement factory,
+    which needs a `React` symbol the worker does not have.
+
+FIX (client/src/utils/monacoTsconfig.js)
+  - jsx is now ALWAYS JsxEmit.ReactJSX (the tsconfig value is deliberately not
+    used) — the correct setting for type-checking modern JSX in a single-file
+    worker.
+  - target defaults to ES2020 (or later, from the tsconfig when present);
+    moduleResolution Bundler; esModuleInterop, allowNonTsExtensions,
+    resolveJsonModule, skipLibCheck and noEmit are all set.
+  - setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: false })
+    — the pragmatic middle ground: SYNTAX validation stays on (so genuinely
+    malformed JSX, e.g. an unclosed tag, is still reported) while the flood of
+    false SEMANTIC errors disappears. DIAGNOSTIC_CODES_TO_IGNORE is kept as a
+    belt-and-braces guard.
+  - EditorArea.jsx carries a comment explaining that the model URI must keep the
+    real ".tsx" extension and why.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - node --check on every server file: passes. Client oxlint 0/0 and vite build:
+    pass.
+  - Watcher, driven live against a running server with socket.io-client:
+      A. workspace:watch on a NOT-YET-EXISTING project folder, then creating the
+         folder + a file  -> exactly 1 treeChanged event.
+      B. a REAL `npm install left-pad` inside the watched folder -> exactly 1
+         debounced treeChanged event, and node_modules/ exists on disk.
+      C. writing 300 files INSIDE node_modules -> 0 events.
+      D. adding a new top-level folder (client/index.js) -> exactly 1 event.
+    Every test folder was removed afterwards.
+  - Direct chokidar probe confirming that only the top-level file event fires and
+    node_modules churn is ignored by the matcher.
+  - Server was restarted on :4000 and is running this code.
+
+--------------------------------------------------------------------------------
+CLEANUP NOTE
+--------------------------------------------------------------------------------
+The first npm-install test ran in a worker folder that had no package.json, so
+npm walked up to server/package.json and installed left-pad into the repo. That
+was detected and fully reverted (npm uninstall): server/package.json,
+server/package-lock.json and server/node_modules are verified free of left-pad,
+and chokidar is the only new dependency. The test then ran again with a local
+package.json present.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - The watcher is lazily started by the client's workspace:watch; there is no
+    background watcher for inactive projects. Keep start/stop balanced — they are
+    reference-counted, and an unbalanced start leaks a watcher until shutdown.
+  - Two debounces are deliberate: 750ms server-side (batches the file-system
+    storm) and 400ms client-side (coalesces anything still arriving, including
+    our own save events).
+  - Auto-refresh re-reads the tree only; it does NOT refresh file contents already
+    open in the editor (Monaco keeps the user's buffer) nor the search-in-files
+    content cache.
+  - Semantic TS validation is intentionally OFF. If you ever want real type
+    checking in the editor, the correct fix is to feed the worker virtual files
+    (ambient .d.ts / a project service), not to re-enable noSemanticValidation.
+
+
+================================================================================
+FIX: Import-time exclusion vs. workspace-tree display are now FULLY separate
+================================================================================
+
+STATUS: complete and verified.
+
+THE BUG
+The Explorer hid folders that physically exist on disk. After running
+`npm install` in a project's terminal, node_modules existed on the server but
+never appeared in the tree; the same was true of .git, dist, build, .next, etc.
+
+ROOT CAUSE
+There were TWO independent exclusion lists, and the tree walker wrongly reused
+the import concept:
+
+  1. client/src/services/fileSystemAccess.js
+       const SKIP_DIRECTORIES = new Set(['node_modules', '.git', 'dist',
+                                          'build', '.next', '.cache'])
+     This was CORRECT — it filters what gets read off the user's LOCAL LAPTOP
+     and uploaded during import.
+
+  2. server/src/utils/workspaceManager.js
+       const SKIP_DIRECTORIES = new Set(['node_modules', '.git'])
+     ...used by walkDirectory(), which getWorkspaceTree() (the
+     GET /api/workspace/:projectId/tree endpoint) is built on. This is the BUG:
+     the tree-display walk was applying an exclusion filter at all. Any folder
+     named node_modules or .git on disk was silently omitted from the tree, no
+     matter how it got there (import, `npm install`, `git init`, `npm run build`,
+     or any other terminal command).
+
+THE FIX — two distinct, independent pieces of logic
+  * IMPORT-TIME EXCLUSION (unchanged behaviour, clearer intent)
+      client/src/services/fileSystemAccess.js
+      - Constant renamed SKIP_DIRECTORIES -> IMPORT_SKIP_DIRECTORIES, with a
+        comment stating it applies ONLY to readAllFilesFromDirectory() while
+        uploading a folder from the laptop. node_modules, .git, dist, build,
+        .next and .cache continue to be skipped so huge/regenerable data is
+        never uploaded.
+
+  * WORKSPACE-TREE DISPLAY (zero filtering)
+      server/src/utils/workspaceManager.js
+      - The server-side SKIP_DIRECTORIES constant was DELETED entirely.
+      - walkDirectory() no longer has any skip branch. It now returns 100% of
+        what is on the server's disk for the project — every file and every
+        folder, node_modules/.git/dist/build/.next included, at any depth.
+      - getWorkspaceTree() and the /tree endpoint therefore reflect the real
+        contents of the workspace exactly.
+
+WHY THE WATCHER STILL BEHAVES (and is NOT a filter)
+  server/src/utils/fileWatcher.js keeps NEVER_DESCEND_INTO = { node_modules,
+  .git } ONLY to bound how deep chokidar reports live changes (watching every
+  file in node_modules would swamp the process). It does NOT remove anything from
+  the tree: the top-level addDir for node_modules still fires, so the debounced
+  auto-refresh re-fetches the full tree and node_modules (with its contents)
+  shows up. A comment was added to the constant making this explicit so it is not
+  mistaken for a display filter again.
+
+VERIFICATION PERFORMED THIS ENTRY
+  - node --check on workspaceManager.js and fileWatcher.js: passes.
+  - Direct getWorkspaceTree() run against a real workspace folder containing
+    node_modules/ (with left-pad + .package-lock.json), .git/, dist/, build/,
+    .next/ and a nested deep/node_modules: ALL CHECKS PASSED — every folder
+    appears at the top level, node_modules is an expandable folder listing its
+    real children, and nested node_modules folders are present too.
+  - The temporary verification script created for this run was removed; only
+    workspaceManager.js, fileWatcher.js and fileSystemAccess.js changed.
+
+RESULT
+The Explorer now shows exactly what is on disk. Import exclusion and tree
+ display are two separate concerns: the only place that filters names is the
+ client import reader, and the tree walker filters nothing.
+

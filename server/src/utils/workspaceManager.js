@@ -19,8 +19,6 @@ const PROJECT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 // on demand and never registered in MongoDB.
 const SCRATCH_ID_PATTERN = /^scratch-[A-Za-z0-9_-]{1,100}$/
 
-const SKIP_DIRECTORIES = new Set(['node_modules', '.git'])
-
 // ---------------------------------------------------------------------------
 // On-disk workspace registry
 // ---------------------------------------------------------------------------
@@ -556,6 +554,14 @@ function sortChildren(children) {
   return children
 }
 
+/**
+ * Walks a workspace folder for the Explorer tree. This is a DISPLAY concern and
+ * therefore has ZERO filtering: every file and folder that exists on disk
+ * (node_modules, .git, dist, build, …) is returned exactly as it is. Import-time
+ * exclusion is a separate concern that lives ONLY in the client's
+ * services/fileSystemAccess.js (SKIP_DIRECTORIES), so folders created later by
+ * the terminal are never hidden here.
+ */
 function walkDirectory(directory, rootName, relativePath) {
   const children = []
 
@@ -563,7 +569,6 @@ function walkDirectory(directory, rootName, relativePath) {
     const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name
 
     if (entry.isDirectory()) {
-      if (SKIP_DIRECTORIES.has(entry.name)) continue
       children.push(walkDirectory(path.join(directory, entry.name), rootName, childRelative))
     } else if (entry.isFile()) {
       children.push({ name: entry.name, type: 'file', path: childRelative })

@@ -19,6 +19,7 @@ import { loadWorkspaceTsConfig } from './features/workspaceThunks'
 import { SIDEBAR_WIDTH_KEY, setSidebarWidth } from './features/uiSlice'
 import useGlobalShortcuts from './hooks/useGlobalShortcuts'
 import useRestoreWorkspace from './hooks/useRestoreWorkspace'
+import useWorkspaceWatcher from './hooks/useWorkspaceWatcher'
 import { clearFileContentCache } from './services/fileContentCache'
 import { clearWorkspaceRef } from './services/workspaceStorage'
 import { isCloudWorkspace } from './utils/workspace'
@@ -35,6 +36,8 @@ export default function App() {
 
   useGlobalShortcuts()
   useRestoreWorkspace()
+  // Live-refresh the Explorer when the workspace folder changes on disk.
+  useWorkspaceWatcher()
 
   useEffect(() => {
     dispatch(fetchCurrentUser())

@@ -3194,3 +3194,96 @@ VERIFICATION PERFORMED THIS ENTRY
   - Client oxlint: 0 warnings / 0 errors (64 files). Client vite build: succeeds.
   - The temporary verification harness was deleted; no test artefacts remain.
 
+
+================================================================================
+FIX: Freezes on delete / copy / paste — root causes found and eliminated
+================================================================================
+
+STATUS: complete and verified. Client oxlint 0/0 (64 files); vite build passes;
+        node --check on every changed server file passes.
+
+METHOD: audited the watcher, the server file operations and the client refresh
+path, then measured them directly on a real workspace containing 3000 files under
+node_modules. Temporary stress harness was used and then deleted.
+
+THREE contributing root causes were found (not one):
+
+RC1 (the hard freeze) — SYNCHRONOUS RECURSIVE DELETE
+  server/src/utils/workspaceManager.js deleteFromWorkspace() used
+  `fs.rmSync(dir, { recursive: true })` (and deleteWorkspaceFolder() the same).
+  Removing a folder that contains node_modules blocked the Node event loop for
+  the ENTIRE deletion — the server, every other API call and the terminal all
+  froze until it finished. This is not a tree-refresh problem: it is a blocking
+  filesystem call on the main thread.
+  FIX: `await fsp.rm(path, { recursive: true, force: true })` (one call handles
+  files and folders). deleteWorkspaceFolder() is now async too. rename/copy were
+  audited in the same pass: `fs.renameSync` -> `await fsp.rename`,
+  `fs.statSync`/`fs.existsSync` guards -> `await fsp.stat` / `fsp.access`, and
+  uniqueNameInFolder() (the "(copy)" name picker) is now async instead of a
+  sync existsSync loop. The recursive copy itself was already async with a
+  250-file yield.
+  MEASURED: deleting 3000 files took 685ms with 89 event-loop ticks DURING the
+  delete (a sync rmSync yields ~0 ticks). The server stayed responsive.
+
+RC2 — CHOKIDAR WATCHED FILE-HEAVY BUILD DIRS DEEPLY
+  server/src/utils/fileWatcher.js already refused to descend into node_modules
+  and .git, but dist / build / out / .next / .cache were watched recursively.
+  Those hold thousands of regenerable files, so chokidar maintained watchers and
+  processed events for all of them on every copy/build. The watcher also had no
+  depth cap.
+  FIX: NEVER_DESCEND_INTO now covers node_modules, .git, dist, build, out,
+  .next and .cache (the folder's OWN addDir/unlinkDir is still reported, so the
+  Explorer still updates when one appears or disappears — the tree walk itself
+  has NO exclusions and still displays them). Added `depth: 12` as a hard cap,
+  kept `ignoreInitial: true`, and kept the reference-counted one-watcher-per-
+  projectId design (startWatchingProject reuses an existing entry, stopWatching/
+  disconnect release refs, closeAllWatchers on shutdown) — audited and confirmed
+  there is exactly one instance per project.
+  MEASURED: 100 writes INSIDE node_modules produced 0 notifies at the watcher.
+
+RC3 — EVERY UI ACTION CAUSED TWO FULL-TREE WALKS
+  The client already refetches the tree directly after create/delete/rename/
+  duplicate. The chokidar watcher ALSO saw the same fs writes and, after its
+  750ms debounce, emitted workspace:treeChanged, which the client turned into a
+  SECOND full GET /tree. With node_modules present each walk reads and sorts
+  thousands of entries, so every delete/copy/paste did the expensive work twice.
+  FIX: new `suppressWatcher(projectId, ms)` in fileWatcher.js. The controller
+  calls it at the start of delete / rename / duplicate / create / save / import,
+  opening a ~1600ms window; a debounced notify that fires inside the window is
+  dropped (logged as "suppressed (own API change)"). External changes (terminal,
+  npm install, git) never call it, so they still notify normally.
+  NET: exactly ONE client tree refetch per UI action.
+  MEASURED: a self-suppressed top-level write produced 0 notifies; after the
+  window expired a write notified again (1).
+
+AUDITED, NO DEFECT FOUND:
+  - Duplicate socket listeners: client/src/hooks/useWorkspaceWatcher.js already
+    attaches `workspace:treeChanged` inside a useEffect with a matching
+    socket.off cleanup, a correct [projectId, source, dispatch] dependency array
+    and a client-side 400ms debounce; the server reuses one watcher per id. No
+    listener/leak duplication exists.
+  - Explorer memoization: TreeNode was already React.memo and toReduxTree already
+    does structural sharing, so unchanged subtrees keep identity. The tree
+    selector `state.fileSystem.tree` returns a stable reference across unrelated
+    Redux updates (Sidebar does not subscribe to terminal/ui/editor slices), so
+    unrelated state never re-maps the Explorer. Hardened anyway: FileTree itself
+    is now wrapped in memo, and the Sidebar callbacks it receives were
+    stabilized (cut/copy/copy-path via useCallback; paste/request-create via
+    refs mirrored in an effect so no stale closures and no ref-write during
+    render).
+
+REQUIRED BEHAVIOUR TESTED (real fs, 3000-file node_modules workspace):
+  - Delete node_modules (folder): 685ms, non-blocking, gone from disk, tree no
+    longer lists it.
+  - Copy f.txt then paste into A, B and C in quick succession: 17ms total, all
+    three files exist, tree lists A/B/C plus the renamed file — no reload.
+  - Rename/move f.txt -> g.txt: reflected on disk and in the tree.
+  - Watcher: node_modules-internal writes 0 notifies; top-level write 1; own
+    suppressed change 0; resumes after the window.
+  - Client verifies: oxlint 0/0 (64 files), vite build succeeds.
+
+CONCLUSION: delete/copy/paste are now instant and non-blocking. The freeze was
+primarily RC1 (synchronous recursive delete) with RC2 (deep chokidar watching of
+build dirs) and RC3 (doubled tree walks per action) compounding the lag. All
+three were addressed together; no speculative features were added.
+

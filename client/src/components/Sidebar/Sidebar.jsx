@@ -60,6 +60,13 @@ export default function Sidebar() {
 
   const handleCancelCreate = useCallback(() => setCreating(null), [])
 
+  // Fresh-instance mirrors for the two handlers that genuinely need live
+  // component state (clipboard, workspace). The refs are updated in an effect
+  // (never during render) so the stable wrappers below can be handed to the
+  // memoized FileTree without capturing stale values.
+  const pasteRef = useRef(null)
+  const requestCreateRef = useRef(null)
+
   /**
    * Makes sure there is a workspace to write into. With no imported project it
    * opens (or reuses) the per-user scratch workspace on the server — the very
@@ -107,15 +114,21 @@ export default function Sidebar() {
     guard(() => beginCreatingIn(parentId, type), 'Please sign in to create files')
   }
 
-  function handleCut(node) {
-    dispatch(setClipboard({ path: node.id, type: node.type, mode: 'cut' }))
-    dispatch(showToast({ message: `Cut ${node.name}`, type: 'info' }))
-  }
+  const handleCut = useCallback(
+    (node) => {
+      dispatch(setClipboard({ path: node.id, type: node.type, mode: 'cut' }))
+      dispatch(showToast({ message: `Cut ${node.name}`, type: 'info' }))
+    },
+    [dispatch],
+  )
 
-  function handleCopy(node) {
-    dispatch(setClipboard({ path: node.id, type: node.type, mode: 'copy' }))
-    dispatch(showToast({ message: `Copied ${node.name}`, type: 'info' }))
-  }
+  const handleCopy = useCallback(
+    (node) => {
+      dispatch(setClipboard({ path: node.id, type: node.type, mode: 'copy' }))
+      dispatch(showToast({ message: `Copied ${node.name}`, type: 'info' }))
+    },
+    [dispatch],
+  )
 
   /**
    * Paste into a folder: a CUT is a server-side move (rename endpoint), a COPY
@@ -177,7 +190,7 @@ export default function Sidebar() {
     }
   }
 
-  async function handleCopyPath(node) {
+  const handleCopyPath = useCallback(async (node) => {
     const relativePath = node.id === ROOT_ID ? '' : node.id
     const copied = await copyTextToClipboard(relativePath)
     dispatch(
@@ -186,7 +199,20 @@ export default function Sidebar() {
         type: copied ? 'success' : 'error',
       }),
     )
-  }
+  }, [dispatch])
+
+  // Keep the mirrors current after every commit so the stable wrappers always
+  // call the latest handler.
+  useEffect(() => {
+    pasteRef.current = handlePaste
+    requestCreateRef.current = handleRequestCreate
+  })
+
+  const stablePaste = useCallback((folderNode) => pasteRef.current?.(folderNode), [])
+  const stableRequestCreate = useCallback(
+    (parentId, type) => requestCreateRef.current?.(parentId, type),
+    [],
+  )
 
   const submitCreate = useCallback(
     async (rawName) => {
@@ -310,10 +336,10 @@ export default function Sidebar() {
           onRename={handleRename}
           onDelete={requestDelete}
           lockedId={ROOT_ID}
-          onRequestCreate={handleRequestCreate}
+          onRequestCreate={stableRequestCreate}
           onCut={handleCut}
           onCopy={handleCopy}
-          onPaste={handlePaste}
+          onPaste={stablePaste}
           onCopyPath={handleCopyPath}
         />
       </div>

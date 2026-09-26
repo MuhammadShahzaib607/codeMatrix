@@ -19,19 +19,53 @@ import { WORKSPACES_ROOT, getWorkspacePath, isValidProjectId } from './workspace
 
 const DEBOUNCE_MS = 750
 
+// A UI-driven mutation (delete/copy/paste/create/save) makes the client refresh
+// the tree itself. The fs events that mutation produces must NOT schedule a
+// second, redundant full-tree walk. The controller marks a suppression window
+// around its own operation (see suppressWatcher); any debounced notify that
+// fires inside the window is dropped.
+const SUPPRESS_MS = 1600
+
+// Hard cap on how deep chokidar descends. Nothing in this app cares about a
+// change 12 levels down, and an unbounded walk of a deep dependency tree is a
+// real cost on every attach.
+const MAX_WATCH_DEPTH = 12
+
 // We watch for the TOP-LEVEL appearance/disappearance of these directories but
 // never descend into them: node_modules alone can hold tens of thousands of
 // files, and watching all of them would swamp the process for no benefit.
+// dist/build/.next/out/.cache are the same class of regenerable, file-heavy
+// build output.
 //
 // IMPORTANT: this only limits how deep the WATCHER reports changes — it must
 // never be read as a tree filter. The Explorer tree itself comes from
 // workspaceManager.getWorkspaceTree, which has NO exclusions and shows every
-// folder that exists on disk, node_modules and .git included. Creating
-// node_modules still fires addDir here, so the tree refreshes and shows it.
-const NEVER_DESCEND_INTO = new Set(['node_modules', '.git'])
+// folder that exists on disk, node_modules, .git and dist included. Creating an
+// excluded folder still fires addDir here, so the tree still refreshes.
+const NEVER_DESCEND_INTO = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'out',
+  '.next',
+  '.cache',
+])
 
-// projectId -> { watcher, refs, timer, notify }
+// projectId -> { watcher, refs, timer, eventCount, suppressUntil, notify }
 const watchers = new Map()
+
+/**
+ * Drops watcher notifications caused by the SERVER'S OWN API mutation for a
+ * short window, so a delete/copy/paste/create/save yields exactly ONE tree
+ * refresh (the client's direct post-action fetch). External changes (terminal,
+ * git, npm install) never call this, so they still notify normally.
+ */
+export function suppressWatcher(projectId, ms = SUPPRESS_MS) {
+  const entry = watchers.get(projectId)
+  if (!entry) return
+  entry.suppressUntil = Math.max(entry.suppressUntil ?? 0, Date.now() + ms)
+}
 
 /**
  * True when `target` lives strictly INSIDE a directory we refuse to descend
@@ -73,6 +107,12 @@ function scheduleNotify(projectId) {
     entry.timer = null
     const coalesced = entry.eventCount
     entry.eventCount = 0
+    // Self-induced change: the client already refreshed directly, so do not
+    // trigger a second full-tree walk.
+    if (entry.suppressUntil && Date.now() < entry.suppressUntil) {
+      console.log(`[watcher] ${projectId}: ${coalesced} fs event(s) suppressed (own API change)`)
+      return
+    }
     const startedAt = Date.now()
     try {
       entry.notify(projectId)
@@ -120,6 +160,7 @@ export function startWatchingProject(projectId, notify) {
       ignoreInitial: true,
       persistent: true,
       followSymlinks: false,
+      depth: MAX_WATCH_DEPTH,
       ignored: (target) => {
         // NEVER ignore the watched root itself — chokidar calls `ignored` for it
         // and returning true would silently watch nothing at all.
@@ -132,7 +173,14 @@ export function startWatchingProject(projectId, notify) {
     return false
   }
 
-  watchers.set(projectId, { watcher, refs: 1, timer: null, eventCount: 0, notify })
+  watchers.set(projectId, {
+    watcher,
+    refs: 1,
+    timer: null,
+    eventCount: 0,
+    suppressUntil: 0,
+    notify,
+  })
 
   // Structural + content events all funnel into one debounced refresh. The
   // ignore rules are re-applied here as well as passed to chokidar: a directory

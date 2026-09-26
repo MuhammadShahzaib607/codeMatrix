@@ -279,7 +279,7 @@ const TreeNode = memo(function TreeNode({
   )
 })
 
-export default function FileTree({
+function FileTree({
   nodes,
   selectedId,
   onSelect,
@@ -508,3 +508,9 @@ export default function FileTree({
     </div>
   )
 }
+
+// memo(): the Sidebar's tree selectors return a stable reference (structural
+// sharing in toReduxTree) and every callback it passes down is now stable, so an
+// unrelated Sidebar re-render (opening a confirm dialog, etc.) does not re-map
+// the whole Explorer.
+export default memo(FileTree)

@@ -375,11 +375,13 @@ export function createWorkspaceFolder(projectId, options = {}) {
   return registerWorkspaceFolder(projectId, options)
 }
 
-export function deleteWorkspaceFolder(projectId) {
+export async function deleteWorkspaceFolder(projectId) {
   assertValidProjectId(projectId)
   const directory = getWorkspacePath(projectId)
   if (!fs.existsSync(directory)) return false
-  fs.rmSync(directory, { recursive: true, force: true })
+  // Async recursive remove: deleting a workspace that contains node_modules
+  // synchronously blocked the event loop for the whole deletion.
+  await fsp.rm(directory, { recursive: true, force: true })
   // Drop the registry entry too, so a later re-create gets a clean mapping.
   const registry = loadRegistry()
   if (registry[projectId]) {
@@ -425,24 +427,24 @@ export function createFolderInWorkspace(projectId, relativeFolderPath) {
   return relative
 }
 
-export function deleteFromWorkspace(projectId, relativeFilePath) {
+export async function deleteFromWorkspace(projectId, relativeFilePath) {
   assertWorkspaceExists(projectId)
   const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFilePath)
   if (!relative) throw new ApiError(400, 'The workspace root cannot be deleted.', 'INVALID_PATH')
 
-  if (!fs.existsSync(absolute)) {
+  const stats = await fsp.stat(absolute).catch(() => null)
+  if (!stats) {
     throw new ApiError(404, `"${relative}" was not found in this workspace.`, 'FILE_MISSING')
   }
 
-  if (fs.statSync(absolute).isDirectory()) {
-    fs.rmSync(absolute, { recursive: true, force: true })
-  } else {
-    fs.unlinkSync(absolute)
-  }
+  // One async call handles files and folders alike (recursive is harmless for a
+  // file). A synchronous fs.rmSync of a folder containing node_modules used to
+  // freeze the entire server — terminal included — for the whole deletion.
+  await fsp.rm(absolute, { recursive: true, force: true })
   return relative
 }
 
-export function renamePathInWorkspace(projectId, oldRelativePath, newRelativePath) {
+export async function renamePathInWorkspace(projectId, oldRelativePath, newRelativePath) {
   assertWorkspaceExists(projectId)
   const from = resolveInsideWorkspace(projectId, oldRelativePath)
   const to = resolveInsideWorkspace(projectId, newRelativePath)
@@ -450,14 +452,15 @@ export function renamePathInWorkspace(projectId, oldRelativePath, newRelativePat
   if (!from.relative || !to.relative) {
     throw new ApiError(400, 'Both the source and destination paths are required.', 'INVALID_PATH')
   }
-  if (!fs.existsSync(from.absolute)) {
+  const fromStats = await fsp.stat(from.absolute).catch(() => null)
+  if (!fromStats) {
     throw new ApiError(404, `"${from.relative}" was not found in this workspace.`, 'FILE_MISSING')
   }
   // Moving a folder into itself (or into one of its own descendants) would make
-  // fs.renameSync fail with an opaque EINVAL, so reject it up front. This is the
+  // rename fail with an opaque EINVAL, so reject it up front. This is the
   // cut -> paste-into-itself case.
   if (
-    fs.statSync(from.absolute).isDirectory() &&
+    fromStats.isDirectory() &&
     (to.relative === from.relative || to.relative.startsWith(`${from.relative}/`))
   ) {
     throw new ApiError(
@@ -466,12 +469,16 @@ export function renamePathInWorkspace(projectId, oldRelativePath, newRelativePat
       'INVALID_PATH',
     )
   }
-  if (fs.existsSync(to.absolute)) {
+  const toExists = await fsp.access(to.absolute).then(
+    () => true,
+    () => false,
+  )
+  if (toExists) {
     throw new ApiError(409, `"${to.relative}" already exists.`, 'ALREADY_EXISTS')
   }
 
-  fs.mkdirSync(path.dirname(to.absolute), { recursive: true })
-  fs.renameSync(from.absolute, to.absolute)
+  await fsp.mkdir(path.dirname(to.absolute), { recursive: true })
+  await fsp.rename(from.absolute, to.absolute)
   return { oldPath: from.relative, newPath: to.relative }
 }
 
@@ -505,12 +512,17 @@ async function copyDirectoryRecursive(fromAbsolute, toAbsolute, progress) {
  * overwrites and never fails — duplicating an item into a folder that already
  * has one of that name just produces "a (copy).txt".
  */
-function uniqueNameInFolder(folderAbsolute, name) {
-  if (!fs.existsSync(path.join(folderAbsolute, name))) return name
+async function uniqueNameInFolder(folderAbsolute, name) {
+  const exists = (candidate) =>
+    fsp.access(path.join(folderAbsolute, candidate)).then(
+      () => true,
+      () => false,
+    )
+  if (!(await exists(name))) return name
   const { name: base, ext } = path.parse(name)
   let counter = 1
   let candidate = `${base} (copy)${ext}`
-  while (fs.existsSync(path.join(folderAbsolute, candidate))) {
+  while (await exists(candidate)) {
     counter += 1
     candidate = `${base} (copy ${counter})${ext}`
   }
@@ -533,7 +545,11 @@ export async function copyPathInWorkspace(projectId, sourceRelativePath, targetF
   if (!source.relative) {
     throw new ApiError(400, 'A source path is required.', 'INVALID_PATH')
   }
-  if (!fs.existsSync(source.absolute)) {
+  const sourceExists = await fsp.access(source.absolute).then(
+    () => true,
+    () => false,
+  )
+  if (!sourceExists) {
     throw new ApiError(404, `"${source.relative}" was not found in this workspace.`, 'FILE_MISSING')
   }
 
@@ -550,10 +566,8 @@ export async function copyPathInWorkspace(projectId, sourceRelativePath, targetF
     )
   }
 
-  if (
-    fs.existsSync(targetFolder.absolute) &&
-    !(await fsp.stat(targetFolder.absolute)).isDirectory()
-  ) {
+  const targetStats = await fsp.stat(targetFolder.absolute).catch(() => null)
+  if (targetStats && !targetStats.isDirectory()) {
     throw new ApiError(
       400,
       `"${targetFolder.relative}" is not a folder.`,
@@ -561,7 +575,7 @@ export async function copyPathInWorkspace(projectId, sourceRelativePath, targetF
     )
   }
 
-  const name = uniqueNameInFolder(targetFolder.absolute, path.basename(source.absolute))
+  const name = await uniqueNameInFolder(targetFolder.absolute, path.basename(source.absolute))
   const destinationAbsolute = path.join(targetFolder.absolute, name)
 
   await fsp.mkdir(targetFolder.absolute, { recursive: true })

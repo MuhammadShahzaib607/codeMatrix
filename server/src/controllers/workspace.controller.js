@@ -2,6 +2,7 @@ import archiver from 'archiver'
 import { findProject, touchProject, upsertProject } from '../models/project.repository.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
+import { suppressWatcher } from '../utils/fileWatcher.js'
 import {
   copyPathInWorkspace,
   createFolderInWorkspace,
@@ -55,6 +56,10 @@ export const importProject = asyncHandler(async (req, res) => {
       'TOO_MANY_FILES',
     )
   }
+
+  // The client re-opens the workspace with a direct GET /tree after import, so
+  // the fs events this writes must not schedule a second tree walk.
+  suppressWatcher(projectId)
 
   const projectName = name?.trim() || projectId
   // The folder on disk is named from the DISPLAY name (sanitized + a short
@@ -139,6 +144,9 @@ export const saveFile = asyncHandler(async (req, res) => {
   const filePath = requirePath(req.body?.path)
   const content = typeof req.body?.content === 'string' ? req.body.content : ''
 
+  // A save does not change the tree shape; suppress the 'change' event so it
+  // cannot trigger a pointless full-tree walk.
+  suppressWatcher(projectId)
   const savedPath = writeFileToWorkspace(projectId, filePath, content)
   await touchProject(projectId)
 
@@ -154,6 +162,8 @@ export const createEntry = asyncHandler(async (req, res) => {
     throw new ApiError(400, '"type" must be either "file" or "folder".', 'INVALID_TYPE')
   }
 
+  // The client refreshes the tree directly after this resolves.
+  suppressWatcher(projectId)
   if (type === 'folder') {
     createFolderInWorkspace(projectId, targetPath)
   } else {
@@ -168,7 +178,8 @@ export const deleteEntry = asyncHandler(async (req, res) => {
   const { projectId } = req.params
   const targetPath = requirePath(req.body?.path)
 
-  const deleted = deleteFromWorkspace(projectId, targetPath)
+  suppressWatcher(projectId)
+  const deleted = await deleteFromWorkspace(projectId, targetPath)
   await touchProject(projectId)
 
   res.json({ path: deleted, deleted: true })
@@ -179,7 +190,8 @@ export const renameEntry = asyncHandler(async (req, res) => {
   const oldPath = requirePath(req.body?.oldPath, 'oldPath')
   const newPath = requirePath(req.body?.newPath, 'newPath')
 
-  const result = renamePathInWorkspace(projectId, oldPath, newPath)
+  suppressWatcher(projectId)
+  const result = await renamePathInWorkspace(projectId, oldPath, newPath)
   await touchProject(projectId)
 
   res.json({ ...result, renamed: true })
@@ -191,6 +203,7 @@ export const duplicateEntry = asyncHandler(async (req, res) => {
   const targetFolderPath =
     typeof req.body?.targetFolderPath === 'string' ? req.body.targetFolderPath : ''
 
+  suppressWatcher(projectId)
   // TEMP DIAGNOSTIC (safe to remove): the paste latency and whether it blocks
   // the event loop can be read straight off this line.
   const startedAt = Date.now()

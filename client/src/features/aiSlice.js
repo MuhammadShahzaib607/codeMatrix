@@ -76,6 +76,42 @@ export const deleteApiKey = createAsyncThunk(
   },
 )
 
+/**
+ * Reveals ONE saved key after the user re-enters their account password. The
+ * server verifies the password against the login hash and only then decrypts;
+ * a wrong password rejects with a clear message and never returns key data.
+ */
+export const revealApiKey = createAsyncThunk(
+  'ai/revealKey',
+  async ({ keyId, password }, { rejectWithValue }) => {
+    try {
+      const data = await agentKeysApi.reveal(keyId, password)
+      return { keyId, value: data?.key?.value ?? '' }
+    } catch (error) {
+      return rejectWithValue(error.message)
+    }
+  },
+)
+
+/**
+ * Updates a saved key's label and/or replaces its value. Same password gate as
+ * reveal; the new value is re-encrypted server-side.
+ */
+export const updateApiKey = createAsyncThunk(
+  'ai/updateKey',
+  async ({ keyId, password, label, key }, { dispatch, rejectWithValue }) => {
+    try {
+      const data = await agentKeysApi.update(keyId, { password, label, key })
+      dispatch(showToast({ message: 'API key updated.', type: 'success' }))
+      await dispatch(fetchApiKeys())
+      return data
+    } catch (error) {
+      dispatch(showToast({ message: error.message, type: 'error' }))
+      return rejectWithValue(error.message)
+    }
+  },
+)
+
 // ---------------------------------------------------------------------------
 // Starting a run
 // ---------------------------------------------------------------------------
@@ -89,39 +125,57 @@ export const startAgentTask = createAsyncThunk(
   'ai/startTask',
   async ({ projectId, task }, { dispatch, getState, rejectWithValue }) => {
     const { ai } = getState()
-    const socket = getSocket()
-    const token = getAuthToken()
 
     // Optimistic user row + running state, so the request shows immediately.
     dispatch(agentStarted({ task }))
 
-    const ack = await new Promise((resolve) => {
-      const timeout = setTimeout(
-        () => resolve({ ok: false, message: 'The server did not respond. Is it running?' }),
-        20000,
-      )
-      socket.emit(
-        'agent:run',
-        {
-          token,
-          projectId,
-          task,
-          framework: ai.framework,
-          keyId: ai.selectedKeyId,
-        },
-        (response) => {
-          clearTimeout(timeout)
-          resolve(response ?? { ok: false, message: 'The server returned no response.' })
-        },
-      )
-    })
+    try {
+      if (!projectId) {
+        throw new Error(
+          'no project is open. Open or import a project before running the agent.',
+        )
+      }
 
-    if (!ack?.ok) {
-      const message = ack?.message ?? 'The agent could not start.'
+      const socket = getSocket()
+      const token = getAuthToken()
+
+      const ack = await new Promise((resolve) => {
+        const timeout = setTimeout(
+          () =>
+            resolve({
+              ok: false,
+              message: 'the server did not respond. Is the API server running?',
+            }),
+          20000,
+        )
+        socket.emit(
+          'agent:run',
+          {
+            token,
+            projectId,
+            task,
+            framework: ai.framework,
+            keyId: ai.selectedKeyId,
+          },
+          (response) => {
+            clearTimeout(timeout)
+            resolve(response ?? { ok: false, message: 'the server returned no response.' })
+          },
+        )
+      })
+
+      if (!ack?.ok) {
+        throw new Error(ack?.message ?? 'the agent could not start.')
+      }
+      return { started: true }
+    } catch (error) {
+      // EVERY failure ends up as a visible agent bubble in the chat area —
+      // never a silent no-op. This covers missing project/workspace, socket
+      // connection problems, an expired session and a bad/unknown key id.
+      const message = `Failed to reach the AI agent: ${error.message}`
       dispatch(agentDone({ ok: false, message }))
       return rejectWithValue(message)
     }
-    return { started: true }
   },
 )
 

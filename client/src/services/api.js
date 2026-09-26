@@ -151,6 +151,24 @@ export const agentKeysApi = {
   remove(keyId) {
     return request(`/api/keys/${encodeURIComponent(keyId)}`, { method: 'DELETE' })
   },
+
+  // The ONLY calls that return a decrypted key. Both require the account
+  // password (re-verified server-side against the login password hash).
+  reveal(keyId, password) {
+    return request(`/api/keys/${encodeURIComponent(keyId)}/reveal`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    })
+  },
+
+  // Updates the label and/or replaces the key value. `key` is optional — omit
+  // it to change only the label.
+  update(keyId, { password, label, key }) {
+    return request(`/api/keys/${encodeURIComponent(keyId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ password, label, key }),
+    })
+  },
 }
 
 export const workspaceApi = {

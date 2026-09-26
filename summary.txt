@@ -3570,3 +3570,137 @@ VERIFICATION PERFORMED THIS ENTRY
   - Harness + benchmark scripts deleted; no test artefacts remain (git status
     shows only the five intended client files).
 
+
+================================================================================
+AI Code Editor — Phase 7: AI Panel Layout, Send Fix, Password-Gated Key
+               Reveal/Edit
+================================================================================
+
+STATUS: complete and verified. Three things changed: (1) the AI panel's bottom
+        area is no longer cramped and its textarea auto-grows, (2) sending a
+        task no longer fails silently, (3) saved API keys can be revealed and
+        edited, but only after re-entering the account password.
+
+--------------------------------------------------------------------------------
+1. ROOT CAUSE OF THE "SEND BUTTON DOES NOT SEND" BUG
+--------------------------------------------------------------------------------
+The send path itself was wired correctly: the composer's <form onSubmit> and
+the textarea's Enter keydown both call handleSend(), which dispatches the
+startAgentTask thunk over the agent Socket.IO channel ('agent:run'), and the
+server streams 'agent:action' events back. Driving the real App (jsdom + Vite
+SSR) against a live server showed both Enter and clicking the send button
+start a run.
+
+What actually LOOKED like a broken button was a silent gate on the active
+workspace:
+
+  - A freshly signed-in user has fileSystem.workspace = EMPTY_WORKSPACE
+    ({ source:'none', projectId:null }) until a project is imported (or a file
+    is created, which opens the scratch workspace).
+  - The AI panel still renders its framework selector, key selector and the
+    whole composer in that state, because the composer only requires a saved
+    KEY — not a project. So key + framework both LOOK selected.
+  - BUT the send button was disabled whenever !hasWorkspace, and pressing
+    Enter fell into `if (!projectId) return` inside handleSend. Either way
+    there was ZERO feedback: no error, no toast, no bubble. Clicking send
+    simply did nothing.
+  - A second, rarer silent path: any unexpected throw inside the
+    startAgentTask thunk (before the ack handled it) produced no agent:done,
+    so nothing reached the chat area either.
+
+THE FIX
+  - startAgentTask (features/aiSlice.js) now wraps its whole body in
+try/catch: a missing project/workspace, a socket/connection problem, an
+expired session or an unknown key id all resolve to
+    "Failed to reach the AI agent: <reason>"
+  pushed into the timeline via agentDone({ ok:false }), so it is ALWAYS
+  visible in the chat area. The 20s no-response timeout message was reworded
+  to fit that prefix.
+  - The send button is no longer disabled by !hasWorkspace: it stays enabled
+  whenever there is text, so clicking it (or Enter) with no project surfaces
+  the visible error above instead of doing nothing.
+  - handleSend() now rejects while a send is in flight (a ref guard, so a
+  rapid double Enter cannot dispatch two runs), resets the draft, dispatches
+  startAgentTask, and swallows the already-rendered rejection so the console
+  stays clean.
+
+--------------------------------------------------------------------------------
+2. LAYOUT FIXES (client/src/components/AIPanel/*)
+--------------------------------------------------------------------------------
+  - Every bottom row now has real breathing room: suggestion chips
+    padding 12px 16px, controls row 12px 16px, composer 12px 16px 16px, with
+    10–12px flex gaps (was 6–10px with tighter padding).
+  - Suggestion chips wrap onto as many lines as needed
+    (flex-wrap + gap:8px, white-space:normal, overflow-wrap:anywhere) and can
+    never poke past the panel edges.
+  - The controls row wraps instead of overflowing at the 280px minimum, and
+    the key select can shrink (flex:0 1 auto; min-width:0).
+  - The composer textarea AUTO-GROWS: an effect resets it to height:auto and
+    sets the measured scrollHeight, clamped at 120px, past which it scrolls
+    internally (was pinned to 52px by a .ai-input/.ai-textarea specificity
+    clash — fixed with a combined .ai-input.ai-textarea rule).
+  - The send button is a fixed 36×36, align-self:center, so it stays centered
+    and never squashes as the textarea grows.
+
+  VERIFIED in real headless Chrome (built CSS) at 280 / 340 / 420 / 600px:
+    zero overflow on the panel, controls, composer and suggestions rows; the
+    send button measured 36×36 with a 0px vertical-center delta; a 20-line
+    draft grew the textarea to exactly 120px and was capped there.
+
+--------------------------------------------------------------------------------
+3. PASSWORD-GATED REVEAL + EDIT FOR SAVED API KEYS
+--------------------------------------------------------------------------------
+Backend (server/src/…)
+  - POST /api/keys/:id/reveal  { password }
+  - PUT  /api/keys/:id         { password, label?, key? }
+  Both are JWT-protected (the /api/keys router already runs `protect`).
+  apiKeyService.verifyAccountPassword(userId, password) loads the User and
+  uses the model's own comparePassword() (bcrypt). A wrong or missing password
+  throws 401 (code INVALID_PASSWORD / PASSWORD_REQUIRED) and NO key data is
+  returned. Only then does revealKeyForUser() decrypt the AES-256-GCM value,
+  or updateKeyForUser() re-encrypt a replacement value / save a new label.
+  Ownership is enforced by filtering every query on owner — another user's
+  key id is a 404 even with a correct password.
+
+Client
+  - services/api.js: agentKeysApi.reveal(keyId, password) and
+    agentKeysApi.update(keyId, { password, label, key }).
+  - features/aiSlice.js: revealApiKey and updateApiKey thunks (update also
+    refreshes the masked list and toasts success/error).
+  - components/Settings/KeyAccessModal.jsx (NEW): one password-gated dialog
+    shared by both actions. Reveal mode = password only. Edit mode adds a
+    Label field and an optional "Replace key value" field that are saved
+    together with the password in one request.
+  - components/Settings/SettingsModal.jsx: every saved key row gains an eye
+    icon (Eye/EyeOff) and a pencil icon. Eye -> dialog -> on success the row
+    shows the FULL key with a Copy button. Pencil -> the edit dialog.
+  - Re-masking: a revealed key hides itself again after 30s
+    (REVEAL_HIDE_MS), immediately after Copy, when the eye is toggled off, and
+    whenever Settings is closed (the close handlers clear the state, so
+    plaintext never survives leaving the view).
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (72 files). vite build: succeeds.
+  - node --check on every changed server file: passes.
+  - Live API run (real server + MongoDB, 16/16 checks): reveal requires auth;
+    wrong password 401 with NO key data; missing password 401; correct password
+    returns the exact saved key; another user's reveal 404; edit wrong password
+    401; label-only edit keeps the masked value; value replacement re-encrypts
+    and reveal returns the new key; malformed replacement 400 KEY_INVALID; the
+    list endpoint still never contains the full key.
+  - Real-App jsdom harness (Vite SSR) against the live API, 25/25 checks:
+    masked list has no plaintext; eye opens the password dialog; wrong password
+    shows an inline error, keeps the dialog open and never reveals; correct
+    password shows the full key + Copy; Copy writes to the clipboard and
+    re-masks; pencil opens the edit dialog with label + replace fields; wrong
+    password rejected; correct edit renames + replaces (masked value updates,
+    reveal returns the replacement); eye-off hides; reopening Settings is
+    masked again.
+  - Full pre-existing AI agent harness re-run: 49/49 checks (send via Enter and
+    via the send button both still start a live run end to end).
+  - Temporary harnesses/scripts and their logs were deleted; git status shows
+    only the intended source files (plus client/tmp-ui-harness.mjs, which only
+    lost one unused variable to keep oxlint clean).
+

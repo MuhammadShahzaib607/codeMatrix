@@ -9,6 +9,10 @@ const router = Router()
 router.use(protect)
 router.get('/', apiKeyController.listKeys)
 router.post('/', apiKeyController.createKey)
+// Password-gated (body: { password }): the only routes that ever touch the
+// decrypted key at rest.
+router.post('/:id/reveal', apiKeyController.revealKey)
+router.put('/:id', apiKeyController.updateKey)
 router.delete('/:id', apiKeyController.removeKey)
 
 export default router

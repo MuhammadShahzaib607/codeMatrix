@@ -20,6 +20,7 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import {
+  agentDone,
   clearTimeline,
   fetchApiKeys,
   selectKeyId,
@@ -166,12 +167,20 @@ function FrameworkMenu({ value, onChange, disabled }) {
   )
 }
 
+// The composer textarea grows with its content up to this many pixels, then
+// scrolls internally. Keep in sync with .ai-textarea's max-height in the CSS.
+const MAX_TEXTAREA_HEIGHT = 120
+
 export default function AIPanel() {
   const dispatch = useDispatch()
   const guard = useAuthGuard()
   const [draft, setDraft] = useState('')
   const [expandedIds, setExpandedIds] = useState(() => new Set())
   const scrollRef = useRef(null)
+  const textareaRef = useRef(null)
+  // Guards against a rapid double Enter/click dispatching two runs before
+  // `running` has re-rendered true.
+  const sendingRef = useRef(false)
 
   const {
     keys,
@@ -225,11 +234,40 @@ export default function AIPanel() {
   function handleSend(event) {
     event?.preventDefault?.()
     const task = draft.trim()
-    if (!task || running) return
+    if (!task || running || sendingRef.current) return
+
+    if (!isAuthenticated) {
+      guard(() => {}, 'Please sign in to use the AI assistant')
+      return
+    }
+
+    // Sending with no project used to be a silent no-op (the button was
+    // disabled and Enter returned early), which looked like the send button
+    // was broken. Surface it as a visible agent error instead.
+    if (!hasWorkspace) {
+      dispatch(
+        agentDone({
+          ok: false,
+          message:
+            'Failed to reach the AI agent: open or import a project first — the agent needs a workspace to work in.',
+        }),
+      )
+      return
+    }
+
+    sendingRef.current = true
     const run = () => {
-      if (!projectId) return
       setDraft('')
       dispatch(startAgentTask({ projectId, task }))
+        .unwrap()
+        .catch(() => {
+          // The failure is already rendered as an agent error bubble in the
+          // feed (see startAgentTask); swallow here to avoid an unhandled
+          // rejection in the console.
+        })
+        .finally(() => {
+          sendingRef.current = false
+        })
     }
     guard(run, 'Please sign in to use the AI assistant')
   }
@@ -247,6 +285,16 @@ export default function AIPanel() {
   const showComposer =
     !showSignedOutCard && !keysLoading && !showZeroKeyCard && !keysFailed && keys.length > 0
   const showSuggestions = timeline.length === 0 && !running && showComposer
+
+  // Auto-grow the composer: reset to "auto" so it can shrink when lines are
+  // deleted, then clamp the measured content height to MAX_TEXTAREA_HEIGHT.
+  // Beyond that the textarea keeps its height and scrolls internally.
+  useEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`
+  }, [draft, showComposer])
 
   return (
     <aside className="ai-panel">
@@ -437,8 +485,9 @@ export default function AIPanel() {
         <>
           <form className="ai-composer" onSubmit={handleSend}>
             <textarea
+              ref={textareaRef}
               className="ai-input ai-textarea"
-              rows={2}
+              rows={1}
               value={draft}
               disabled={running}
               spellCheck={false}
@@ -462,7 +511,7 @@ export default function AIPanel() {
               className="ai-send"
               title="Run task"
               aria-label="Send task"
-              disabled={!draft.trim() || running || !hasWorkspace}
+              disabled={!draft.trim() || running}
             >
               <Send size={16} />
             </button>

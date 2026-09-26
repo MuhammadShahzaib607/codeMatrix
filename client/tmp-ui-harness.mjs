@@ -256,7 +256,7 @@ await waitFor(() => $('.ai-composer'))
 check('composer appears once a key exists', Boolean($('.ai-composer')))
 
 click($('.ai-framework-btn'))
-const frameworkMenu = await waitFor(() => $('.ai-framework-menu'))
+await waitFor(() => $('.ai-framework-menu'))
 const frameworkItems = $$('.ai-framework-item')
 check('framework dropdown opens with all 8 stacks', frameworkItems.length === 8, `${frameworkItems.length} items`)
 check('colored dot per framework', $$('.ai-framework-item .ai-framework-dot').length === 8)

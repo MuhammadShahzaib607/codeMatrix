@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 import { isDatabaseConnected } from '../config/db.js'
 import { env } from '../config/env.js'
 import { GroqApiKey } from '../models/GroqApiKey.model.js'
+import User from '../models/User.model.js'
 import ApiError from '../utils/ApiError.js'
 import { decryptSecret, encryptSecret, maskSecret } from '../utils/keyVault.js'
 
@@ -83,6 +84,99 @@ export async function deleteKeyForUser(ownerId, keyId) {
   requireDatabase()
   const result = await GroqApiKey.deleteOne({ _id: keyId, owner: ownerId })
   return result.deletedCount > 0
+}
+
+/**
+ * Re-checks the caller's ACCOUNT password (the CodeMatrix login password, not
+ * the API key) against the stored bcrypt hash using the User model's own
+ * comparePassword. Used to gate revealing and editing a saved key. Throws 401
+ * with a clear message when it does not match, so no key data can leak.
+ */
+export async function verifyAccountPassword(userId, password) {
+  requireDatabase()
+  const candidate = typeof password === 'string' ? password : ''
+  if (!candidate) {
+    throw new ApiError(
+      401,
+      'Enter your account password to continue.',
+      'PASSWORD_REQUIRED',
+    )
+  }
+  const user = await User.findById(userId)
+  if (!user) {
+    throw new ApiError(404, 'That account no longer exists.', 'USER_NOT_FOUND')
+  }
+  const isValid = await user.comparePassword(candidate)
+  if (!isValid) {
+    throw new ApiError(
+      401,
+      'Incorrect password. Your API key was not revealed.',
+      'INVALID_PASSWORD',
+    )
+  }
+}
+
+/**
+ * FULL, decrypted key for its owner ONLY. Never exposed on a plain list call —
+ * callers must verify the account password first (verifyAccountPassword).
+ */
+export async function revealKeyForUser(ownerId, keyId) {
+  requireDatabase()
+  if (!mongoose.isValidObjectId(keyId)) {
+    throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
+  }
+  const doc = await GroqApiKey.findOne({ _id: keyId, owner: ownerId })
+  if (!doc) {
+    throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
+  }
+  try {
+    return {
+      id: String(doc._id),
+      label: doc.label || '',
+      value: decryptSecret(doc.encryptedKey),
+    }
+  } catch {
+    throw new ApiError(
+      500,
+      'That saved key could not be decrypted (ENCRYPTION_SECRET changed?). Delete it and add the key again.',
+      'KEY_DECRYPT_FAILED',
+    )
+  }
+}
+
+/**
+ * Updates the label and/or replaces the key value of one of the user's OWN
+ * keys. Re-encrypts the new value before it is stored; ownership is enforced by
+ * filtering every query on owner. Returns the masked, client-safe view.
+ */
+export async function updateKeyForUser(ownerId, keyId, { label, key } = {}) {
+  requireDatabase()
+  if (!mongoose.isValidObjectId(keyId)) {
+    throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
+  }
+  const doc = await GroqApiKey.findOne({ _id: keyId, owner: ownerId })
+  if (!doc) {
+    throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
+  }
+
+  if (typeof label === 'string') {
+    doc.label = label.trim().slice(0, 60)
+  }
+
+  if (typeof key === 'string' && key.trim()) {
+    const raw = key.trim()
+    if (/\s/.test(raw) || raw.length < 12) {
+      throw new ApiError(
+        400,
+        'That does not look like a valid Groq API key (expected something like gsk_…).',
+        'KEY_INVALID',
+      )
+    }
+    doc.encryptedKey = encryptSecret(raw)
+  }
+
+  await doc.save()
+  return toPublic(doc)
 }
 
 /**

@@ -1,9 +1,13 @@
 import {
   Bot,
   Check,
+  Copy,
+  Eye,
+  EyeOff,
   KeyRound,
   LogOut,
   Palette,
+  Pencil,
   Plus,
   Search,
   Settings2,
@@ -28,7 +32,12 @@ import { openDeleteProjectModal, showToast } from '../../features/uiSlice'
 import { saveSelectedKeyId } from '../../services/aiStorage'
 import { THEMES } from '../../utils/themes'
 import { isCloudWorkspace } from '../../utils/workspace'
+import KeyAccessModal from './KeyAccessModal'
 import './SettingsModal.css'
+
+// A revealed key hides itself again after this long, even if the user stays in
+// the dialog — and it always re-masks when Settings closes.
+const REVEAL_HIDE_MS = 30000
 
 const SECTIONS = [
   { id: 'appearance', label: 'Appearance', icon: Palette },
@@ -121,16 +130,39 @@ export default function SettingsModal() {
   const [newKey, setNewKey] = useState('')
   const [newKeyLabel, setNewKeyLabel] = useState('')
   const [isSavingKey, setIsSavingKey] = useState(false)
+  // { mode: 'reveal' | 'edit', key } for the password-gated dialog.
+  const [keyAccess, setKeyAccess] = useState(null)
+  // The one key currently shown in full ({ id, value }); null = all masked.
+  const [revealedKey, setRevealedKey] = useState(null)
 
   // Refresh the masked key list every time Settings opens.
   useEffect(() => {
     if (isOpen && isAuthenticated) dispatch(fetchApiKeys())
   }, [isOpen, isAuthenticated, dispatch])
 
+  // Re-mask a revealed key shortly after it is shown.
+  useEffect(() => {
+    if (!revealedKey) return undefined
+    const timer = setTimeout(() => setRevealedKey(null), REVEAL_HIDE_MS)
+    return () => clearTimeout(timer)
+  }, [revealedKey])
+
+  // Closing Settings always re-masks any revealed key and dismisses the dialog,
+  // so plaintext never survives leaving the view. Kept in the event handlers
+  // (not an effect) to avoid a needless render cascade.
+  function dismissSettings() {
+    setRevealedKey(null)
+    setKeyAccess(null)
+    dispatch(closeSettings())
+  }
+
   useEffect(() => {
     if (!isOpen) return undefined
     function onKeyDown(event) {
-      if (event.key === 'Escape') dispatch(closeSettings())
+      if (event.key !== 'Escape') return
+      setRevealedKey(null)
+      setKeyAccess(null)
+      dispatch(closeSettings())
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
@@ -188,8 +220,26 @@ export default function SettingsModal() {
     dispatch(showToast({ message: 'Agent will use this key.', type: 'info' }))
   }
 
+  function handleRevealed(keyId, value) {
+    setRevealedKey({ id: keyId, value })
+    dispatch(
+      showToast({ message: 'Key revealed — it hides itself again shortly.', type: 'info' }),
+    )
+  }
+
+  async function handleCopyKey(keyId, value) {
+    try {
+      await navigator.clipboard.writeText(value)
+      dispatch(showToast({ message: 'Full key copied to the clipboard.', type: 'success' }))
+    } catch {
+      dispatch(showToast({ message: 'Could not copy the key to the clipboard.', type: 'error' }))
+    }
+    // Any copy action re-masks too, so the plaintext does not linger on screen.
+    setRevealedKey((current) => (current?.id === keyId ? null : current))
+  }
+
   return (
-    <div className="settings-overlay" onMouseDown={() => dispatch(closeSettings())}>
+    <div className="settings-overlay" onMouseDown={dismissSettings}>
       <div
         className="settings-card"
         role="dialog"
@@ -203,7 +253,7 @@ export default function SettingsModal() {
             type="button"
             className="settings-close"
             aria-label="Close settings"
-            onClick={() => dispatch(closeSettings())}
+            onClick={dismissSettings}
           >
             <X size={16} />
           </button>
@@ -428,16 +478,33 @@ export default function SettingsModal() {
                           const inUse =
                             ai.selectedKeyId === key.id ||
                             (ai.selectedKeyId === null && index === 0)
+                          const isRevealed = revealedKey?.id === key.id
                           return (
                             <div key={key.id} className="settings-key-row">
                               <KeyRound size={14} className="settings-key-icon" />
                               <div className="settings-key-info">
-                                <span className="settings-key-masked">{key.masked}</span>
+                                <span
+                                  className={`settings-key-masked ${isRevealed ? 'is-revealed' : ''}`}
+                                >
+                                  {isRevealed ? revealedKey.value : key.masked}
+                                </span>
                                 <span className="settings-key-label">
                                   {key.label || 'No label'}
                                   {inUse ? ' · used by the agent' : ''}
                                 </span>
                               </div>
+                              {isRevealed && (
+                                <button
+                                  type="button"
+                                  className="settings-btn settings-key-copy"
+                                  title="Copy the full key"
+                                  aria-label="Copy full API key"
+                                  onClick={() => handleCopyKey(key.id, revealedKey.value)}
+                                >
+                                  <Copy size={13} />
+                                  <span>Copy</span>
+                                </button>
+                              )}
                               {inUse ? (
                                 <span className="settings-key-inuse">In use</span>
                               ) : (
@@ -449,6 +516,32 @@ export default function SettingsModal() {
                                   Use this
                                 </button>
                               )}
+                              <button
+                                type="button"
+                                className="settings-key-action"
+                                aria-label={isRevealed ? 'Hide API key' : 'Reveal API key'}
+                                title={
+                                  isRevealed
+                                    ? 'Hide the key again'
+                                    : 'Reveal the full key (password required)'
+                                }
+                                onClick={() =>
+                                  isRevealed
+                                    ? setRevealedKey(null)
+                                    : setKeyAccess({ mode: 'reveal', key })
+                                }
+                              >
+                                {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
+                              </button>
+                              <button
+                                type="button"
+                                className="settings-key-action"
+                                aria-label={`Edit API key ${key.masked}`}
+                                title="Edit this key (password required)"
+                                onClick={() => setKeyAccess({ mode: 'edit', key })}
+                              >
+                                <Pencil size={13} />
+                              </button>
                               <button
                                 type="button"
                                 className="settings-key-delete"
@@ -520,7 +613,7 @@ export default function SettingsModal() {
                       className="settings-btn"
                       onClick={() => {
                         dispatch(logout())
-                        dispatch(closeSettings())
+                        dismissSettings()
                         dispatch(showToast({ message: 'Signed out.', type: 'info' }))
                       }}
                     >
@@ -545,7 +638,7 @@ export default function SettingsModal() {
                       type="button"
                       className="settings-btn is-danger"
                       onClick={() => {
-                        dispatch(closeSettings())
+                        dismissSettings()
                         dispatch(openDeleteProjectModal())
                       }}
                     >
@@ -577,6 +670,15 @@ export default function SettingsModal() {
           </div>
         </div>
       </div>
+
+      {keyAccess && (
+        <KeyAccessModal
+          mode={keyAccess.mode}
+          keyMeta={keyAccess.key}
+          onClose={() => setKeyAccess(null)}
+          onRevealed={(value) => handleRevealed(keyAccess.key.id, value)}
+        />
+      )}
     </div>
   )
 }

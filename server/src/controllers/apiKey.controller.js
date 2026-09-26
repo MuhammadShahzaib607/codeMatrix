@@ -4,7 +4,10 @@ import {
   MAX_KEYS_PER_USER,
   deleteKeyForUser,
   listKeysForUser,
+  revealKeyForUser,
   saveKeyForUser,
+  updateKeyForUser,
+  verifyAccountPassword,
 } from '../services/apiKeyService.js'
 
 /**
@@ -29,4 +32,29 @@ export const removeKey = asyncHandler(async (req, res) => {
   const deleted = await deleteKeyForUser(req.user.id, req.params.id)
   if (!deleted) throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
   res.json({ deleted: true, id: req.params.id })
+})
+
+/**
+ * POST /api/keys/:id/reveal { password } -> the FULL key, but only after the
+ * caller re-confirms their ACCOUNT password. A wrong password is a 401 and no
+ * key data is included in the response.
+ */
+export const revealKey = asyncHandler(async (req, res) => {
+  const { password } = req.body ?? {}
+  await verifyAccountPassword(req.user.id, password)
+  const revealed = await revealKeyForUser(req.user.id, req.params.id)
+  res.json({ key: revealed })
+})
+
+/**
+ * PUT /api/keys/:id { password, label?, key? } -> updates the label and/or
+ * replaces the key value (re-encrypted). Also gated on the account password so
+ * temporary access to an unlocked session cannot tamper with keys. Ownership is
+ * enforced in the service layer.
+ */
+export const updateKey = asyncHandler(async (req, res) => {
+  const { password, label, key } = req.body ?? {}
+  await verifyAccountPassword(req.user.id, password)
+  const updated = await updateKeyForUser(req.user.id, req.params.id, { label, key })
+  res.json({ key: updated })
 })

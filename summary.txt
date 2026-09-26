@@ -3046,3 +3046,151 @@ VERIFICATION
   - The temporary logging and harness files were deleted; only Sidebar.jsx and
     the (already-correct) thunk/history files remain changed.
 
+
+================================================================================
+FEATURE: "Export to Folder" + full tooltip audit + Settings modal with 5 themes
+         and wired editor/terminal preferences
+================================================================================
+
+STATUS: complete and verified. Client oxlint 0/0 (64 files); vite build passes.
+
+--------------------------------------------------------------------------------
+PART 1a — EXPORT TO FOLDER (separate from the ZIP export)
+--------------------------------------------------------------------------------
+NEW: client/src/hooks/useExportToFolder.js
+NEW helpers in client/src/services/fileSystemAccess.js:
+  - pickDirectory()            showDirectoryPicker WITHOUT touching the stored
+                               import handle (so Sync keeps its original folder)
+  - createNewFolder()          getDirectoryHandle(seg, { create: true }) chain
+  - createNewFile()            getFileHandle(name, { create: true })
+  - writeFileContent()         createWritable -> write -> close (finally)
+  - writeFilesToDirectory(handle, files, { onProgress })  now reports progress
+  - collectExportablePaths(serverTree)  walks the SERVER tree and returns
+                               { files: [paths], skippedFolders } using
+                               EXPORT_SKIP_DIRECTORIES (= the import skip list:
+                               node_modules, .git, dist, build, out, .next,
+                               .cache), matched by folder NAME at any depth.
+
+HOW IT WORKS (Topbar icon -> exportToFolder):
+  1. Supported-browser check (showDirectoryPicker); unsupported -> error toast.
+  2. window.showDirectoryPicker() picks the destination. Cancel (AbortError) is
+     ignored with an "Export cancelled." info toast.
+  3. GET /api/workspace/:projectId/tree, then collectExportablePaths() plans the
+     file list and counts the excluded folders it will skip.
+  4. Each file's content is fetched (GET .../file?path=) with live progress.
+  5. writeFilesToDirectory() recreates the exact nested structure on disk.
+  6. A floating "Exporting… X of Y files" pill (Topbar.css .export-progress)
+     shows progress the whole time; the button shows a spinner and is disabled.
+  7. Success toast: "Exported N files to <folder>" plus, when folders were
+     skipped, "— node_modules and build folders were skipped, run npm install
+     there to regenerate them".
+
+--------------------------------------------------------------------------------
+PART 1b — TOOLTIP AUDIT
+--------------------------------------------------------------------------------
+NEW: client/src/components/Common/Tooltip.jsx + Tooltip.css — one reusable
+wrapper (label + optional side: bottom/top/right/left, 450ms hover delay,
+hides on leave/blur). Applied to EVERY icon-only control:
+
+Topbar (all now wrapped in <Tooltip>, title attrs replaced by aria-label):
+  - sidebar toggle          "Toggle sidebar"
+  - Import Folder           "Import a folder from your device" (+ unsupported /
+                            sign-in variants)
+  - Export ZIP              "Download project as a ZIP file"
+  - Export to Folder (new)  "Export project as files to a local folder (excludes
+                            node_modules)"
+  - Sync to Laptop          "Sync changes back to your originally imported local
+                            folder"
+  - Save                    "Save the active file (Ctrl+S)"
+  - Terminal toggle         "Show/Hide terminal panel"
+  - AI toggle               "Show/Hide AI assistant"
+  - Settings                "Settings"
+ActivityBar (side="right"): "Explorer", "Search in Files"
+Sidebar header: "New File", "New Folder", "Collapse All"
+All disabled states still show the tooltip, explaining why the action is off.
+
+--------------------------------------------------------------------------------
+PART 2a — CSS-VARIABLE THEMING SYSTEM (5 THEMES)
+--------------------------------------------------------------------------------
+index.css now defines ONE variable contract on :root and overrides it per theme
+through [data-theme="<id>"] on <html>. Variables: --bg-topbar, --bg-sidebar,
+--bg-editor, --bg-tab-bar, --bg-elevated, --bg-input, --bg-hover, --bg-active,
+--border, --text, --text-strong, --text-dim, --text-muted, --accent,
+--accent-hover, --accent-soft, --accent-on, --accent-text, --danger (+strong/
+soft), --success, --warning (+bg/border/text), --info, --folder, --file,
+--overlay, --shadow, --hover-tint, --scrollbar, --mark-bg, --reveal-bg,
+--app-gradient, --font-ui, --font-mono.
+
+THEMES (utils/themes.js holds names + swatch previews):
+  1. default-purple  the existing palette, unchanged, still the default
+  2. midnight-black  #0a0a0a/#0f0f0f/#121212 surfaces, minimal accent, high contrast
+  3. light           #ffffff/#f3f3f3/#e8e8e8 surfaces, #1a1a1a text, color-scheme:light
+  4. golden-arches   dark neutral surfaces, red #DA291C primary + yellow #FFC72C
+                     secondary used for accents/active states only
+  5. forest-green    dark neutral surfaces, rich green #2E7D32 accent
+
+Every component CSS file was refactored off hardcoded hex onto these variables
+(Topbar, ActivityBar, Sidebar, Search, Editor, Terminal, AI panel, Notices,
+Toast, ConfirmModal, AuthModal). The only remaining literals are inside the
+theme blocks themselves and the intentional PowerShell/CMD/bash shell chips.
+
+MONACO + XTERM have their own theme layers (they cannot read CSS variables):
+  - utils/monacoThemes.js: defineAppMonacoThemes() registers a custom vs-dark
+    theme per dark app theme (background/accent/cursor from the palette); Light
+    uses Monaco's built-in "vs". <Editor theme={monacoThemeFor(theme)}> drives
+    the real-time switch; onMount re-applies the saved theme.
+  - utils/terminalThemes.js: one xterm theme per app theme, including a fully
+    re-mapped dark-on-light ANSI palette for Light.
+
+--------------------------------------------------------------------------------
+PART 2b — SETTINGS MODAL + WIRED PREFERENCES
+--------------------------------------------------------------------------------
+NEW: client/src/features/settingsSlice.js, client/src/services/settingsStorage.js
+     (localStorage key `code-matrix:settings`, validated/clamped on read),
+     client/src/components/Settings/SettingsModal.jsx + .css, client/src/utils/
+     themes.js, monacoThemes.js, terminalThemes.js.
+Registered as `settings` in app/store.js. App.jsx applies
+<html data-theme=...> and persists {theme, editor, terminal} on every change.
+The gear icon and the user-menu "Settings" item both open the modal.
+Layout: left nav (Appearance / Editor / Terminal / General) + right pane.
+
+THEMES UI: a 5-swatch grid; the active theme is bordered and check-marked;
+clicking applies immediately (no reload) and persists.
+
+SETTINGS ADDED AND WHAT THEY CONTROL:
+  Appearance  theme (5 options, see above)
+  Editor      fontSize   12-24px stepper  -> Monaco options.fontSize (live)
+              fontFamily select (System/JetBrains Mono/Fira Code/Cascadia/
+                         Menlo-Consolas)   -> Monaco options.fontFamily (live)
+              tabSize     2 or 4         -> Monaco options.tabSize (live)
+              wordWrap    on/off         -> Monaco options.wordWrap (live)
+              minimap     on/off         -> Monaco options.minimap.enabled (live)
+  Terminal    preferredShell dropdown (from GET /api/terminal/shells) -> used as
+                         the default for the "+" button (wins over server default)
+              fontSize    10-22px stepper -> live xterm options.fontSize
+  General     signed-in account (name + email) with Log out button
+              "Clear all local preferences" -> resetSettings() to defaults
+
+All editor/terminal values are read from Redux by EditorArea (Monaco) and
+TerminalView (xterm) and applied in real time — a TerminalView effect mutates
+term.options.theme/fontSize without recreating the shell session.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - A jsdom + Vite-SSR harness drove the REAL SettingsModal and Tooltip:
+      5 theme swatches render; clicking Light updates Redux + marks it active;
+      Editor section shows 2 toggles and word wrap flips the value; the Tooltip
+      stays hidden before the 450ms delay, appears with the right label, and
+      hides on mouse-out. 27/27 checks passed.
+  - Export-to-Folder logic: collectExportablePaths() on a tree containing
+      node_modules/.git/dist returned exactly the non-excluded files and counted
+      3 skipped folders; writeFilesToDirectory() wrote a real nested structure
+      (src/a.txt, src/nested/b.txt, top.md) with one progress callback per file.
+  - Settings validation/clamping and localStorage round-trip (theme, font size,
+      preferred shell) verified.
+  - monacoThemeFor('light')='vs', monacoThemeFor('forest-green')='cm-forest-green';
+      terminalThemeFor('light').background='#ffffff' and differs from dark themes.
+  - Client oxlint: 0 warnings / 0 errors (64 files). Client vite build: succeeds.
+  - The temporary verification harness was deleted; no test artefacts remain.
+

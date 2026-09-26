@@ -8,7 +8,7 @@ export const ROOT_ID = 'root'
 // This is deliberately independent of the workspace tree shown in the Explorer:
 // the server walks the workspace folder on disk with NO exclusions, so a
 // node_modules/.git/dist created by the terminal still appears in the tree.
-const IMPORT_SKIP_DIRECTORIES = new Set([
+export const IMPORT_SKIP_DIRECTORIES = new Set([
   'node_modules',
   '.git',
   'dist',
@@ -17,6 +17,10 @@ const IMPORT_SKIP_DIRECTORIES = new Set([
   '.next',
   '.cache',
 ])
+
+// "Export to Folder" reuses the exact same exclusion list as import, so the
+// round-trip (import → work → export) never tries to write regenerable folders.
+export const EXPORT_SKIP_DIRECTORIES = IMPORT_SKIP_DIRECTORIES
 
 // Files above this size are skipped entirely (content is never read).
 export const MAX_IMPORT_FILE_BYTES = 2 * 1024 * 1024 // 2MB
@@ -27,10 +31,20 @@ export function isFileSystemAccessSupported() {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window
 }
 
+
 export async function openFolder() {
   const handle = await window.showDirectoryPicker({ id: 'code-matrix' })
   rootHandle = handle
   return handle
+}
+
+/**
+ * Picks a directory WITHOUT touching the remembered import handle. Used by
+ * "Export to Folder", which must not repoint Sync-to-Laptop at the export
+ * destination.
+ */
+export async function pickDirectory() {
+  return window.showDirectoryPicker({ id: 'code-matrix-export' })
 }
 
 export function getRootHandle() {
@@ -84,9 +98,38 @@ export async function readAllFilesFromDirectory(directoryHandle, basePath = '') 
   return { files, skipped }
 }
 
-export async function writeFilesToDirectory(directoryHandle, files) {
+/** Creates (or opens) a nested folder path under `directoryHandle`. */
+export async function createNewFolder(directoryHandle, segments) {
+  let directory = directoryHandle
+  for (const segment of segments) {
+    directory = await directory.getDirectoryHandle(segment, { create: true })
+  }
+  return directory
+}
+
+/** Creates (or opens) a file handle inside `directoryHandle`. */
+export async function createNewFile(directoryHandle, fileName) {
+  return directoryHandle.getFileHandle(fileName, { create: true })
+}
+
+/** Writes text content to a file handle. */
+export async function writeFileContent(fileHandle, content) {
+  const writable = await fileHandle.createWritable()
+  try {
+    await writable.write(content ?? '')
+  } finally {
+    await writable.close()
+  }
+}
+
+/**
+ * Writes a flat list of { relativePath, content } records into a directory,
+ * creating the nested structure. `onProgress(done)` fires after each file.
+ */
+export async function writeFilesToDirectory(directoryHandle, files, { onProgress } = {}) {
   await requirePermission(directoryHandle)
 
+  let done = 0
   for (const file of files) {
     const segments = String(file.relativePath ?? '')
       .split('/')
@@ -94,17 +137,42 @@ export async function writeFilesToDirectory(directoryHandle, files) {
     const fileName = segments.pop()
     if (!fileName) continue
 
-    let directory = directoryHandle
-    for (const segment of segments) {
-      directory = await directory.getDirectoryHandle(segment, { create: true })
-    }
+    const directory = await createNewFolder(directoryHandle, segments)
+    const fileHandle = await createNewFile(directory, fileName)
+    await writeFileContent(fileHandle, file.content)
 
-    const fileHandle = await directory.getFileHandle(fileName, { create: true })
-    const writable = await fileHandle.createWritable()
-    try {
-      await writable.write(file.content ?? '')
-    } finally {
-      await writable.close()
+    done += 1
+    onProgress?.(done)
+  }
+}
+
+/**
+ * Server-tree walker for "Export to Folder": returns the file paths worth
+ * writing and how many excluded folders were skipped. Exclusions are matched by
+ * folder NAME at any depth (same list as import), and excluded folders are
+ * never descended into.
+ *
+ * @returns {{ files: string[], skippedFolders: number }}
+ */
+export function collectExportablePaths(serverNode) {
+  const files = []
+  let skippedFolders = 0
+
+  function walk(node) {
+    if (!node) return
+    if (node.type === 'file') {
+      files.push(node.path)
+      return
+    }
+    for (const child of node.children ?? []) {
+      if (child.type === 'folder' && EXPORT_SKIP_DIRECTORIES.has(child.name)) {
+        skippedFolders += 1
+        continue
+      }
+      walk(child)
     }
   }
+
+  walk(serverNode)
+  return { files, skippedFolders }
 }

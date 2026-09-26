@@ -2,27 +2,22 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
-import { useDispatch } from 'react-redux'
+import { useDispatch, useSelector } from 'react-redux'
 import { setTerminalShell } from '../../features/terminalSlice'
 import { getSocket } from '../../services/socket'
-
-const THEME = {
-  background: '#1e1e1e',
-  foreground: '#cccccc',
-  cursor: '#ffffff',
-  cursorAccent: '#1e1e1e',
-  selectionBackground: 'rgba(139, 92, 246, 0.35)',
-  black: '#1e1e1e',
-  brightBlack: '#767676',
-}
-
-const FONT_FAMILY = "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace"
+import { TERMINAL_FONT_FAMILY, terminalThemeFor } from '../../utils/terminalThemes'
 
 const CLIPBOARD_DENIED_MESSAGE = 'Clipboard access denied — check browser permissions'
 const NOTICE_TIMEOUT_MS = 4000
 
 export default function TerminalView({ terminalId, projectId, shell, isActive, autoFocus = true }) {
   const dispatch = useDispatch()
+  const appTheme = useSelector((state) => state.settings.theme)
+  const terminalFontSize = useSelector((state) => state.settings.terminal.fontSize)
+  // Captured once for the INITIAL xterm options; later changes are applied by
+  // the sync effect below (which reads the live values), so the creation effect
+  // does not need them as dependencies and never recreates the terminal.
+  const initialAppearanceRef = useRef({ theme: appTheme, fontSize: terminalFontSize })
   const containerRef = useRef(null)
   const termRef = useRef(null)
   const fitRef = useRef(null)
@@ -43,9 +38,9 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     if (!container) return undefined
 
     const term = new Terminal({
-      theme: THEME,
-      fontFamily: FONT_FAMILY,
-      fontSize: 13,
+      theme: terminalThemeFor(initialAppearanceRef.current.theme),
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: initialAppearanceRef.current.fontSize,
       lineHeight: 1.2,
       cursorBlink: true,
       scrollback: 2000,
@@ -214,6 +209,18 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       fitRef.current = null
     }
   }, [terminalId, projectId, shell, dispatch])
+
+  // Apply theme / font-size changes to the live xterm instance without
+  // recreating it (which would kill the shell session).
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    term.options.theme = terminalThemeFor(appTheme)
+    term.options.fontSize = terminalFontSize
+    try {
+      fitRef.current?.fit()
+    } catch {}
+  }, [appTheme, terminalFontSize])
 
   useEffect(() => {
     if (!isActive) return undefined

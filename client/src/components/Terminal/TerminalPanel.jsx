@@ -38,6 +38,7 @@ export default function TerminalPanel() {
   } = useSelector((state) => state.terminal)
   const projectId = useSelector((state) => state.fileSystem.workspace.projectId)
   const userId = useSelector((state) => state.auth.user?.id)
+  const preferredShell = useSelector((state) => state.settings.terminal.preferredShell)
   const shellMenuRef = useRef(null)
   const shellRetryRef = useRef(false)
   const [isShellMenuOpen, setIsShellMenuOpen] = useState(false)
@@ -83,7 +84,9 @@ export default function TerminalPanel() {
   // distinct because every pane carries a unique `terminalId` (crypto.randomUUID),
   // which is what React keys, the xterm instances and the socket messages use.
   function nextPane(requestedShell) {
-    const shell = requestedShell ?? defaultShell ?? null
+    // The user's Settings preference wins over the server default, so "+"
+    // opens the shell they chose instead of always the first one.
+    const shell = requestedShell ?? preferredShell ?? defaultShell ?? null
     return { shell, title: shellLabel(shell) }
   }
 
@@ -247,13 +250,13 @@ export default function TerminalPanel() {
                     type="button"
                     role="menuitem"
                     className={`terminal-shell-option ${
-                      shell.id === defaultShell ? 'is-default' : ''
+                      shell.id === (preferredShell ?? defaultShell) ? 'is-default' : ''
                     }`}
                     onClick={() => createTerminal(shell.id)}
                   >
                     <span className={`terminal-tab-shell is-${shell.id}`} aria-hidden="true" />
                     <span>{shell.label}</span>
-                    {shell.id === defaultShell && <Check size={13} />}
+                    {shell.id === (preferredShell ?? defaultShell) && <Check size={13} />}
                   </button>
                 ))}
               </div>

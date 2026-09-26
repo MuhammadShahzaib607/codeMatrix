@@ -5,6 +5,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { setContent, updateContent } from '../../features/editorSlice'
 import { readWorkspaceFile } from '../../features/workspaceThunks'
 import { getLanguageFromFilename } from '../../utils/language'
+import { defineAppMonacoThemes, monacoThemeFor } from '../../utils/monacoThemes'
 import { applyMonacoTsConfig } from '../../utils/monacoTsconfig'
 import { findNode } from '../../utils/tree'
 import { hasActiveWorkspace } from '../../utils/workspace'
@@ -18,6 +19,8 @@ export default function EditorArea() {
   const contentByFileId = useSelector((state) => state.editor.contentByFileId)
   const revealLine = useSelector((state) => state.ui.revealLine)
   const monacoTsConfig = useSelector((state) => state.tsconfig.compilerOptions)
+  const editorSettings = useSelector((state) => state.settings.editor)
+  const appTheme = useSelector((state) => state.settings.theme)
   const [failure, setFailure] = useState(null)
 
   const editorRef = useRef(null)
@@ -25,6 +28,7 @@ export default function EditorArea() {
   const revealRef = useRef(revealLine)
   const activeFileIdRef = useRef(activeFileId)
   const tsConfigRef = useRef(monacoTsConfig)
+  const themeRef = useRef(appTheme)
 
   useEffect(() => {
     revealRef.current = revealLine
@@ -40,6 +44,14 @@ export default function EditorArea() {
   useEffect(() => {
     activeFileIdRef.current = activeFileId
   }, [activeFileId])
+
+  // Keep Monaco's theme in step with the app theme. Custom (dark) themes are
+  // registered on mount; the Light theme uses Monaco's built-in "vs".
+  useEffect(() => {
+    themeRef.current = appTheme
+    const monaco = monacoRef.current
+    if (monaco) defineAppMonacoThemes(monaco)
+  }, [appTheme])
 
   const applyReveal = useCallback(() => {
     const editor = editorRef.current
@@ -154,10 +166,14 @@ export default function EditorArea() {
             keepCurrentModel
             value={content}
             language={getLanguageFromFilename(activeNode.name)}
-            theme="vs-dark"
+            theme={monacoThemeFor(appTheme)}
             onMount={(editor, monaco) => {
               editorRef.current = editor
               monacoRef.current = monaco
+              // Register the custom themes BEFORE applying one, so a saved theme
+              // is not silently replaced by Monaco's fallback at startup.
+              defineAppMonacoThemes(monaco)
+              monaco.editor.setTheme(monacoThemeFor(themeRef.current))
               // Monaco's TS worker only resolves path aliases against real file
               // URIs, so models use file:/// and the project's compilerOptions
               // (baseUrl/paths/jsx/…) are pushed in here.
@@ -175,16 +191,19 @@ export default function EditorArea() {
             }
             options={{
               automaticLayout: true,
-              fontSize: 14,
-              fontFamily: "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace",
+              fontSize: editorSettings.fontSize,
+              fontFamily:
+                editorSettings.fontFamily ||
+                "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace",
               fontLigatures: true,
-              minimap: { enabled: true, renderCharacters: false },
+              minimap: { enabled: editorSettings.minimap, renderCharacters: false },
+              wordWrap: editorSettings.wordWrap ? 'on' : 'off',
               padding: { top: 12 },
               scrollBeyondLastLine: false,
               smoothScrolling: true,
               cursorBlinking: 'smooth',
               renderLineHighlight: 'all',
-              tabSize: 2,
+              tabSize: editorSettings.tabSize,
               roundedSelection: false,
             }}
           />

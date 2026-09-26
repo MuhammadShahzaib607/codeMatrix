@@ -6,15 +6,15 @@
   gap: 9px;
   flex: 0 0 auto;
   padding: 7px 10px 7px 14px;
-  background: #3a2f16;
-  border-bottom: 1px solid #5c4a1f;
-  color: #e8c98a;
+  background: var(--warning-bg);
+  border-bottom: 1px solid var(--warning-border);
+  color: var(--warning-text);
   font-size: 12.5px;
 }
 
 .storage-notice svg {
   flex: 0 0 auto;
-  color: #e2a03f;
+  color: var(--warning);
 }
 
 .storage-notice span {
@@ -38,7 +38,7 @@
 }
 
 .storage-notice-close:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--hover-tint);
 }
 
 /* ---------- Workspace-missing recovery ---------- */
@@ -49,15 +49,15 @@
   gap: 12px;
   flex: 0 0 auto;
   padding: 10px 14px;
-  background: rgba(244, 135, 113, 0.12);
-  border-bottom: 1px solid #6b3a2a;
-  color: #e8b7a8;
+  background: var(--danger-soft);
+  border-bottom: 1px solid var(--danger);
+  color: var(--danger);
   font-size: 12.5px;
 }
 
 .workspace-missing-icon {
   flex: 0 0 auto;
-  color: #f48771;
+  color: var(--danger);
 }
 
 .workspace-missing-text {
@@ -68,7 +68,7 @@
 .workspace-missing-text strong {
   display: block;
   margin-bottom: 2px;
-  color: #ffe1d6;
+  color: var(--text-strong);
   font-size: 12.5px;
 }
 

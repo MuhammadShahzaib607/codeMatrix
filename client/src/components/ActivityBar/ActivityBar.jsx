@@ -1,6 +1,7 @@
 import { Files, Search } from 'lucide-react'
 import { useDispatch, useSelector } from 'react-redux'
 import { setActiveSidebarView } from '../../features/uiSlice'
+import Tooltip from '../Common/Tooltip'
 import './ActivityBar.css'
 
 const VIEWS = [
@@ -17,17 +18,17 @@ export default function ActivityBar() {
       {VIEWS.map(({ id, label, Icon }) => {
         const isActive = activeView === id
         return (
-          <button
-            key={id}
-            type="button"
-            className={`activity-item ${isActive ? 'is-active' : ''}`}
-            title={label}
-            aria-label={label}
-            aria-pressed={isActive}
-            onClick={() => dispatch(setActiveSidebarView(id))}
-          >
-            <Icon size={24} />
-          </button>
+          <Tooltip key={id} label={label} side="right">
+            <button
+              type="button"
+              className={`activity-item ${isActive ? 'is-active' : ''}`}
+              aria-label={label}
+              aria-pressed={isActive}
+              onClick={() => dispatch(setActiveSidebarView(id))}
+            >
+              <Icon size={24} />
+            </button>
+          </Tooltip>
         )
       })}
       <div className="activity-spacer" />

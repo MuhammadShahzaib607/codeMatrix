@@ -8,7 +8,7 @@
   height: 30px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #1e1e1e;
+  background: var(--bg-input);
 }
 
 .sif-search:focus-within {
@@ -27,7 +27,7 @@
   border: none;
   outline: none;
   background: transparent;
-  color: #ffffff;
+  color: var(--text-strong);
   font-size: 12.5px;
 }
 
@@ -48,8 +48,8 @@
 }
 
 .sif-clear:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #ffffff;
+  background: var(--hover-tint);
+  color: var(--text-strong);
 }
 
 .sif-body {
@@ -80,7 +80,7 @@
 /* ---------- Result groups ---------- */
 
 .sif-group {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--border);
 }
 
 .sif-group-header {
@@ -110,11 +110,11 @@
 }
 
 .sif-icon.is-folder {
-  color: #dcb67a;
+  color: var(--folder);
 }
 
 .sif-icon.is-file {
-  color: #75beff;
+  color: var(--file);
 }
 
 .sif-group-name {
@@ -134,7 +134,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #6f6f6f;
+  color: var(--text-muted);
   font-size: 11px;
 }
 
@@ -177,7 +177,7 @@
 
 .sif-line-number {
   flex: 0 0 28px;
-  color: #6f6f6f;
+  color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
   text-align: right;
@@ -196,6 +196,6 @@
 .sif-mark {
   padding: 0 1px;
   border-radius: 2px;
-  background: rgba(255, 214, 0, 0.32);
-  color: #fff4c2;
+  background: var(--mark-bg);
+  color: var(--text-strong);
 }

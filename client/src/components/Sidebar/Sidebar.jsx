@@ -14,6 +14,7 @@ import {
 } from '../../features/workspaceThunks'
 import useAuthGuard from '../../hooks/useAuthGuard'
 import ConfirmModal from '../Common/ConfirmModal'
+import Tooltip from '../Common/Tooltip'
 import { ROOT_ID } from '../../services/fileSystemAccess'
 import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
 import { copyTextToClipboard } from '../../utils/clipboard'
@@ -252,36 +253,39 @@ export default function Sidebar() {
       <div className="sidebar-header">
         <span className="sidebar-title">Explorer</span>
         <div className="sidebar-header-actions">
-          <button
-            type="button"
-            className="icon-btn-sm"
-            title="New File"
-            aria-label="New file"
-            disabled={isPreparing}
-            onClick={() => startCreating('file')}
-          >
-            <FilePlus size={16} />
-          </button>
-          <button
-            type="button"
-            className="icon-btn-sm"
-            title="New Folder"
-            aria-label="New folder"
-            disabled={isPreparing}
-            onClick={() => startCreating('folder')}
-          >
-            <FolderPlus size={16} />
-          </button>
-          <button
-            type="button"
-            className="icon-btn-sm"
-            title="Collapse All"
-            aria-label="Collapse all folders"
-            disabled={!hasProject}
-            onClick={() => dispatch(collapseAll())}
-          >
-            <ChevronsUp size={16} />
-          </button>
+          <Tooltip label="New File" side="bottom">
+            <button
+              type="button"
+              className="icon-btn-sm"
+              aria-label="New file"
+              disabled={isPreparing}
+              onClick={() => startCreating('file')}
+            >
+              <FilePlus size={16} />
+            </button>
+          </Tooltip>
+          <Tooltip label="New Folder" side="bottom">
+            <button
+              type="button"
+              className="icon-btn-sm"
+              aria-label="New folder"
+              disabled={isPreparing}
+              onClick={() => startCreating('folder')}
+            >
+              <FolderPlus size={16} />
+            </button>
+          </Tooltip>
+          <Tooltip label="Collapse All" side="bottom">
+            <button
+              type="button"
+              className="icon-btn-sm"
+              aria-label="Collapse all folders"
+              disabled={!hasProject}
+              onClick={() => dispatch(collapseAll())}
+            >
+              <ChevronsUp size={16} />
+            </button>
+          </Tooltip>
         </div>
       </div>
 

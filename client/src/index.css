@@ -1,20 +1,59 @@
-:root {
+/* ============================================================================
+   THEME SYSTEM
+   Every visible surface reads these CSS custom properties. A theme is applied
+   by setting data-theme="<id>" on <html> (see features/settingsSlice.js +
+   App.jsx). :root holds the default palette so the app is themed even before
+   the attribute is set. Add a new theme by copying a block below.
+   ============================================================================ */
+
+:root,
+:root[data-theme='default-purple'] {
   /* Surfaces */
   --bg-topbar: #333333;
   --bg-sidebar: #252526;
   --bg-editor: #1e1e1e;
   --bg-tab-bar: #252526;
+  --bg-elevated: #252526;
+  --bg-input: #1e1e1e;
   --bg-hover: #2a2d2e;
   --bg-active: #37373d;
   --border: #3c3c3c;
 
   /* Text */
   --text: #cccccc;
+  --text-strong: #ffffff;
   --text-dim: #858585;
+  --text-muted: #6f6f6f;
 
   /* Accent */
   --accent: #8b5cf6;
+  --accent-hover: #7c4ef0;
   --accent-soft: rgba(139, 92, 246, 0.16);
+  --accent-on: #ffffff;
+  --accent-text: #d7c9fd;
+
+  /* Semantic */
+  --danger: #f48771;
+  --danger-strong: #c62828;
+  --danger-strong-hover: #d33a3a;
+  --danger-soft: rgba(244, 135, 113, 0.12);
+  --success: #4ec9b0;
+  --warning: #e2a03f;
+  --warning-bg: #3a2f16;
+  --warning-border: #5c4a1f;
+  --warning-text: #e8c98a;
+  --info: #75beff;
+  --folder: #dcb67a;
+  --file: #75beff;
+
+  /* Effects */
+  --overlay: rgba(0, 0, 0, 0.6);
+  --shadow: rgba(0, 0, 0, 0.5);
+  --hover-tint: rgba(255, 255, 255, 0.08);
+  --scrollbar: rgba(121, 121, 121, 0.4);
+  --mark-bg: rgba(255, 214, 0, 0.32);
+  --reveal-bg: rgba(255, 214, 0, 0.45);
+  --app-gradient: rgba(139, 92, 246, 0.09);
 
   /* Type */
   --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
@@ -26,6 +65,186 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-theme='midnight-black'] {
+  --bg-topbar: #0f0f0f;
+  --bg-sidebar: #0a0a0a;
+  --bg-editor: #0a0a0a;
+  --bg-tab-bar: #0f0f0f;
+  --bg-elevated: #121212;
+  --bg-input: #060606;
+  --bg-hover: #1a1a1a;
+  --bg-active: #212121;
+  --border: #262626;
+
+  --text: #d6d6d6;
+  --text-strong: #ffffff;
+  --text-dim: #8a8a8a;
+  --text-muted: #6a6a6a;
+
+  --accent: #8b5cf6;
+  --accent-hover: #7c4ef0;
+  --accent-soft: rgba(139, 92, 246, 0.12);
+  --accent-on: #ffffff;
+  --accent-text: #cfc4f5;
+
+  --danger: #f48771;
+  --danger-strong: #b3261e;
+  --danger-strong-hover: #c9302a;
+  --danger-soft: rgba(244, 135, 113, 0.1);
+  --success: #4ec9b0;
+  --warning: #e2a03f;
+  --warning-bg: #201a0c;
+  --warning-border: #4a3c18;
+  --warning-text: #e8c98a;
+  --info: #75beff;
+  --folder: #c9a227;
+  --file: #75beff;
+
+  --overlay: rgba(0, 0, 0, 0.74);
+  --shadow: rgba(0, 0, 0, 0.72);
+  --hover-tint: rgba(255, 255, 255, 0.07);
+  --scrollbar: rgba(120, 120, 120, 0.35);
+  --mark-bg: rgba(255, 214, 0, 0.3);
+  --reveal-bg: rgba(255, 214, 0, 0.4);
+  --app-gradient: rgba(139, 92, 246, 0.05);
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg-topbar: #e8e8e8;
+  --bg-sidebar: #f3f3f3;
+  --bg-editor: #ffffff;
+  --bg-tab-bar: #f5f5f5;
+  --bg-elevated: #ffffff;
+  --bg-input: #ffffff;
+  --bg-hover: #e6e6e6;
+  --bg-active: #dcdcdc;
+  --border: #d0d0d0;
+
+  --text: #1a1a1a;
+  --text-strong: #000000;
+  --text-dim: #5a5a5a;
+  --text-muted: #7a7a7a;
+
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --accent-soft: rgba(124, 58, 237, 0.12);
+  --accent-on: #ffffff;
+  --accent-text: #5b21b6;
+
+  --danger: #c62828;
+  --danger-strong: #c62828;
+  --danger-strong-hover: #a81f1f;
+  --danger-soft: rgba(198, 40, 40, 0.1);
+  --success: #1a7f5a;
+  --warning: #b26a00;
+  --warning-bg: #fff4d6;
+  --warning-border: #e6c98a;
+  --warning-text: #7a5a00;
+  --info: #0b62c4;
+  --folder: #b8862b;
+  --file: #0b62c4;
+
+  --overlay: rgba(0, 0, 0, 0.35);
+  --shadow: rgba(0, 0, 0, 0.18);
+  --hover-tint: rgba(0, 0, 0, 0.06);
+  --scrollbar: rgba(0, 0, 0, 0.25);
+  --mark-bg: rgba(255, 214, 0, 0.55);
+  --reveal-bg: rgba(255, 214, 0, 0.55);
+  --app-gradient: rgba(124, 58, 237, 0.06);
+  color-scheme: light;
+}
+
+:root[data-theme='golden-arches'] {
+  --bg-topbar: #1b1310;
+  --bg-sidebar: #17100d;
+  --bg-editor: #1c1512;
+  --bg-tab-bar: #17100d;
+  --bg-elevated: #241812;
+  --bg-input: #140e0b;
+  --bg-hover: #2a1d18;
+  --bg-active: #3a231c;
+  --border: #3d2a22;
+
+  --text: #e8ddd6;
+  --text-strong: #ffffff;
+  --text-dim: #a89488;
+  --text-muted: #867065;
+
+  --accent: #da291c;
+  --accent-hover: #b82217;
+  --accent-soft: rgba(218, 41, 28, 0.18);
+  --accent-on: #ffffff;
+  --accent-text: #ffc72c;
+
+  --danger: #ff6b5e;
+  --danger-strong: #c62828;
+  --danger-strong-hover: #d33a3a;
+  --danger-soft: rgba(218, 41, 28, 0.14);
+  --success: #7bc86c;
+  --warning: #ffc72c;
+  --warning-bg: #2e2410;
+  --warning-border: #6b5417;
+  --warning-text: #ffdd80;
+  --info: #6aa9ff;
+  --folder: #ffc72c;
+  --file: #ffd166;
+
+  --overlay: rgba(0, 0, 0, 0.7);
+  --shadow: rgba(0, 0, 0, 0.6);
+  --hover-tint: rgba(255, 199, 44, 0.1);
+  --scrollbar: rgba(200, 160, 120, 0.35);
+  --mark-bg: rgba(255, 199, 44, 0.4);
+  --reveal-bg: rgba(255, 199, 44, 0.5);
+  --app-gradient: rgba(218, 41, 28, 0.07);
+  color-scheme: dark;
+}
+
+:root[data-theme='forest-green'] {
+  --bg-topbar: #14201a;
+  --bg-sidebar: #0f1a14;
+  --bg-editor: #0f1712;
+  --bg-tab-bar: #0f1a14;
+  --bg-elevated: #16241c;
+  --bg-input: #0b120e;
+  --bg-hover: #1b2b22;
+  --bg-active: #22392c;
+  --border: #274232;
+
+  --text: #d2e3d8;
+  --text-strong: #ffffff;
+  --text-dim: #8aa596;
+  --text-muted: #6f8878;
+
+  --accent: #2e7d32;
+  --accent-hover: #256b29;
+  --accent-soft: rgba(46, 125, 50, 0.2);
+  --accent-on: #ffffff;
+  --accent-text: #7fd18a;
+
+  --danger: #ef7a6a;
+  --danger-strong: #c62828;
+  --danger-strong-hover: #d33a3a;
+  --danger-soft: rgba(239, 122, 106, 0.12);
+  --success: #4ec9b0;
+  --warning: #e2a03f;
+  --warning-bg: #26301a;
+  --warning-border: #4d5a2a;
+  --warning-text: #e8d98a;
+  --info: #75beff;
+  --folder: #c9b26a;
+  --file: #7fd18a;
+
+  --overlay: rgba(0, 0, 0, 0.7);
+  --shadow: rgba(0, 0, 0, 0.6);
+  --hover-tint: rgba(127, 209, 138, 0.1);
+  --scrollbar: rgba(120, 170, 140, 0.35);
+  --mark-bg: rgba(127, 209, 138, 0.35);
+  --reveal-bg: rgba(127, 209, 138, 0.45);
+  --app-gradient: rgba(46, 125, 50, 0.09);
+  color-scheme: dark;
 }
 
 * {
@@ -63,8 +282,8 @@ button {
   justify-content: center;
   flex: none;
   border-radius: 22%;
-  background: linear-gradient(135deg, var(--accent) 0%, #6366f1 100%);
-  color: #ffffff;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+  color: var(--accent-on);
   font-size: 0.42em;
   font-weight: 700;
   letter-spacing: 0.5px;
@@ -93,14 +312,14 @@ input {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(121, 121, 121, 0.4);
+  background: var(--scrollbar);
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: 6px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(160, 160, 160, 0.6);
+  background: var(--scrollbar);
   background-clip: content-box;
 }
 

@@ -9,6 +9,18 @@
   user-select: none;
 }
 
+/* Tooltip wrapper must behave like the 48px item it replaced. */
+.activity-bar .tooltip-anchor {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 48px;
+}
+
+.activity-bar .tooltip-bubble {
+  white-space: nowrap;
+}
+
 .activity-item {
   position: relative;
   display: flex;
@@ -19,17 +31,17 @@
   padding: 0;
   border: none;
   background: transparent;
-  color: #7a7a7a;
+  color: var(--text-muted);
   cursor: pointer;
   transition: color 0.12s ease;
 }
 
 .activity-item:hover {
-  color: #ffffff;
+  color: var(--text-strong);
 }
 
 .activity-item.is-active {
-  color: #ffffff;
+  color: var(--text-strong);
 }
 
 /* Accent stripe on the left edge of the active view, like VS Code. */

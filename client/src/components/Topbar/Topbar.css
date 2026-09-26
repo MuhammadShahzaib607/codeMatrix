@@ -38,7 +38,7 @@
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.3px;
-  color: #e6e6e6;
+  color: var(--text-strong);
 }
 
 .icon-btn {
@@ -56,8 +56,8 @@
 }
 
 .icon-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
-  color: #ffffff;
+  background: var(--hover-tint);
+  color: var(--text-strong);
 }
 
 .icon-btn:disabled {
@@ -71,7 +71,7 @@
 }
 
 .icon-btn.is-dirty {
-  color: #e2a03f;
+  color: var(--warning);
 }
 
 /* Shows which workspace the explorer is currently reading from. */
@@ -92,7 +92,7 @@
 .workspace-chip.is-cloud {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: #d7c9fd;
+  color: var(--accent-text);
 }
 
 .text-btn {
@@ -114,7 +114,7 @@
 .text-btn:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: #ffffff;
+  color: var(--text-strong);
 }
 
 .text-btn:disabled {
@@ -155,19 +155,19 @@
   border: 1px solid var(--border);
   border-radius: 16px;
   outline: none;
-  background: rgba(255, 255, 255, 0.06);
-  color: #ffffff;
+  background: var(--bg-input);
+  color: var(--text-strong);
   font-size: 12.5px;
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 
 .topbar-search-input::placeholder {
-  color: #7f7f7f;
+  color: var(--text-muted);
 }
 
 .topbar-search-input:focus {
   border-color: var(--accent);
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--bg-input);
 }
 
 .topbar-search-results {
@@ -181,8 +181,8 @@
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #252526;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  background: var(--bg-elevated);
+  box-shadow: 0 16px 40px var(--shadow);
 }
 
 .topbar-search-empty {
@@ -211,12 +211,12 @@
 
 .result-icon.is-folder {
   flex: 0 0 auto;
-  color: #dcb67a;
+  color: var(--folder);
 }
 
 .result-icon.is-file {
   flex: 0 0 auto;
-  color: #75beff;
+  color: var(--file);
 }
 
 .result-name {
@@ -235,7 +235,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #6f6f6f;
+  color: var(--text-muted);
   font-size: 11px;
   text-align: right;
 }
@@ -268,17 +268,17 @@
 .auth-btn-ghost:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: #ffffff;
+  color: var(--text-strong);
 }
 
 .auth-btn-primary {
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: #ffffff;
+  color: var(--accent-on);
 }
 
 .auth-btn-primary:hover {
-  background: #7c4ef0;
+  background: var(--accent-hover);
 }
 
 .user-chip {
@@ -297,7 +297,7 @@
 
 .user-chip:hover {
   border-color: var(--accent);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover-tint);
 }
 
 .user-avatar {
@@ -308,7 +308,7 @@
   height: 24px;
   border-radius: 50%;
   background: var(--accent);
-  color: #ffffff;
+  color: var(--accent-on);
   font-size: 12px;
   font-weight: 600;
 }
@@ -330,8 +330,8 @@
   padding: 5px;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: #252526;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  background: var(--bg-elevated);
+  box-shadow: 0 16px 40px var(--shadow);
 }
 
 .user-menu-header {
@@ -344,7 +344,7 @@
 }
 
 .user-menu-name {
-  color: #ffffff;
+  color: var(--text-strong);
   font-size: 13px;
   font-weight: 600;
 }
@@ -372,5 +372,24 @@
 
 .user-menu-item:hover {
   background: var(--bg-active);
-  color: #ffffff;
+  color: var(--text-strong);
+}
+
+/* Floating progress pill shown while "Export to Folder" runs. */
+.export-progress {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 13px;
+  border: 1px solid var(--accent);
+  border-radius: 18px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+  box-shadow: 0 10px 26px var(--shadow);
 }

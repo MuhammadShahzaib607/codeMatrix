@@ -6,6 +6,7 @@ import AuthModal from './components/Auth/AuthModal'
 import EditorArea from './components/Editor/EditorArea'
 import StorageNotice from './components/Notices/StorageNotice'
 import WorkspaceMissingNotice from './components/Notices/WorkspaceMissingNotice'
+import SettingsModal from './components/Settings/SettingsModal'
 import SidebarContainer from './components/Sidebar/SidebarContainer'
 import TerminalPanel from './components/Terminal/TerminalPanel'
 import Toast from './components/Toast/Toast'
@@ -21,6 +22,7 @@ import useGlobalShortcuts from './hooks/useGlobalShortcuts'
 import useRestoreWorkspace from './hooks/useRestoreWorkspace'
 import useWorkspaceWatcher from './hooks/useWorkspaceWatcher'
 import { clearFileContentCache } from './services/fileContentCache'
+import { writeSettings } from './services/settingsStorage'
 import { clearWorkspaceRef } from './services/workspaceStorage'
 import { isCloudWorkspace } from './utils/workspace'
 import './App.css'
@@ -33,6 +35,7 @@ export default function App() {
   const isTerminalOpen = useSelector((state) => state.terminal.isTerminalPanelOpen)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
+  const settings = useSelector((state) => state.settings)
 
   useGlobalShortcuts()
   useRestoreWorkspace()
@@ -42,6 +45,21 @@ export default function App() {
   useEffect(() => {
     dispatch(fetchCurrentUser())
   }, [dispatch])
+
+  // The theme is a data-attribute on <html>; every component reads it through
+  // the CSS variables in index.css, so switching is instant with no reload.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', settings.theme)
+  }, [settings.theme])
+
+  // Persist preferences whenever they change (theme + editor + terminal only).
+  useEffect(() => {
+    writeSettings({
+      theme: settings.theme,
+      editor: settings.editor,
+      terminal: settings.terminal,
+    })
+  }, [settings.theme, settings.editor, settings.terminal])
 
   // The available shells are decided by the server's OS, so ask the server once
   // on load (Windows dev sees PowerShell/CMD/bash, the Linux deploy sees bash).
@@ -152,6 +170,7 @@ export default function App() {
 
       <Toast />
       <AuthModal />
+      <SettingsModal />
     </div>
   )
 }

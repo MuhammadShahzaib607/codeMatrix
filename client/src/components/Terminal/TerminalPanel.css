@@ -16,10 +16,10 @@
   min-height: 0;
   overflow: hidden;
   /* Solid, not transparent: it floats on top of live editor content. */
-  background: #1e1e1e;
+  background: var(--bg-editor);
   border-top: 1px solid var(--border);
   /* Separates the floating panel from the editor content behind it. */
-  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 -6px 18px var(--shadow);
 }
 
 /* Draggable bar at the very top of the panel. */
@@ -90,13 +90,13 @@ body.is-resizing-cols * {
 }
 
 .terminal-tab:hover {
-  background: #2d2d2d;
+  background: var(--bg-hover);
   color: var(--text);
 }
 
 .terminal-tab.is-active {
-  background: #1e1e1e;
-  color: #ffffff;
+  background: var(--bg-editor);
+  color: var(--text-strong);
   box-shadow: inset 0 1px 0 var(--accent);
 }
 
@@ -168,8 +168,8 @@ body.is-resizing-cols * {
 }
 
 .terminal-tab-close:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #ffffff;
+  background: var(--hover-tint);
+  color: var(--text-strong);
 }
 
 .terminal-new {
@@ -179,8 +179,8 @@ body.is-resizing-cols * {
 }
 
 .terminal-new:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
-  color: #ffffff;
+  background: var(--hover-tint);
+  color: var(--text-strong);
 }
 
 .terminal-new:disabled {
@@ -195,8 +195,8 @@ body.is-resizing-cols * {
 }
 
 .terminal-new-caret:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
-  color: #ffffff;
+  background: var(--hover-tint);
+  color: var(--text-strong);
 }
 
 .terminal-new-caret:disabled {
@@ -220,8 +220,8 @@ body.is-resizing-cols * {
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #252526;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+  background: var(--bg-elevated);
+  box-shadow: 0 8px 22px var(--shadow);
 }
 
 .terminal-shell-option {
@@ -247,7 +247,7 @@ body.is-resizing-cols * {
 }
 
 .terminal-shell-option.is-default {
-  color: #ffffff;
+  color: var(--text-strong);
 }
 
 .terminal-minimize {
@@ -258,7 +258,7 @@ body.is-resizing-cols * {
 }
 
 .terminal-minimize:hover {
-  color: #ffffff;
+  color: var(--text-strong);
 }
 
 /* ---------- Terminal workspace (content + session list) ---------- */
@@ -276,7 +276,7 @@ body.is-resizing-cols * {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  background: #1e1e1e;
+  background: var(--bg-editor);
 }
 
 .terminal-panel.is-minimized .terminal-workspace {
@@ -293,9 +293,9 @@ body.is-resizing-cols * {
   min-width: 180px;
   max-width: 220px;
   overflow-y: auto;
-  background: #252526;
+  background: var(--bg-sidebar);
   /* separates the list from the terminal output area */
-  border-left: 1px solid #3c3c3c;
+  border-left: 1px solid var(--border);
 }
 
 .terminal-session-list-header {
@@ -338,7 +338,7 @@ body.is-resizing-cols * {
 }
 
 .terminal-session-item:hover {
-  background: #2d2d2d;
+  background: var(--bg-hover);
   color: var(--text);
 }
 
@@ -346,7 +346,7 @@ body.is-resizing-cols * {
 .terminal-session-item.is-active {
   background: var(--accent-soft);
   border-left-color: var(--accent);
-  color: #ffffff;
+  color: var(--text-strong);
 }
 
 .terminal-session-icon {
@@ -397,8 +397,8 @@ body.is-resizing-cols * {
 }
 
 .terminal-session-close:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #ffffff;
+  background: var(--hover-tint);
+  color: var(--text-strong);
 }
 
 /* Every group stays mounted; only the active one is visible. */
@@ -436,12 +436,12 @@ body.is-resizing-cols * {
   z-index: 5;
   max-width: calc(100% - 20px);
   padding: 5px 10px;
-  border: 1px solid #6b4a2a;
+  border: 1px solid var(--warning-border);
   border-radius: 6px;
-  background: rgba(37, 37, 38, 0.96);
-  color: #e8b7a8;
+  background: var(--bg-elevated);
+  color: var(--warning-text);
   font-size: 12px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 6px 18px var(--shadow);
   pointer-events: none;
   user-select: none;
 }
@@ -474,7 +474,7 @@ body.is-resizing-cols * {
 }
 
 .terminal-split-pane.is-active .terminal-split-header {
-  color: #ffffff;
+  color: var(--text-strong);
   box-shadow: inset 0 -1px 0 var(--accent);
 }
 
@@ -516,8 +516,8 @@ body.is-resizing-cols * {
 }
 
 .terminal-split-close:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #ffffff;
+  background: var(--hover-tint);
+  color: var(--text-strong);
 }
 
 .terminal-split-body {

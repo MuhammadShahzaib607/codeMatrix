@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import ApiError from './ApiError.js'
-import { WORKSPACE_MISSING_MESSAGE, getTerminalRootPath, workspaceExists } from './workspaceManager.js'
+import { WORKSPACE_MISSING_MESSAGE, getTerminalRootPath, getWorkspacePath, workspaceExists } from './workspaceManager.js'
 
 let pty = null
 let ptyLoadError = null
@@ -257,6 +257,179 @@ export function killTerminalsForSocket(socketId) {
   return killed
 }
 
+// ---------------------------------------------------------------------------
+// One-shot command execution for the AI AGENT (agentService's run_command tool).
+//
+// It reuses the SAME pty infrastructure as the interactive terminal (node-pty,
+// resolveShell, workspace cwd), but spawns the shell NON-interactively with the
+// command as an argument, captures everything it prints, and resolves when the
+// process exits or the timeout hits. The output is handed back to the model as
+// the tool result, and the same text is streamed to the UI in the action feed.
+// ---------------------------------------------------------------------------
+
+// Live agent commands, so shutdown can kill them too.
+const agentCommands = new Map()
+
+/**
+ * The shell to run agent commands in. Bash is preferred everywhere it exists:
+ * model-authored commands are usually POSIX-flavoured (&&, |, rm -rf) and bash
+ * propagates exit codes reliably — unlike `powershell -Command`, which often
+ * exits 0 even when the command failed.
+ */
+function resolveAgentShell() {
+  const { shells, default: fallback } = getAvailableShells()
+  const preferred =
+    process.platform === 'win32' ? ['bash', 'cmd', 'powershell'] : ['bash', 'sh', fallback]
+  for (const id of preferred) {
+    const found = shells.find((shell) => shell.id === id)
+    if (found) return found
+  }
+  return shells.find((shell) => shell.id === fallback) ?? shells[0]
+}
+
+function shellArgsFor(shellId, command) {
+  if (shellId === 'bash' || shellId === 'sh') return ['-c', command]
+  if (shellId === 'cmd') return ['/d', '/s', '/c', command]
+  // PowerShell (Windows fallback)
+  return ['-NoProfile', '-NonInteractive', '-Command', command]
+}
+
+// Strips ANSI colour codes + carriage returns so the model (and the feed) get
+// plain readable text instead of "\x1b[32m...\x1b[0m".
+function toPlainText(raw) {
+  return raw
+    .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '')
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '')
+}
+
+/**
+ * Runs ONE shell command inside a project's workspace and resolves with
+ * { ok, output, exitCode, timedOut, durationMs, shell }.
+ *
+ * Never rejects: a failed/timed-out command is a normal tool result the model
+ * must read and react to. Output is capped to its tail so a chatty `npm install`
+ * cannot blow up the agent's context window.
+ */
+export function runWorkspaceCommand(projectId, command, options = {}) {
+  const timeoutMs = Math.min(Math.max(Number(options.timeoutMs) || 180000, 5000), 300000)
+  const commandId = `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const startedAt = Date.now()
+  const MAX_BUFFER = 40000
+
+  const failed = (message) => ({
+    ok: false,
+    commandId,
+    shell: null,
+    exitCode: null,
+    timedOut: false,
+    durationMs: Date.now() - startedAt,
+    output: message,
+  })
+
+  return new Promise((resolve) => {
+    if (!isTerminalAvailable()) {
+      resolve(
+        failed(
+          `run_command is unavailable on this server: ${getTerminalUnavailableReason() ?? 'terminal disabled'}`,
+        ),
+      )
+      return
+    }
+
+    let cwd
+    try {
+      if (!workspaceExists(projectId)) {
+        throw new ApiError(404, WORKSPACE_MISSING_MESSAGE, 'WORKSPACE_MISSING')
+      }
+      cwd = getWorkspacePath(projectId)
+    } catch (error) {
+      resolve(failed(error.message))
+      return
+    }
+
+    const shell = resolveAgentShell()
+    let ptyProcess
+    try {
+      ptyProcess = pty.spawn(shell.command, shellArgsFor(shell.id, command), {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 40,
+        cwd,
+        env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+        // Same winpty-vs-ConPTY rationale as createTerminalSession: node-pty's
+        // ConPTY kill path can reject after exit and take the server down.
+        ...(process.platform === 'win32' ? { useConpty: false } : {}),
+      })
+    } catch (error) {
+      resolve(failed(`Could not start the shell: ${error.message}`))
+      return
+    }
+
+    let raw = ''
+    let settled = false
+    let timedOut = false
+    let lastExitCode = 0
+
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      agentCommands.delete(commandId)
+      const text = toPlainText(raw)
+      resolve({
+        ok: true,
+        commandId,
+        shell: shell.label,
+        exitCode: timedOut ? null : lastExitCode,
+        timedOut,
+        durationMs: Date.now() - startedAt,
+        output: text
+          ? text
+          : timedOut
+            ? '(no output before the timeout)'
+            : '(command produced no output)',
+      })
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true
+      raw += `\n[agent] Command timed out after ${Math.round(timeoutMs / 1000)}s and was killed.`
+      finish()
+      try {
+        ptyProcess.kill()
+      } catch {}
+    }, timeoutMs)
+
+    agentCommands.set(commandId, ptyProcess)
+
+    ptyProcess.onData((data) => {
+      raw += data
+      // Keep only the tail: a giant install log must not exhaust the buffer.
+      if (raw.length > MAX_BUFFER * 2) {
+        raw = `[… earlier output trimmed …]\n${raw.slice(-MAX_BUFFER)}`
+      }
+    })
+
+    ptyProcess.onExit(({ exitCode }) => {
+      lastExitCode = Number(exitCode) || 0
+      finish()
+    })
+  })
+}
+
+export function killAllAgentCommands() {
+  for (const agentProcess of agentCommands.values()) {
+    try {
+      agentProcess.kill()
+    } catch (error) {
+      console.error(`[terminal] kill of agent command failed: ${error?.message ?? error}`)
+    }
+  }
+  agentCommands.clear()
+}
+
 export function killAllTerminals() {
   for (const [terminalId, session] of sessions) {
     try {
@@ -268,4 +441,5 @@ export function killAllTerminals() {
     }
   }
   sessions.clear()
+  killAllAgentCommands()
 }

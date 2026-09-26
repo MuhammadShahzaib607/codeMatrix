@@ -279,6 +279,18 @@
   color: var(--text-strong);
 }
 
+/* The ROOT row's trash button deletes the WHOLE PROJECT, so it is always
+   danger-coloured (never the neutral grey of the per-row actions) and gets a
+   danger-tinted hover — visually distinct from "delete this one item". */
+.tree-action.is-delete-project {
+  color: var(--danger);
+}
+
+.tree-action.is-delete-project:hover {
+  background: var(--danger-soft);
+  color: var(--danger-strong);
+}
+
 /* A cut row is dimmed until it is pasted or the clipboard changes. */
 .tree-row.is-cut .tree-label,
 .tree-row.is-cut .tree-icon {

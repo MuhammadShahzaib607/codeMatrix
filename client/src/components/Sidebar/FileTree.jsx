@@ -123,6 +123,8 @@ const TreeNode = memo(function TreeNode({
   onRenameSettled,
   onOpenMenu,
   clipboardPath,
+  canDeleteProject = false,
+  onDeleteProject,
 }) {
   const dispatch = useDispatch()
   const [isRenaming, setIsRenaming] = useState(false)
@@ -168,6 +170,16 @@ const TreeNode = memo(function TreeNode({
   function handleDelete(event) {
     event.stopPropagation()
     onDelete(node)
+  }
+
+  /**
+   * ROOT-row only: deletes the WHOLE PROJECT (not the row's own path). It opens
+   * the same type-the-project-name confirmation modal as the right-click menu's
+   * "Delete Project" — this button just makes that action discoverable.
+   */
+  function handleDeleteProject(event) {
+    event.stopPropagation()
+    onDeleteProject?.(node)
   }
 
   return (
@@ -218,7 +230,25 @@ const TreeNode = memo(function TreeNode({
           <span className="tree-label">{node.name}</span>
         )}
 
-        {!isLocked && (
+        {isLocked ? (
+          canDeleteProject ? (
+            // The locked ROOT row: its only destructive action is deleting the
+            // entire project, so it gets ONE clearly-labelled danger button
+            // instead of the per-row rename/delete pair (which would delete a
+            // single child path — the workspace root itself is never deletable).
+            <span className="tree-actions">
+              <button
+                type="button"
+                className="tree-action is-delete-project"
+                title={`Delete project “${node.name}” (removes every file)`}
+                aria-label={`Delete project ${node.name}`}
+                onClick={handleDeleteProject}
+              >
+                <Trash2 size={14} />
+              </button>
+            </span>
+          ) : null
+        ) : (
           <span className="tree-actions">
             <button
               type="button"
@@ -271,6 +301,8 @@ const TreeNode = memo(function TreeNode({
               onRenameSettled={onRenameSettled}
               onOpenMenu={onOpenMenu}
               clipboardPath={clipboardPath}
+              canDeleteProject={canDeleteProject}
+              onDeleteProject={onDeleteProject}
             />
           ))}
         </div>
@@ -507,6 +539,8 @@ function FileTree({
           onRenameSettled={clearForcedRename}
           onOpenMenu={openMenu}
           clipboardPath={clipboard.mode === 'cut' ? clipboard.path : null}
+          canDeleteProject={canDeleteProject}
+          onDeleteProject={onDeleteProject}
         />
       ))}
 

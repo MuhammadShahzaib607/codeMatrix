@@ -1,112 +1,474 @@
-import { Bot, Send, Sparkles, User } from 'lucide-react'
+import {
+  AlertTriangle,
+  Bot,
+  Check,
+  ChevronDown,
+  Eraser,
+  Eye,
+  FilePlus,
+  KeyRound,
+  Loader2,
+  Pencil,
+  Search,
+  Send,
+  Settings,
+  Sparkles,
+  Terminal,
+  Trash2,
+  User,
+} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { useDispatch, useSelector } from 'react-redux'
+import {
+  clearTimeline,
+  fetchApiKeys,
+  selectKeyId,
+  setFramework,
+  startAgentTask,
+} from '../../features/aiSlice'
+import { openSettings } from '../../features/settingsSlice'
+import { openAuthModal } from '../../features/uiSlice'
+import useAuthGuard from '../../hooks/useAuthGuard'
+import { saveFrameworkFor, saveSelectedKeyId, frameworkFor } from '../../services/aiStorage'
+import { FRAMEWORKS } from '../../utils/agentFrameworks'
+import { hasActiveWorkspace } from '../../utils/workspace'
 import './AIPanel.css'
 
-const initialMessages = [
-  {
-    id: 'm1',
-    role: 'ai',
-    text: 'Hi! I am your AI assistant. Ask me to explain, refactor or generate code for the file you are editing.',
-  },
-  {
-    id: 'm2',
-    role: 'user',
-    text: 'Can you add a counter to App.jsx using the useState hook?',
-  },
-  {
-    id: 'm3',
-    role: 'ai',
-    text: 'Sure — here is a minimal counter you can drop into App.jsx:',
-    code: `import { useState } from 'react'
+// Icon per streamed action type (spec: FilePlus=create, Pencil=edit,
+// Terminal=run_command, Eye/Search=read|list, Trash2=delete).
+const ACTION_ICONS = {
+  create_file: FilePlus,
+  edit_file: Pencil,
+  read_file: Eye,
+  list_directory: Search,
+  delete_file: Trash2,
+  run_command: Terminal,
+  complete: Check,
+  error: AlertTriangle,
+}
 
-export default function App() {
-  const [count, setCount] = useState(0)
-
-  return (
-    <button onClick={() => setCount(count + 1)}>
-      Clicked {count} times
-    </button>
-  )
-}`,
-  },
+const SUGGESTIONS = [
+  'Create a todo app with localStorage',
+  'Add a README and .gitignore',
+  'Build a landing page with a contact form',
 ]
 
-const SUGGESTIONS = ['Explain this file', 'Find bugs', 'Add tests']
+/** The expandable detail payload of one action row. */
+function detailsText(entry) {
+  const details = entry.details ?? {}
+  if (entry.type === 'run_command') {
+    const header = details.timedOut
+      ? 'Timed out — command was killed'
+      : `Exit code ${details.exitCode ?? 0}${
+          details.durationMs ? ` · ${(details.durationMs / 1000).toFixed(1)}s` : ''
+        }${details.shell ? ` · ${details.shell}` : ''}`
+    return `${header}\n\n${details.output ?? entry.description}`
+  }
+  const parts = []
+  if (details.result) parts.push(details.result)
+  const args = details.args ?? {}
+  if (Object.values(args).some((value) => value != null && value !== '')) {
+    parts.push(JSON.stringify(args, null, 2))
+  }
+  return parts.join('\n\n') || entry.description
+}
+
+function ActionRow({ entry, expanded, onToggle }) {
+  const Icon = ACTION_ICONS[entry.type] ?? Sparkles
+  const isRunning = entry.status === 'running'
+  const details = entry.details ?? {}
+  const meta =
+    entry.type === 'run_command' && !isRunning
+      ? details.timedOut
+        ? 'timeout'
+        : `exit ${details.exitCode ?? 0}`
+      : ''
+
+  return (
+    <div className={`ai-action is-${entry.type} ${isRunning ? 'is-running' : ''}`}>
+      <button
+        type="button"
+        className="ai-action-head"
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        <span className="ai-action-icon">
+          {isRunning ? <Loader2 size={13} className="ai-spin" /> : <Icon size={13} />}
+        </span>
+        <span className="ai-action-desc">{entry.description}</span>
+        {meta && <span className="ai-action-meta">{meta}</span>}
+        <ChevronDown size={12} className={`ai-action-chevron ${expanded ? 'is-open' : ''}`} />
+      </button>
+      {expanded && <pre className="ai-action-details">{detailsText(entry)}</pre>}
+    </div>
+  )
+}
+
+/** Custom dropdown: colored dot + label per stack (lucide has no logos). */
+function FrameworkMenu({ value, onChange, disabled }) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef(null)
+  const current = FRAMEWORKS.find((framework) => framework.id === value) ?? FRAMEWORKS[0]
+
+  useEffect(() => {
+    if (!open) return undefined
+    function handleMouseDown(event) {
+      if (!containerRef.current?.contains(event.target)) setOpen(false)
+    }
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handleMouseDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div className="ai-framework" ref={containerRef}>
+      <button
+        type="button"
+        className="ai-framework-btn"
+        disabled={disabled}
+        title="Target stack for the next task"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((isOpen) => !isOpen)}
+      >
+        <span className="ai-framework-dot" style={{ background: current.color }} />
+        <span className="ai-framework-label">{current.label}</span>
+        <ChevronDown size={13} className={`ai-framework-chevron ${open ? 'is-open' : ''}`} />
+      </button>
+      {open && (
+        <div className="ai-framework-menu" role="listbox" aria-label="Target framework">
+          {FRAMEWORKS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="option"
+              aria-selected={option.id === value}
+              className={`ai-framework-item ${option.id === value ? 'is-active' : ''}`}
+              onClick={() => {
+                onChange(option.id)
+                setOpen(false)
+              }}
+            >
+              <span className="ai-framework-dot" style={{ background: option.color }} />
+              <span>{option.label}</span>
+              {option.id === value && <Check size={13} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function AIPanel() {
-  const [messages, setMessages] = useState(initialMessages)
+  const dispatch = useDispatch()
+  const guard = useAuthGuard()
   const [draft, setDraft] = useState('')
+  const [expandedIds, setExpandedIds] = useState(() => new Set())
   const scrollRef = useRef(null)
 
+  const {
+    keys,
+    keysStatus,
+    keysError,
+    selectedKeyId,
+    framework,
+    running,
+    thinking,
+    thinkingText,
+    timeline,
+  } = useSelector((state) => state.ai)
+  const workspace = useSelector((state) => state.fileSystem.workspace)
+  const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
+
+  const hasWorkspace = hasActiveWorkspace(workspace)
+  const projectId = workspace.projectId
+
+  // Keep the feed pinned to the newest action while the agent works.
   useEffect(() => {
     const element = scrollRef.current
     if (element) element.scrollTop = element.scrollHeight
-  }, [messages])
+  }, [timeline, thinking, thinkingText])
+
+  // When the active project changes (or is restored), load ITS last-used
+  // stack — the selector remembers the choice per project.
+  useEffect(() => {
+    dispatch(setFramework(frameworkFor(projectId)))
+  }, [projectId, dispatch])
+
+  function handleFrameworkChange(frameworkId) {
+    dispatch(setFramework(frameworkId))
+    saveFrameworkFor(projectId, frameworkId)
+  }
+
+  function handleKeyChange(value) {
+    const keyId = value || null
+    dispatch(selectKeyId(keyId))
+    saveSelectedKeyId(keyId)
+  }
+
+  function toggleDetails(id) {
+    setExpandedIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   function handleSend(event) {
-    event.preventDefault()
-    const text = draft.trim()
-    if (!text) return
-    setMessages((current) => [...current, { id: `m${current.length + 1}`, role: 'user', text }])
-    setDraft('')
+    event?.preventDefault?.()
+    const task = draft.trim()
+    if (!task || running) return
+    const run = () => {
+      if (!projectId) return
+      setDraft('')
+      dispatch(startAgentTask({ projectId, task }))
+    }
+    guard(run, 'Please sign in to use the AI assistant')
   }
+
+  function handleSuggestion(text) {
+    setDraft(text)
+  }
+
+  const showZeroKeyCard = isAuthenticated && keysStatus === 'ready' && keys.length === 0
+  const showSignedOutCard = !isAuthenticated
+  const keysFailed = keysStatus === 'error'
+  // The composer must never be reachable before we KNOW a key exists — while
+  // the list loads, show a quiet loading row instead of a broken chat input.
+  const keysLoading = isAuthenticated && (keysStatus === 'idle' || keysStatus === 'loading')
+  const showComposer =
+    !showSignedOutCard && !keysLoading && !showZeroKeyCard && !keysFailed && keys.length > 0
+  const showSuggestions = timeline.length === 0 && !running && showComposer
 
   return (
     <aside className="ai-panel">
       <div className="ai-header">
         <Sparkles size={16} className="ai-header-icon" />
-        <span className="ai-header-title">AI Assistant</span>
-        <span className="ai-badge">Preview</span>
+        <span className="ai-header-title">AI Agent</span>
+        <span className={`ai-badge ${running ? 'is-working' : ''}`}>
+          {running ? 'Working' : 'Ready'}
+        </span>
+        {timeline.length > 0 && !running && (
+          <button
+            type="button"
+            className="ai-header-action"
+            title="Clear this conversation"
+            aria-label="Clear conversation"
+            onClick={() => dispatch(clearTimeline())}
+          >
+            <Eraser size={14} />
+          </button>
+        )}
       </div>
 
       <div className="ai-messages" ref={scrollRef}>
-        {messages.map((message) => (
-          <div key={message.id} className={`ai-message is-${message.role}`}>
+        {timeline.length === 0 && (
+          <div className="ai-message is-ai">
             <div className="ai-avatar">
-              {message.role === 'ai' ? <Bot size={14} /> : <User size={14} />}
+              <Bot size={14} />
             </div>
             <div className="ai-bubble">
-              <p className="ai-text">{message.text}</p>
-              {message.code && (
-                <pre className="ai-code">
-                  <code>{message.code}</code>
-                </pre>
-              )}
+              <p className="ai-text">
+                I work directly in your project: I create and edit files, delete what is not
+                needed and run shell commands (installs, builds, CLIs) until your task is done.
+                Pick a stack below and describe what you want.
+              </p>
             </div>
           </div>
-        ))}
+        )}
+
+        {timeline.map((entry) => {
+          if (entry.kind === 'user') {
+            return (
+              <div key={entry.id} className="ai-message is-user">
+                <div className="ai-avatar">
+                  <User size={14} />
+                </div>
+                <div className="ai-bubble">
+                  <p className="ai-text">{entry.text}</p>
+                </div>
+              </div>
+            )
+          }
+          if (entry.kind === 'agent') {
+            return (
+              <div key={entry.id} className={`ai-message is-ai ${entry.ok ? '' : 'is-error'}`}>
+                <div className="ai-avatar">{entry.ok ? <Bot size={14} /> : <AlertTriangle size={14} />}</div>
+                <div className="ai-bubble">
+                  <p className="ai-text">{entry.text}</p>
+                  {entry.ok && typeof entry.toolCalls === 'number' && (
+                    <p className="ai-summary-meta">
+                      {entry.toolCalls} tool call{entry.toolCalls === 1 ? '' : 's'}
+                      {entry.durationMs ? ` · ${(entry.durationMs / 1000).toFixed(1)}s` : ''}
+                      {entry.limitReached ? ' · stopped at the tool limit' : ''}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )
+          }
+          return (
+            <ActionRow
+              key={entry.id}
+              entry={entry}
+              expanded={expandedIds.has(entry.id)}
+              onToggle={() => toggleDetails(entry.id)}
+            />
+          )
+        })}
+
+        {running && thinking && (
+          <div className="ai-thinking" role="status">
+            <Loader2 size={13} className="ai-spin" />
+            <span>{thinkingText || 'Thinking…'}</span>
+          </div>
+        )}
       </div>
 
-      <div className="ai-suggestions">
-        {SUGGESTIONS.map((suggestion) => (
+      {showSuggestions && (
+        <div className="ai-suggestions">
+          {SUGGESTIONS.map((suggestion) => (
+            <button
+              key={suggestion}
+              type="button"
+              className="ai-suggestion"
+              onClick={() => handleSuggestion(suggestion)}
+            >
+              {suggestion}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {keysLoading && (
+        <div className="ai-key-loading" role="status">
+          <Loader2 size={13} className="ai-spin" />
+          <span>Loading your API keys…</span>
+        </div>
+      )}
+
+      {showSignedOutCard && (
+        <div className="ai-nokey">
+          <KeyRound size={16} />
+          <p>Sign in to use the AI agent with your own Groq API key.</p>
           <button
             type="button"
-            key={suggestion}
-            className="ai-suggestion"
-            onClick={() => setDraft(suggestion)}
+            className="ai-nokey-btn"
+            onClick={() => dispatch(openAuthModal({ mode: 'signin', message: 'Please sign in to use the AI assistant' }))}
           >
-            {suggestion}
+            Sign in
           </button>
-        ))}
-      </div>
+        </div>
+      )}
 
-      <form className="ai-composer" onSubmit={handleSend}>
-        <input
-          className="ai-input"
-          value={draft}
-          placeholder="Ask the AI assistant…"
-          onChange={(event) => setDraft(event.target.value)}
-        />
-        <button
-          type="submit"
-          className="ai-send"
-          title="Send"
-          aria-label="Send message"
-          disabled={!draft.trim()}
-        >
-          <Send size={16} />
-        </button>
-      </form>
+      {keysFailed && (
+        <div className="ai-nokey is-error">
+          <AlertTriangle size={16} />
+          <p>{keysError}</p>
+          <button type="button" className="ai-nokey-btn" onClick={() => dispatch(fetchApiKeys())}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {showZeroKeyCard && (
+        <div className="ai-nokey">
+          <KeyRound size={16} />
+          <p>Add a Groq API key in Settings to use the AI assistant.</p>
+          <button type="button" className="ai-nokey-btn" onClick={() => dispatch(openSettings('ai'))}>
+            Add API key
+          </button>
+        </div>
+      )}
+
+      {/* Framework + key controls stay visible even before a key exists (the
+          stack choice is part of composing a NEW TASK); only the composer
+          waits for a usable key. */}
+      {!showSignedOutCard && !keysLoading && !keysFailed && (
+        <div className="ai-controls">
+          <FrameworkMenu value={framework} onChange={handleFrameworkChange} disabled={running} />
+          <div className="ai-controls-right">
+            {keys.length > 1 ? (
+              <select
+                className="ai-key-select"
+                value={selectedKeyId ?? ''}
+                disabled={running}
+                title="Which saved key to use for this session"
+                aria-label="API key to use"
+                onChange={(event) => handleKeyChange(event.target.value)}
+              >
+                <option value="">Newest key</option>
+                {keys.map((key) => (
+                  <option key={key.id} value={key.id}>
+                    {key.label ? `${key.label} — ${key.masked}` : key.masked}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              keys.length === 1 && (
+                <span className="ai-key-chip" title="The key this agent will use">
+                  <KeyRound size={11} />
+                  {keys[0].masked}
+                </span>
+              )
+            )}
+            <button
+              type="button"
+              className="ai-gear"
+              title="Manage Groq API keys"
+              aria-label="Manage API keys"
+              onClick={() => dispatch(openSettings('ai'))}
+            >
+              <Settings size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showComposer && (
+        <>
+          <form className="ai-composer" onSubmit={handleSend}>
+            <textarea
+              className="ai-input ai-textarea"
+              rows={2}
+              value={draft}
+              disabled={running}
+              spellCheck={false}
+              placeholder={
+                !hasWorkspace
+                  ? 'Open or create a project first…'
+                  : running
+                    ? 'The agent is working…'
+                    : 'Describe the task for the agent…'
+              }
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  handleSend(event)
+                }
+              }}
+            />
+            <button
+              type="submit"
+              className="ai-send"
+              title="Run task"
+              aria-label="Send task"
+              disabled={!draft.trim() || running || !hasWorkspace}
+            >
+              <Send size={16} />
+            </button>
+          </form>
+        </>
+      )}
     </aside>
   )
 }

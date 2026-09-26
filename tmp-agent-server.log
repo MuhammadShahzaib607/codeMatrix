@@ -1,0 +1,13 @@
+[db] connected to MongoDB
+[workspace] folder migration: checked 4, renamed 0
+[server] listening on http://localhost:4100
+[server] health check: http://localhost:4100/api/health
+[server] workspaces root: C:\Projects\CodeMatrix\server\workspaces
+[server] NOTE: workspace files on disk are ephemeral on the free tier.
+[tree] 8516d76a-493b-4359-8623-3ffa7ca5602a walked in 1ms
+[tree] fc4efcab-6da1-47d1-bfa5-55b23de6fef0 walked in 1ms
+[watcher] fc4efcab-6da1-47d1-bfa5-55b23de6fef0: 7 fs event(s) -> 1 treeChanged (2ms)
+[tree] fc4efcab-6da1-47d1-bfa5-55b23de6fef0 walked in 45ms
+[tree] 40c68617-3b00-453a-86d1-531be1c28552 walked in 1ms
+[watcher] 40c68617-3b00-453a-86d1-531be1c28552: 8 fs event(s) -> 1 treeChanged (3ms)
+[tree] 40c68617-3b00-453a-86d1-531be1c28552 walked in 4ms

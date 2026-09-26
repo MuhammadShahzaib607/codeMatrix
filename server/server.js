@@ -4,6 +4,7 @@ import { Server } from 'socket.io'
 import app from './src/app.js'
 import { connectDatabase } from './src/config/db.js'
 import { env, resolveCorsOrigin } from './src/config/env.js'
+import registerAgentSocket from './src/socket/agentSocket.js'
 import registerTerminalSocket from './src/socket/terminalSocket.js'
 import registerWorkspaceSocket from './src/socket/workspaceSocket.js'
 import { closeAllWatchers } from './src/utils/fileWatcher.js'
@@ -32,6 +33,7 @@ const io = new Server(server, {
 
 registerTerminalSocket(io)
 registerWorkspaceSocket(io)
+registerAgentSocket(io)
 
 async function start() {
   await connectDatabase()

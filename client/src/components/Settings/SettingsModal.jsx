@@ -1,7 +1,10 @@
 import {
+  Bot,
   Check,
+  KeyRound,
   LogOut,
   Palette,
+  Plus,
   Search,
   Settings2,
   TerminalSquare,
@@ -11,6 +14,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import { addApiKey, deleteApiKey, fetchApiKeys, selectKeyId } from '../../features/aiSlice'
 import { logout } from '../../features/authSlice'
 import {
   closeSettings,
@@ -21,6 +25,7 @@ import {
   updateTerminalSetting,
 } from '../../features/settingsSlice'
 import { openDeleteProjectModal, showToast } from '../../features/uiSlice'
+import { saveSelectedKeyId } from '../../services/aiStorage'
 import { THEMES } from '../../utils/themes'
 import { isCloudWorkspace } from '../../utils/workspace'
 import './SettingsModal.css'
@@ -29,6 +34,7 @@ const SECTIONS = [
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'editor', label: 'Editor', icon: Settings2 },
   { id: 'terminal', label: 'Terminal', icon: TerminalSquare },
+  { id: 'ai', label: 'AI Assistant', icon: Bot },
   { id: 'general', label: 'General', icon: User },
 ]
 
@@ -109,7 +115,17 @@ export default function SettingsModal() {
   const { availableShells, defaultShell } = useSelector((state) => state.terminal)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const user = useSelector((state) => state.auth.user)
+  const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
+  const ai = useSelector((state) => state.ai)
   const [themeQuery, setThemeQuery] = useState('')
+  const [newKey, setNewKey] = useState('')
+  const [newKeyLabel, setNewKeyLabel] = useState('')
+  const [isSavingKey, setIsSavingKey] = useState(false)
+
+  // Refresh the masked key list every time Settings opens.
+  useEffect(() => {
+    if (isOpen && isAuthenticated) dispatch(fetchApiKeys())
+  }, [isOpen, isAuthenticated, dispatch])
 
   useEffect(() => {
     if (!isOpen) return undefined
@@ -152,6 +168,25 @@ export default function SettingsModal() {
   const selectedShell = terminal.preferredShell ?? defaultShell ?? ''
   const activeTheme = THEMES.find((option) => option.id === theme)
   const canDeleteProject = isCloudWorkspace(workspace)
+
+  async function handleAddKey(event) {
+    event.preventDefault()
+    const key = newKey.trim()
+    if (!key || isSavingKey) return
+    setIsSavingKey(true)
+    const result = await dispatch(addApiKey({ key, label: newKeyLabel.trim() }))
+    setIsSavingKey(false)
+    if (addApiKey.fulfilled.match(result)) {
+      setNewKey('')
+      setNewKeyLabel('')
+    }
+  }
+
+  function handleUseKey(keyId) {
+    dispatch(selectKeyId(keyId))
+    saveSelectedKeyId(keyId)
+    dispatch(showToast({ message: 'Agent will use this key.', type: 'info' }))
+  }
 
   return (
     <div className="settings-overlay" onMouseDown={() => dispatch(closeSettings())}>
@@ -358,6 +393,113 @@ export default function SettingsModal() {
                     }
                   />
                 </Row>
+              </section>
+            )}
+
+            {activeSection === 'ai' && (
+              <section className="settings-section">
+                <h3 className="settings-section-title">Groq API keys</h3>
+                <p className="settings-section-desc">
+                  The AI agent runs on a Groq API key that <strong>you</strong> provide — this app
+                  ships with no built-in key. Keys are encrypted at rest with AES-256-GCM and
+                  never leave the server; only masked copies are ever shown. Get one free at{' '}
+                  console.groq.com → API Keys. Maximum 3 keys.
+                </p>
+
+                {!isAuthenticated ? (
+                  <p className="settings-section-desc">Sign in to manage your API keys.</p>
+                ) : (
+                  <>
+                    {ai.keysStatus === 'loading' && (
+                      <p className="settings-section-desc">Loading keys…</p>
+                    )}
+                    {ai.keysStatus === 'error' && (
+                      <p className="settings-section-desc is-error">{ai.keysError}</p>
+                    )}
+                    {ai.keysStatus === 'ready' && ai.keys.length === 0 && (
+                      <p className="settings-section-desc">
+                        No keys saved yet — paste your Groq key below to activate the assistant.
+                      </p>
+                    )}
+
+                    {ai.keys.length > 0 && (
+                      <div className="settings-key-list">
+                        {ai.keys.map((key, index) => {
+                          const inUse =
+                            ai.selectedKeyId === key.id ||
+                            (ai.selectedKeyId === null && index === 0)
+                          return (
+                            <div key={key.id} className="settings-key-row">
+                              <KeyRound size={14} className="settings-key-icon" />
+                              <div className="settings-key-info">
+                                <span className="settings-key-masked">{key.masked}</span>
+                                <span className="settings-key-label">
+                                  {key.label || 'No label'}
+                                  {inUse ? ' · used by the agent' : ''}
+                                </span>
+                              </div>
+                              {inUse ? (
+                                <span className="settings-key-inuse">In use</span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="settings-key-use"
+                                  onClick={() => handleUseKey(key.id)}
+                                >
+                                  Use this
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="settings-key-delete"
+                                aria-label={`Delete API key ${key.masked}`}
+                                title="Delete this key"
+                                onClick={() => dispatch(deleteApiKey(key.id))}
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    {ai.keys.length < 3 ? (
+                      <form className="settings-key-form" onSubmit={handleAddKey}>
+                        <input
+                          type="password"
+                          className="settings-key-input"
+                          placeholder="gsk_… (your Groq API key)"
+                          value={newKey}
+                          spellCheck={false}
+                          autoComplete="off"
+                          onChange={(event) => setNewKey(event.target.value)}
+                        />
+                        <input
+                          type="text"
+                          className="settings-key-input settings-key-input-label"
+                          placeholder="Label (optional)"
+                          value={newKeyLabel}
+                          maxLength={60}
+                          onChange={(event) => setNewKeyLabel(event.target.value)}
+                        />
+                        <button
+                          type="submit"
+                          className="settings-btn"
+                          disabled={isSavingKey || !newKey.trim()}
+                        >
+                          <Plus size={14} />
+                          <span>{isSavingKey ? 'Saving…' : 'Add key'}</span>
+                        </button>
+                      </form>
+                    ) : (
+                      <p className="settings-section-desc">
+                        <strong>Maximum 3 API keys allowed.</strong> Delete one before adding
+                        another.
+                      </p>
+                    )}
+                  </>
+                )}
               </section>
             )}
 

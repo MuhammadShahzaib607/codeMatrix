@@ -12,12 +12,19 @@ import TerminalPanel from './components/Terminal/TerminalPanel'
 import Toast from './components/Toast/Toast'
 import Topbar from './components/Topbar/Topbar'
 import { fetchCurrentUser } from './features/authSlice'
+import { fetchApiKeys } from './features/aiSlice'
 import { clearExplorerHistory } from './features/explorerHistorySlice'
 import { clearWorkspace } from './features/fileSystemSlice'
 import { fetchAvailableShells, resetTerminals } from './features/terminalSlice'
 import { clearTsConfig } from './features/tsconfigSlice'
 import { loadWorkspaceTsConfig } from './features/workspaceThunks'
-import { SIDEBAR_WIDTH_KEY, setSidebarWidth } from './features/uiSlice'
+import {
+  AI_PANEL_WIDTH_KEY,
+  SIDEBAR_WIDTH_KEY,
+  setAiPanelWidth,
+  setSidebarWidth,
+} from './features/uiSlice'
+import useAgentEvents from './hooks/useAgentEvents'
 import useGlobalShortcuts from './hooks/useGlobalShortcuts'
 import useRestoreWorkspace from './hooks/useRestoreWorkspace'
 import useWorkspaceWatcher from './hooks/useWorkspaceWatcher'
@@ -33,6 +40,7 @@ export default function App() {
   const isSidebarOpen = useSelector((state) => state.ui.isSidebarOpen)
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
   const sidebarWidth = useSelector((state) => state.ui.sidebarWidth)
+  const aiPanelWidth = useSelector((state) => state.ui.aiPanelWidth)
   const isTerminalOpen = useSelector((state) => state.terminal.isTerminalPanelOpen)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
@@ -42,6 +50,8 @@ export default function App() {
   useRestoreWorkspace()
   // Live-refresh the Explorer when the workspace folder changes on disk.
   useWorkspaceWatcher()
+  // Stream the AI agent's actions (agent:action / agent:done) into the feed.
+  useAgentEvents()
 
   useEffect(() => {
     dispatch(fetchCurrentUser())
@@ -76,6 +86,12 @@ export default function App() {
   useEffect(() => {
     dispatch(fetchAvailableShells())
   }, [dispatch])
+
+  // The agent runs on a key the USER saved, so load the masked list whenever
+  // the user signs in (the panel needs it to show the zero-key prompt).
+  useEffect(() => {
+    if (isAuthenticated) dispatch(fetchApiKeys())
+  }, [isAuthenticated, dispatch])
 
   // The content cache is keyed by workspace id, so drop it whenever the active
   // workspace changes (scratch included).
@@ -118,6 +134,12 @@ export default function App() {
     } catch {}
   }, [sidebarWidth])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(AI_PANEL_WIDTH_KEY, String(aiPanelWidth))
+    } catch {}
+  }, [aiPanelWidth])
+
   function startSidebarResize(event) {
     event.preventDefault()
     const startX = event.clientX
@@ -127,6 +149,29 @@ export default function App() {
 
     function handleMove(moveEvent) {
       dispatch(setSidebarWidth(startWidth + (moveEvent.clientX - startX)))
+    }
+
+    function handleUp() {
+      slot?.classList.remove('is-resizing')
+      document.removeEventListener('mousemove', handleMove)
+      document.removeEventListener('mouseup', handleUp)
+    }
+
+    document.addEventListener('mousemove', handleMove)
+    document.addEventListener('mouseup', handleUp)
+  }
+
+  // The AI panel mirrors the sidebar: drag its LEFT edge, width = start - dx
+  // (pulling left widens it), clamped 280–600px by the reducer.
+  function startAiResize(event) {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = aiPanelWidth
+    const slot = event.currentTarget.closest('.panel-slot-ai')
+    slot?.classList.add('is-resizing')
+
+    function handleMove(moveEvent) {
+      dispatch(setAiPanelWidth(startWidth - (moveEvent.clientX - startX)))
     }
 
     function handleUp() {
@@ -173,8 +218,20 @@ export default function App() {
           {showTerminal && <TerminalPanel />}
         </div>
 
-        <div className={`panel-slot panel-slot-ai ${isAIPanelOpen ? 'is-open' : ''}`}>
+        <div
+          className={`panel-slot panel-slot-ai ${isAIPanelOpen ? 'is-open' : ''}`}
+          style={{ width: isAIPanelOpen ? aiPanelWidth : 0 }}
+        >
           <AIPanel />
+          {isAIPanelOpen && (
+            <div
+              className="ai-resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              title="Drag to resize the AI panel"
+              onMouseDown={startAiResize}
+            />
+          )}
         </div>
       </div>
 

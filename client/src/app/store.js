@@ -1,4 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit'
+import aiReducer from '../features/aiSlice'
 import authReducer from '../features/authSlice'
 import clipboardReducer from '../features/clipboardSlice'
 import editorReducer from '../features/editorSlice'
@@ -11,6 +12,7 @@ import uiReducer from '../features/uiSlice'
 
 export const store = configureStore({
   reducer: {
+    ai: aiReducer,
     auth: authReducer,
     clipboard: clipboardReducer,
     fileSystem: fileSystemReducer,

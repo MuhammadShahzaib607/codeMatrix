@@ -16,6 +16,7 @@ import {
   markWorkspaceMissing,
   refreshTree,
   remapPaths,
+  removeNode,
   setCloudWorkspace,
   setScratchWorkspace,
 } from './fileSystemSlice'
@@ -130,7 +131,16 @@ export const deleteWorkspaceEntry = createAsyncThunk(
   async ({ projectId, path }, { dispatch }) => {
     try {
       await workspaceApi.deleteEntry(projectId, path)
-      await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
+      // Optimistic UI removal: the node is dropped from Redux the instant the
+      // DELETE API confirms, so the Explorer reflects the deletion immediately
+      // — it does NOT wait on a full GET /tree re-walk first. Deleting a folder
+      // with node_modules used to take 10-15s end to end because the UI only
+      // updated after that expensive refetch finished.
+      dispatch(removeNode(path))
+      // Direct post-action refetch, fired in the BACKGROUND (not awaited): the
+      // Explorer is already correct, this just reconciles any drift. The chokidar
+      // watcher remains a second, debounced safety net.
+      dispatch(refreshWorkspaceTree({ projectId }))
       return { path }
     } catch (error) {
       throw handleFailure(error, dispatch)

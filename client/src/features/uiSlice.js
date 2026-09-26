@@ -4,7 +4,14 @@ export const SIDEBAR_DEFAULT_WIDTH = 250
 export const SIDEBAR_MIN_WIDTH = 180
 export const SIDEBAR_MAX_WIDTH = 500
 
+// The right-hand AI panel resizes by dragging its LEFT edge (same pattern as
+// the sidebar, mirrored), clamped 280–600px and persisted to localStorage.
+export const AI_PANEL_DEFAULT_WIDTH = 360
+export const AI_PANEL_MIN_WIDTH = 280
+export const AI_PANEL_MAX_WIDTH = 600
+
 const SIDEBAR_WIDTH_KEY = 'code-matrix:sidebarWidth'
+const AI_PANEL_WIDTH_KEY = 'code-matrix:aiPanelWidth'
 
 function readStoredSidebarWidth() {
   try {
@@ -14,6 +21,14 @@ function readStoredSidebarWidth() {
   return SIDEBAR_DEFAULT_WIDTH
 }
 
+function readStoredAiPanelWidth() {
+  try {
+    const value = Number(localStorage.getItem(AI_PANEL_WIDTH_KEY))
+    if (value >= AI_PANEL_MIN_WIDTH && value <= AI_PANEL_MAX_WIDTH) return value
+  } catch {}
+  return AI_PANEL_DEFAULT_WIDTH
+}
+
 const initialState = {
   isSidebarOpen: true,
   isAIPanelOpen: true,
@@ -21,6 +36,7 @@ const initialState = {
   isStorageNoticeDismissed: false,
   activeSidebarView: 'explorer',
   sidebarWidth: readStoredSidebarWidth(),
+  aiPanelWidth: readStoredAiPanelWidth(),
   revealedNode: null,
   revealLine: null,
   authModal: { isOpen: false, mode: 'signin', message: null },
@@ -67,6 +83,11 @@ const uiSlice = createSlice({
     setSidebarWidth(state, action) {
       const value = Math.round(Number(action.payload) || 0)
       state.sidebarWidth = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, value))
+    },
+
+    setAiPanelWidth(state, action) {
+      const value = Math.round(Number(action.payload) || 0)
+      state.aiPanelWidth = Math.min(AI_PANEL_MAX_WIDTH, Math.max(AI_PANEL_MIN_WIDTH, value))
     },
 
     revealTreeNode: {
@@ -118,6 +139,7 @@ export const {
   dismissStorageNotice,
   setActiveSidebarView,
   setSidebarWidth,
+  setAiPanelWidth,
   revealTreeNode,
   revealLineInEditor,
   openAuthModal,
@@ -127,5 +149,5 @@ export const {
   closeDeleteProjectModal,
 } = uiSlice.actions
 
-export { SIDEBAR_WIDTH_KEY }
+export { SIDEBAR_WIDTH_KEY, AI_PANEL_WIDTH_KEY }
 export default uiSlice.reducer

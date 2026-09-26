@@ -3460,3 +3460,113 @@ need BOTH processes running (`cd server && node server.js`, `cd client &&
 npm run dev`) and a signed-in user with MongoDB available — they cannot be
 exercised headlessly, since Monaco only mounts in a real browser.
 
+
+================================================================================
+FIX: Slow delete (10-15s) root-caused and eliminated + a VISIBLE Delete Project
+     button on the Explorer root row
+================================================================================
+
+STATUS: complete and verified. oxlint 0/0 (65 files); vite build passes; a live
+        server benchmark + a 28/28-check jsdom harness driving the REAL Sidebar
+        against the LIVE API (both temp scripts deleted afterwards).
+
+--------------------------------------------------------------------------------
+ROOT CAUSE OF THE SLOW DELETE — MEASURED, NOT GUESSED
+--------------------------------------------------------------------------------
+The question was: synchronous fs calls, waiting for a full refetch, or both?
+Answer: NEITHER of those two remained as the dominant cause — both had already
+been fixed in the earlier "Freezes on delete" entry and were re-audited as
+still correct. The remaining 10-15s was a THIRD, client-side cause:
+
+RC1 (THE cause) — the PRE-DELETE UNDO SNAPSHOT.
+  features/explorerHistoryThunks.js captureSnapshot() ran BEFORE the DELETE
+  request and fetched the content of EVERY file in the subtree ONE HTTP request
+  at a time (each also costing the server a MongoDB touchProject round trip).
+  The delete did not even start until the last snapshot read returned.
+  MEASURED against the live server: 126.8 ms/file sequential (300-file sample =
+  38.05s) — i.e. ~13s for a ~100-file folder and ~380s extrapolated for the
+  3000-file node_modules. That is exactly the reported 10-15s: for folders with
+  hundreds/thousands of files the UI sat on this loop before anything else ran.
+
+RC2 (minor) — the UI waited on the full refetch.
+  deleteWorkspaceEntry awaited a complete GET /tree re-walk (180-232ms
+  measured) before the Explorer updated, even though the client already knew
+  exactly which node disappeared.
+
+RE-AUDITED, NOT THE CAUSE:
+  - The server delete path is async end to end: deleteEntry controller
+    (asyncHandler) -> deleteFromWorkspace -> await fsp.rm(path, { recursive:
+    true, force: true }); no rmSync/unlinkSync anywhere. MEASURED: a 3000-file
+    folder is removed in 947ms with 20 /api/health probes completing DURING the
+    delete (max 129ms — libuv threadpool contention, not a blocked event loop).
+  - deleteWorkspaceFolder (whole-project delete) is equally async.
+
+HOW IT WAS FIXED (client only; no server change was needed):
+  - captureSnapshot is now BOUNDED: SNAPSHOT_MAX_FILES = 200, fetched with
+    SNAPSHOT_CONCURRENCY = 12 through a small mapWithConcurrency helper. A
+    subtree with more files is deleted with NO snapshot; the undo entry is still
+    recorded (snapshot: null) and Ctrl+Z then says "Nothing restored — it was
+    too large to keep an undo copy" instead of silently pretending it worked.
+    Small/medium deletes still snapshot — now in parallel, so they are faster.
+  - deleteWorkspaceEntry is now optimistic: on a successful DELETE response it
+    immediately dispatches the NEW fileSystemSlice removeNode(path) (drops the
+    node from Redux and prunes dead tabs) and then fires refreshWorkspaceTree in
+    the BACKGROUND (not awaited) as a reconcile pass; the debounced chokidar
+    notify stays as a second safety net. The row disappears the moment the API
+    confirms — no full-tree re-walk in the critical path.
+
+MEASURED END TO END (real Sidebar, live server, real folders on disk):
+  - node_modules, 3000 files: row gone 1197ms after confirming — 1064ms of that
+    is the server physically deleting 3000 files, client overhead only 133ms,
+    0 snapshot requests, and the UI updated while a deliberately slowed (2.5s)
+    GET /tree refetch was still in flight.
+  - vendor folder, 1000 files: 444ms total (delete API 412ms) — comfortably
+    under 1 second.
+  - Small file delete: still exactly 1 getFile (snapshot captured); Ctrl+Z
+    restored the file on disk and in the tree.
+  - Whole-project DELETE endpoint: 117ms. Root-button UI flow: 261ms.
+  The residual time for a huge folder is the PHYSICAL rm on the server — the UI
+  can never reflect a deletion before the server confirms it; everything the
+  client added (snapshot loop + refetch wait) is gone.
+
+--------------------------------------------------------------------------------
+DELETE PROJECT BUTTON IS NOW CLEARLY VISIBLE IN THE EXPLORER
+--------------------------------------------------------------------------------
+  - components/Sidebar/FileTree.jsx  The locked ROOT row now renders ONE
+    danger-styled hover button (lucide-react Trash2, class
+    "tree-action is-delete-project", aria-label "Delete project <name>", title
+    "Delete project “<name>” (removes every file)") INSTEAD of the per-row
+    rename/delete pair (which would target a single child path anyway — the
+    workspace root itself is never deletable). canDeleteProject / onDeleteProject
+    are threaded through the row component and every nested row.
+    It uses the SAME hover-icon pattern as regular files/folders (.tree-actions
+    is opacity 0 and reveals on row hover/selection).
+  - components/Sidebar/Sidebar.css  .tree-action.is-delete-project is coloured
+    var(--danger) (never the neutral grey of per-row actions) with a
+    danger-soft / danger-strong hover, so it clearly reads as "delete the whole
+    project" rather than "delete this item".
+  - Clicking it dispatches openDeleteProjectModal() — the SAME
+    type-the-project-name ConfirmModal (confirmPhrase = project name; confirm
+    button disabled until the exact name is typed, Enter also confirms). The
+    right-click "Delete Project" menu entry is KEPT untouched — this is an
+    additional, more discoverable entry point, not a replacement.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (65 files). vite build: succeeds.
+  - Live benchmark (real server + MongoDB + 3000-file node_modules): numbers
+    above; planted folders, registry entries and MongoDB rows cleaned up.
+  - jsdom + Vite-SSR harness rendering the REAL Sidebar/FileTree/ConfirmModal
+    against the LIVE API: 28/28 checks — root row shows the Delete Project
+    button (danger-coloured, hover-reveal CSS present, no per-row buttons left
+    on the root), context menu still offers "Delete Project", 3000-file and
+    1000-file folder deletes update the UI optimistically (0 getFile calls, row
+    gone before the background refetch landed), small delete still snapshots
+    and Ctrl+Z restores it, root button opens the typed-name modal
+    (disabled -> enabled after typing the exact name) and really deletes the
+    project (API called once with the right id, folder gone from disk, Explorer
+    back to the "No project imported" empty state, modal closed).
+  - Harness + benchmark scripts deleted; no test artefacts remain (git status
+    shows only the five intended client files).
+

@@ -1,5 +1,6 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import { workspaceApi } from '../services/api'
+import { showToast } from './uiSlice'
 import { recordExplorerAction, shiftRedoToUndo, shiftUndoToRedo } from './explorerHistorySlice'
 import {
   createWorkspaceEntry,
@@ -10,9 +11,40 @@ import {
 } from './workspaceThunks'
 
 /**
+ * Snapshot cap. Capturing undo content costs ONE HTTP round-trip per file, and
+ * it runs BEFORE the DELETE request. When it was unbounded and sequential, a
+ * folder containing node_modules (thousands of files) fired thousands of
+ * requests one after another — that alone was the 10-15s delete: the delete did
+ * not even start until the last snapshot read returned. Above this many files
+ * the delete proceeds WITHOUT a restorable snapshot (undo then says so instead
+ * of silently doing nothing).
+ */
+const SNAPSHOT_MAX_FILES = 200
+
+// Files are fetched this-many at a time instead of one-by-one, so a snapshot of
+// a moderately sized folder costs a handful of round trips, not hundreds.
+const SNAPSHOT_CONCURRENCY = 12
+
+/** Runs `worker(item, index)` over items with at most `limit` in flight. */
+async function mapWithConcurrency(items, limit, worker) {
+  let next = 0
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next
+      next += 1
+      await worker(items[index], index)
+    }
+  })
+  await Promise.all(runners)
+}
+
+/**
  * Captures everything needed to recreate a deleted file/folder: every folder
  * path in the subtree and every file's content. The workspace is text-only, so
  * a plain string per file is a lossless snapshot.
+ *
+ * Returns null when the subtree holds more than SNAPSHOT_MAX_FILES files — the
+ * caller still deletes, it just records the undo entry without a snapshot.
  */
 async function captureSnapshot(projectId, node) {
   const folders = []
@@ -28,8 +60,10 @@ async function captureSnapshot(projectId, node) {
   }
   walk(node)
 
-  const capturedFiles = []
-  for (const filePath of files) {
+  if (files.length > SNAPSHOT_MAX_FILES) return null
+
+  const capturedFiles = new Array(files.length)
+  await mapWithConcurrency(files, SNAPSHOT_CONCURRENCY, async (filePath, index) => {
     let content = ''
     try {
       const data = await workspaceApi.getFile(projectId, filePath)
@@ -37,8 +71,8 @@ async function captureSnapshot(projectId, node) {
     } catch {
       // A file we cannot read is restored empty rather than failing the undo.
     }
-    capturedFiles.push({ path: filePath, content })
-  }
+    capturedFiles[index] = { path: filePath, content }
+  })
 
   return { rootPath: node.id, type: node.type, folders, files: capturedFiles }
 }
@@ -69,6 +103,9 @@ async function restoreSnapshot(projectId, snapshot) {
 export const deleteExplorerEntry = createAsyncThunk(
   'explorerHistory/delete',
   async ({ projectId, node }, { dispatch }) => {
+    // Snapshot first (bounded — see SNAPSHOT_MAX_FILES), then delete. The delete
+    // thunk itself updates the Explorer optimistically, so the row disappears
+    // the moment the DELETE API responds.
     const snapshot = await captureSnapshot(projectId, node)
     await dispatch(deleteWorkspaceEntry({ projectId, path: node.id })).unwrap()
     dispatch(
@@ -93,6 +130,17 @@ const revertExplorerEntry = createAsyncThunk(
         await dispatch(deleteWorkspaceEntry({ projectId, path: entry.path })).unwrap()
         break
       case 'delete':
+        if (!entry.snapshot) {
+          // The subtree was larger than SNAPSHOT_MAX_FILES, so nothing was kept
+          // to restore. Tell the user instead of pretending undo worked.
+          dispatch(
+            showToast({
+              message: `Nothing restored — “${entry.name}” was too large to keep an undo copy.`,
+              type: 'info',
+            }),
+          )
+          break
+        }
         await restoreSnapshot(projectId, entry.snapshot)
         // restoreSnapshot writes files with raw API calls (no thunk), so it is
         // the one branch that must refresh the tree itself. Every other branch

@@ -1,6 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit'
 import { remapTreeIds } from '../utils/cloudTree'
-import { mapTree, updateNode } from '../utils/tree'
+import { mapTree, removeNode as dropNodeFrom, updateNode } from '../utils/tree'
 
 export const EMPTY_WORKSPACE = { name: null, source: 'none', projectId: null }
 
@@ -63,6 +63,17 @@ const fileSystemSlice = createSlice({
       const { tree, name } = action.payload
       state.tree = tree
       if (name) state.workspace = { ...state.workspace, name }
+      pruneTabs(state)
+    },
+
+    /**
+     * Optimistic removal of ONE node (by id) right after the delete API
+     * succeeded. This is what makes a delete feel instant: the row disappears
+     * without waiting for a full GET /tree walk, and the background refetch /
+     * chokidar event simply reconciles any drift afterwards.
+     */
+    removeNode(state, action) {
+      state.tree = dropNodeFrom(state.tree, action.payload)
       pruneTabs(state)
     },
 
@@ -131,6 +142,7 @@ export const {
   setCloudWorkspace,
   setScratchWorkspace,
   refreshTree,
+  removeNode,
   markWorkspaceMissing,
   clearWorkspaceMissing,
   clearWorkspace,

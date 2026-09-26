@@ -133,6 +133,26 @@ export const projectApi = {
   },
 }
 
+// User-provided Groq API keys (Settings -> AI). The server only ever returns
+// MASKED keys — the full key is encrypted server-side and used solely inside an
+// agent run.
+export const agentKeysApi = {
+  list() {
+    return request('/api/keys')
+  },
+
+  create(key, label) {
+    return request('/api/keys', {
+      method: 'POST',
+      body: JSON.stringify({ key, label }),
+    })
+  },
+
+  remove(keyId) {
+    return request(`/api/keys/${encodeURIComponent(keyId)}`, { method: 'DELETE' })
+  },
+}
+
 export const workspaceApi = {
   baseUrl: API_BASE_URL,
 

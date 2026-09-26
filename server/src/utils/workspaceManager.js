@@ -444,6 +444,42 @@ export async function deleteFromWorkspace(projectId, relativeFilePath) {
   return relative
 }
 
+/**
+ * True when a path exists inside the workspace (file or folder). Used by the
+ * AI agent's edit_file to distinguish "overwrite existing" from "create new".
+ * Same traversal guard as every other path builder here.
+ */
+export function existsInWorkspace(projectId, relativePath) {
+  const { absolute } = resolveInsideWorkspace(projectId, relativePath)
+  return fs.existsSync(absolute)
+}
+
+/**
+ * Listing for the AI agent's list_directory: the entries of one folder with
+ * their type, folders first then alphabetically (same order as the Explorer).
+ * Throws 404 when the folder does not exist and 400 when it is a file.
+ */
+export async function listDirectoryInWorkspace(projectId, relativeFolderPath = '') {
+  assertWorkspaceExists(projectId)
+  const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFolderPath)
+
+  const stats = await fsp.stat(absolute).catch(() => null)
+  if (!stats) {
+    throw new ApiError(404, `"${relative || '/'}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+  if (!stats.isDirectory()) {
+    throw new ApiError(400, `"${relative}" is a file, not a folder.`, 'NOT_A_FOLDER')
+  }
+
+  const entries = await fsp.readdir(absolute, { withFileTypes: true })
+  return entries
+    .map((entry) => ({ name: entry.name, type: entry.isDirectory() ? 'folder' : 'file' }))
+    .sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'folder' ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+}
+
 export async function renamePathInWorkspace(projectId, oldRelativePath, newRelativePath) {
   assertWorkspaceExists(projectId)
   const from = resolveInsideWorkspace(projectId, oldRelativePath)

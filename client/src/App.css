@@ -76,6 +76,25 @@
 }
 
 .panel-slot-ai.is-open {
-  width: 320px;
   border-left-color: var(--border);
+}
+
+/* Thin handle on the AI panel's LEFT edge: drag it to resize the panel
+   (mirrors .sidebar-resize-handle; the width is set inline from
+   ui.aiPanelWidth). */
+.ai-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.ai-resize-handle:hover,
+.ai-resize-handle:active {
+  background: var(--accent);
 }

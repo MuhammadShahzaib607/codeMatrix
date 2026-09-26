@@ -14,6 +14,15 @@ export const env = {
   jwtSecret: process.env.JWT_SECRET || 'dev-insecure-secret-change-me',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   workspacesRoot: process.env.WORKSPACES_ROOT || '',
+  // AES-256-GCM secret for USER-PROVIDED Groq API keys (see utils/keyVault.js).
+  // Server-side only — never sent to the client. When unset, keyVault falls
+  // back to a value derived from jwtSecret and warns in development.
+  encryptionSecret: process.env.ENCRYPTION_SECRET || '',
+  // The model the agent talks to. There is NO built-in Groq API key anywhere in
+  // this app: every request uses a key the user explicitly saved in Settings.
+  groqModel: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+  // Overridable so tests can point the agent at a local stand-in for Groq.
+  groqBaseUrl: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/+$/, ''),
 }
 
 export function resolveCorsOrigin() {

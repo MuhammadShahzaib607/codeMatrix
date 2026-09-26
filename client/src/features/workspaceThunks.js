@@ -154,15 +154,19 @@ export const duplicateWorkspaceEntry = createAsyncThunk(
   'workspace/duplicateEntry',
   async ({ projectId, sourcePath, targetFolderPath }, { dispatch }) => {
     try {
-      // NO manual tree refetch here, on purpose. The chokidar watcher sees the
-      // files the copy just created and emits workspace:treeChanged, which the
-      // client debounces and turns into exactly ONE tree fetch. Refreshing here
-      // as well made every paste fetch the (potentially huge) tree twice.
-      return await workspaceApi.duplicateEntry(
+      const result = await workspaceApi.duplicateEntry(
         projectId,
         sourcePath,
         targetFolderPath ?? '',
       )
+      // Explicit, direct refresh: the Explorer must update the moment the paste
+      // resolves, never depending on the chokidar watcher. Watchers can miss
+      // changes written by the very same process, which is exactly what made
+      // paste appear only after a manual reload. The watcher still sees these
+      // same files and schedules its own refresh; that extra fetch is
+      // debounced/coalesced and harmless.
+      await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
+      return result
     } catch (error) {
       throw handleFailure(error, dispatch)
     }

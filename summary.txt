@@ -2889,3 +2889,160 @@ VERIFICATION PERFORMED THIS ENTRY
     files). Client vite build: succeeds.
   - Temporary verification scripts were removed; no test artefacts left behind.
 
+
+================================================================================
+FIX: Explorer not updating live after paste (restore explicit post-action
+     refresh, keep chokidar for terminal/external changes)
+================================================================================
+
+STATUS: complete and verified.
+
+PROBLEM
+The Explorer only showed a pasted file after a manual page reload. The backend
+was correct (every paste created the right files), so this was purely a UI
+refresh problem. The previous fix (entry above) had REMOVED the manual tree
+refetch that followed a successful paste and relied SOLELY on the chokidar
+watcher. Chokidar can miss changes written by the same Node.js process that
+performs the write, so the UI had no reliable refresh trigger of its own — it
+was depending on a mechanism designed for something else.
+
+FIX — two independent refresh paths, each with a clear owner
+1) EXPLICIT, DIRECT REFRESH FOR EVERY UI ACTION. Every Explorer mutation thunk
+   in client/src/features/workspaceThunks.js now awaits
+   refreshWorkspaceTree({ projectId }).unwrap() right after its API call
+   succeeds, so the tree updates the instant the action resolves — no watcher
+   involved:
+     - createWorkspaceEntry   (create file/folder)
+     - deleteWorkspaceEntry   (delete)
+     - renameWorkspaceEntry   (rename AND cut+paste move)
+     - duplicateWorkspaceEntry (copy+paste)  <-- the refetch was restored here
+   The old comment claiming the manual refetch was intentionally removed has
+   been replaced by one explaining why it must stay.
+2) CHOKIDAR + SOCKET STAY AS A SEPARATE PATH, unchanged, for changes that have
+   NO UI callback to hook onto: terminal commands (npm install, git, scripts).
+   useWorkspaceWatcher -> workspace:watch -> fileWatcher (750ms debounce) ->
+   workspace:treeChanged -> client (400ms debounce) -> refreshWorkspaceTree.
+   This is untouched and still required.
+
+NO DOUBLE-FETCH STACKING
+  - The two paths are not simultaneous for the same change: the explicit
+    refetch is immediate, while the watcher's event arrives ~750ms (server) +
+    400ms (client) later and coalesces into one extra cheap fetch. That extra
+    fetch is expected and harmless.
+  - A genuine duplicate was removed inside undo/redo. explorerHistoryThunks.js
+    called revertExplorerEntry/applyExplorerEntry (whose branches already go
+    through refetching thunks) and THEN fetched the tree again, so an undo/redo
+    fetched twice. The trailing fetch is gone; the snapshot-restore branch
+    (restoreSnapshot uses raw API calls, not thunks) now performs the single
+    explicit refresh itself. Net result: exactly ONE tree fetch per undo/redo.
+  - The freeze fix from the previous entry is untouched: the copy/tree walk
+    remain async, so an immediate refetch cannot block the event loop.
+
+TEMP DIAGNOSTIC LOGGING still present and unchanged (see previous entry).
+
+VERIFICATION PERFORMED THIS ENTRY
+  A) CLIENT THUNKS, exercised for real via Vite's SSR module loader with a
+     stubbed fetch that counts GET /tree calls:
+       - 3 pastes in a row (different targets) -> 3 tree fetches (one each).
+       - folder paste -> 1 fetch.
+       - create + rename + delete -> 3 fetches (one each).
+       - undo create -> 1; redo duplicate -> 1; undo delete (snapshot) -> 1.
+     ALL CHECKS PASSED. Confirms the UI refreshes itself on every action, and
+     that undo/redo no longer double-fetch.
+  B) CHOKIDAR / TERMINAL PATH, server-side harness on a real workspace folder:
+       - simulated npm install (create node_modules/left-pad + 50 files) ->
+         exactly 1 debounced notify, log "1 fs event(s) -> 1 treeChanged".
+       - 30 subsequent writes INSIDE node_modules -> 0 extra notifies.
+       - one top-level write (git-checkout analog) -> 1 more notify.
+     ALL CHECKS PASSED. Terminal/external changes still refresh via chokidar
+     with no UI action involved.
+  C) Client oxlint: 0 warnings / 0 errors (56 files). Client vite build:
+     succeeds. Temporary verification scripts were removed.
+
+NET BEHAVIOUR
+  - UI-triggered file-system operations (paste copy, paste cut/move, create,
+    delete, rename, duplicate, undo, redo) refresh the Explorer immediately and
+    deterministically via an explicit post-action fetch.
+  - Terminal/external changes keep flowing through the chokidar watcher + socket
+    as before.
+  - The two coexist without conflicting and without reintroducing the earlier
+    paste freeze.
+
+
+================================================================================
+FIX (round 2): repeated Paste was a silent no-op — EXACT root cause found by
+          logging the numbered paste chain in order
+================================================================================
+
+STATUS: complete and verified. The previous entry's explicit post-action refetch
+        is correct and was NOT the (remaining) problem.
+
+METHOD (systematic, not guessing)
+Temporary [STEP1..STEP9] console.log statements were added to the real paste
+chain on BOTH sides and exercised against real code:
+  frontend  Sidebar.handlePaste (STEP1), api.duplicateEntry (STEP2),
+            duplicateWorkspaceEntry (STEP7), refreshWorkspaceTree (STEP8),
+            FileTree render (STEP9), response handling (STEP6)
+  backend   workspace.controller duplicateEntry (STEP3), the post-copy
+            fs.existsSync disk check (STEP4), the 201 body (STEP5)
+The frontend was driven through the ACTUAL Paste context-menu item inside a real
+jsdom render of <Sidebar> (not a stubbed handler), and the backend through the
+real copyPathInWorkspace/getWorkspaceTree on a real workspace folder.
+
+WHAT THE LOGS SHOWED — FIRST paste (the previously attempted fix was fine)
+  STEP1 handler fired          -> yes
+  STEP2 POST /duplicate sent   -> url .../api/workspace/p1/duplicate, body
+                                  {sourcePath:'f.txt',targetFolderPath:'A'}
+  STEP3 backend received       -> sourcePath=f.txt targetFolderPath=A
+  STEP4 copy finished          -> newPath=A/f.txt, existsOnDisk: TRUE
+  STEP5 response               -> 201 {sourcePath, newPath, duplicated:true}
+  STEP7 refetch dispatched     -> yes, right after the 201
+  STEP8 tree fetched           -> rootNewRef: TRUE, new node A/f.txt present
+  STEP9 Explorer re-rendered   -> DOM gained [data-node-id="A/f.txt"] with NO
+                                  reload ("pasted file visible in DOM: true")
+So steps 1-9 all fire, in order, with correct data, and the UI updates. The
+refetch/re-render chain was never broken for a single paste.
+
+THE EXACT BREAKING POINT — between STEP 1 and STEP 2 on the SECOND paste
+After the first successful copy-paste, Sidebar.handlePaste called
+`dispatch(clearClipboard())`. On the next paste the logs read:
+  [STEP1] paste handler fired { clipboard: { path: null, ... } }
+  [STEP1] ABORT: no projectId or clipboard.path { activeProjectId: 'p1',
+                                                  sourcePath: null }
+  -> no [STEP2], no request, no refetch, no re-render.
+The Paste context-menu entry also disappeared entirely (canPaste requires a
+clipboard path), so a second paste into folder B/C did nothing at all. With a
+single copy the user could paste ONCE; every later paste was a silent no-op,
+which is perceived as "the Explorer does not update after paste". The backend was
+always fine: a direct copy of the same source into a second folder returned
+newPath=B/f.txt with existsOnDisk: TRUE.
+
+ROOT CAUSE (precise)
+client/src/components/Sidebar/Sidebar.jsx, handlePaste: the COPY branch
+unconditionally consumed the clipboard after a successful duplicate. Unlike VS
+Code (which retains the clipboard so one copy can be pasted many times), this
+made the paste handler bail out at its `if (!activeProjectId || !sourcePath)
+return` guard before ever building the STEP 2 request.
+
+THE FIX (one behaviour change, no logging left behind)
+  - COPY + paste now KEEPS the clipboard, so the same item can be pasted into
+    A, B and C in a row with zero re-copying and zero reloads.
+  - CUT + paste still CLEARS the clipboard (the source moved away, so reusing
+    that reference would be wrong) — unchanged.
+  - All temporary [STEP1..STEP9] logs and the temporary harness scripts were
+    removed.
+
+VERIFICATION
+  - Real jsdom render of <Sidebar>, real Paste menu item clicked three times on
+    one clipboard value (copy f.txt once):
+      paste into A -> request #1, visible in Explorer: true, clipboard kept
+      paste into B -> request #2, visible in Explorer: true, clipboard kept
+      paste into C -> request #3, visible in Explorer: true, clipboard kept
+      dupCalls=3, treeCalls=3, "ALL THREE PASTES WORKED WITH ZERO RELOADS: true"
+  - Backend on a real workspace folder: copy f.txt -> A and later -> B both
+    reported existsOnDisk: TRUE and the tree walk listed both copies.
+  - client oxlint: 0 warnings / 0 errors (56 files). client vite build:
+    succeeds. node --check on the controller: passes.
+  - The temporary logging and harness files were deleted; only Sidebar.jsx and
+    the (already-correct) thunk/history files remain changed.
+

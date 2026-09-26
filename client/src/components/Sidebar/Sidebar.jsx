@@ -122,8 +122,9 @@ export default function Sidebar() {
    * travels through Redux — never content.
    *
    * The target is the FOLDER being pasted INTO (its own path), never the source
-   * item's path. On success the clipboard is cleared, so a second Paste does
-   * nothing until something new is cut/copied.
+   * item's path. A CUT is consumed (the source moved, so the clipboard is
+   * cleared); a COPY is kept, exactly like VS Code, so the same item can be
+   * pasted into several folders in a row without copying it again.
    */
   async function handlePaste(folderNode) {
     const activeProjectId = projectIdRef.current
@@ -165,9 +166,10 @@ export default function Sidebar() {
           newPath: result.newPath,
         }),
       )
-      // Consumed only AFTER the copy succeeded, so a failed paste keeps the
-      // clipboard and can be retried.
-      dispatch(clearClipboard())
+      // The clipboard is intentionally NOT cleared after a copy-paste: the user
+      // must be able to paste the SAME item into several folders (A, B, C) in a
+      // row. Clearing it here made every paste after the first a silent no-op,
+      // because handlePaste bails out when clipboard.path is null.
       dispatch(showToast({ message: `Copied ${name} → ${result.newPath}`, type: 'success' }))
     } catch (error) {
       reportError(`Could not copy ${name}: ${error.message}`)

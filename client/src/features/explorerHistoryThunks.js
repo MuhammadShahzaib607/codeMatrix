@@ -94,6 +94,10 @@ const revertExplorerEntry = createAsyncThunk(
         break
       case 'delete':
         await restoreSnapshot(projectId, entry.snapshot)
+        // restoreSnapshot writes files with raw API calls (no thunk), so it is
+        // the one branch that must refresh the tree itself. Every other branch
+        // below goes through a workspace thunk that already refetches.
+        await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
         break
       case 'rename':
       case 'move':
@@ -163,10 +167,10 @@ export const undoLastExplorerAction = createAsyncThunk(
     const projectId = fileSystem.workspace.projectId
     if (!entry || !projectId) return null
 
+    // revertExplorerEntry refreshes the tree itself (its thunks do, and the
+    // snapshot branch refreshes explicitly), so there is no second fetch here.
     await dispatch(revertExplorerEntry({ projectId, entry })).unwrap()
     dispatch(shiftUndoToRedo())
-    // The backend is the source of truth, so rebuild the tree from it.
-    await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
     return entry
   },
 )
@@ -180,9 +184,10 @@ export const redoLastExplorerAction = createAsyncThunk(
     const projectId = fileSystem.workspace.projectId
     if (!entry || !projectId) return null
 
+    // applyExplorerEntry runs through workspace thunks that each refresh the
+    // tree, so redo needs no extra fetch of its own.
     await dispatch(applyExplorerEntry({ projectId, entry })).unwrap()
     dispatch(shiftRedoToUndo())
-    await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
     return entry
   },
 )

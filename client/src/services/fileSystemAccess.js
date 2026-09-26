@@ -13,6 +13,7 @@ const IMPORT_SKIP_DIRECTORIES = new Set([
   '.git',
   'dist',
   'build',
+  'out',
   '.next',
   '.cache',
 ])
@@ -46,8 +47,10 @@ export async function requirePermission(handle, mode = 'readwrite') {
 
 /**
  * Recursively reads every file under `directoryHandle` for import.
- * Skipped folders (node_modules, .git, dist, build, .next, .cache) are never
- * descended into, and files larger than MAX_IMPORT_FILE_BYTES are never read.
+ * Skipped folders (node_modules, .git, dist, build, out, .next, .cache) are
+ * never descended into, and files larger than MAX_IMPORT_FILE_BYTES are never
+ * read. These folders are still shown in the Explorer whenever they exist on the
+ * server's disk — this list only affects the one-off local-folder upload.
  *
  * @returns {{ files: {relativePath: string, content: string}[],
  *            skipped: { directories: number, oversizedFiles: number } }}

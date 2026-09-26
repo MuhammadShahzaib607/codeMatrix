@@ -154,13 +154,15 @@ export const duplicateWorkspaceEntry = createAsyncThunk(
   'workspace/duplicateEntry',
   async ({ projectId, sourcePath, targetFolderPath }, { dispatch }) => {
     try {
-      const result = await workspaceApi.duplicateEntry(
+      // NO manual tree refetch here, on purpose. The chokidar watcher sees the
+      // files the copy just created and emits workspace:treeChanged, which the
+      // client debounces and turns into exactly ONE tree fetch. Refreshing here
+      // as well made every paste fetch the (potentially huge) tree twice.
+      return await workspaceApi.duplicateEntry(
         projectId,
         sourcePath,
         targetFolderPath ?? '',
       )
-      await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
-      return result
     } catch (error) {
       throw handleFailure(error, dispatch)
     }

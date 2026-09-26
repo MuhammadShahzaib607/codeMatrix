@@ -13,7 +13,7 @@ import {
   Scissors,
   Trash2,
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { addTab, toggleFolder } from '../../features/fileSystemSlice'
 import { ROOT_ID } from '../../services/fileSystemAccess'
@@ -102,7 +102,11 @@ function RenameInput({ initialValue, isFolder, onCommit, onCancel }) {
   )
 }
 
-function TreeNode({
+// memo(): with the structural sharing in toReduxTree, an unchanged subtree keeps
+// its previous node object, so rows below an edited branch do not re-render at
+// all. All callbacks passed down are stable (useCallback in the Sidebar / this
+// component), so the shallow prop comparison actually holds.
+const TreeNode = memo(function TreeNode({
   node,
   depth,
   selectedId,
@@ -273,7 +277,7 @@ function TreeNode({
       )}
     </div>
   )
-}
+})
 
 export default function FileTree({
   nodes,

@@ -95,7 +95,7 @@ export const importProject = asyncHandler(async (req, res) => {
     diskFolderName: folderName,
   })
 
-  const tree = getWorkspaceTree(projectId, { name: project?.name || projectName })
+  const tree = await getWorkspaceTree(projectId, { name: project?.name || projectName })
 
   res.status(201).json({
     projectId,
@@ -111,7 +111,10 @@ export const getTree = asyncHandler(async (req, res) => {
   const { projectId } = req.params
   const project = await findProject(projectId)
 
-  const tree = getWorkspaceTree(projectId, { name: project?.name })
+  // TEMP DIAGNOSTIC (safe to remove): measures how long the on-disk walk takes.
+  const walkStartedAt = Date.now()
+  const tree = await getWorkspaceTree(projectId, { name: project?.name })
+  console.log(`[tree] ${projectId} walked in ${Date.now() - walkStartedAt}ms`)
   await touchProject(projectId)
 
   res.json({
@@ -188,7 +191,14 @@ export const duplicateEntry = asyncHandler(async (req, res) => {
   const targetFolderPath =
     typeof req.body?.targetFolderPath === 'string' ? req.body.targetFolderPath : ''
 
-  const result = copyPathInWorkspace(projectId, sourcePath, targetFolderPath)
+  // TEMP DIAGNOSTIC (safe to remove): the paste latency and whether it blocks
+  // the event loop can be read straight off this line.
+  const startedAt = Date.now()
+  const result = await copyPathInWorkspace(projectId, sourcePath, targetFolderPath)
+  const copyMs = Date.now() - startedAt
+  console.log(
+    `[duplicate] ${projectId} ${sourcePath} -> ${result.newPath} copied in ${copyMs}ms`,
+  )
   await touchProject(projectId)
 
   res.status(201).json({ ...result, duplicated: true })

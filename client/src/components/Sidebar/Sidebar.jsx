@@ -1,5 +1,5 @@
 import { ChevronsUp, FilePlus, FolderPlus, Info } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
 import { recordExplorerAction } from '../../features/explorerHistorySlice'
@@ -47,9 +47,17 @@ export default function Sidebar() {
     projectIdRef.current = workspace.projectId
   }, [workspace.projectId])
 
-  function reportError(message) {
-    dispatch(showToast({ message, type: 'error' }))
-  }
+  // Stable identities for every callback handed to the memoized tree rows, so a
+  // background tree refresh (chokidar auto-refresh) does not force the whole
+  // Explorer to re-render just because a new function object was created.
+  const reportError = useCallback(
+    (message) => {
+      dispatch(showToast({ message, type: 'error' }))
+    },
+    [dispatch],
+  )
+
+  const handleCancelCreate = useCallback(() => setCreating(null), [])
 
   /**
    * Makes sure there is a workspace to write into. With no imported project it
@@ -177,46 +185,52 @@ export default function Sidebar() {
     )
   }
 
-  async function submitCreate(rawName) {
-    const { parentId, type } = creating
-    setCreating(null)
+  const submitCreate = useCallback(
+    async (rawName) => {
+      const { parentId, type } = creating
+      setCreating(null)
 
-    const name = rawName.trim()
-    const activeProjectId = projectIdRef.current
-    if (!name || !activeProjectId) return
+      const name = rawName.trim()
+      const activeProjectId = projectIdRef.current
+      if (!name || !activeProjectId) return
 
-    const parentPath = parentId === ROOT_ID ? '' : parentId
-    const newPath = joinPath(parentPath, name)
-    try {
-      await dispatch(
-        createWorkspaceEntry({ projectId: activeProjectId, path: newPath, type }),
-      ).unwrap()
-      dispatch(recordExplorerAction({ kind: 'create', path: newPath, type }))
-    } catch (error) {
-      reportError(`Could not create ${name}: ${error.message}`)
-    }
-  }
+      const parentPath = parentId === ROOT_ID ? '' : parentId
+      const newPath = joinPath(parentPath, name)
+      try {
+        await dispatch(
+          createWorkspaceEntry({ projectId: activeProjectId, path: newPath, type }),
+        ).unwrap()
+        dispatch(recordExplorerAction({ kind: 'create', path: newPath, type }))
+      } catch (error) {
+        reportError(`Could not create ${name}: ${error.message}`)
+      }
+    },
+    [creating, dispatch, reportError],
+  )
 
-  async function handleRename(node, nextName) {
-    const activeProjectId = projectIdRef.current
-    if (!activeProjectId || node.id === ROOT_ID) return
+  const handleRename = useCallback(
+    async (node, nextName) => {
+      const activeProjectId = projectIdRef.current
+      if (!activeProjectId || node.id === ROOT_ID) return
 
-    const newPath = joinPath(parentPathOf(node.id), nextName)
-    try {
-      await dispatch(
-        renameWorkspaceEntry({ projectId: activeProjectId, oldPath: node.id, newPath }),
-      ).unwrap()
-      dispatch(recordExplorerAction({ kind: 'rename', oldPath: node.id, newPath }))
-    } catch (error) {
-      reportError(`Could not rename ${node.name}: ${error.message}`)
-    }
-  }
+      const newPath = joinPath(parentPathOf(node.id), nextName)
+      try {
+        await dispatch(
+          renameWorkspaceEntry({ projectId: activeProjectId, oldPath: node.id, newPath }),
+        ).unwrap()
+        dispatch(recordExplorerAction({ kind: 'rename', oldPath: node.id, newPath }))
+      } catch (error) {
+        reportError(`Could not rename ${node.name}: ${error.message}`)
+      }
+    },
+    [dispatch, reportError],
+  )
 
   /** Opens the confirmation modal; the delete only runs if the user confirms. */
-  function requestDelete(node) {
+  const requestDelete = useCallback((node) => {
     if (node.id === ROOT_ID) return
     setPendingDelete(node)
-  }
+  }, [])
 
   async function confirmDelete() {
     const node = pendingDelete
@@ -286,7 +300,7 @@ export default function Sidebar() {
           onSelect={setSelectedId}
           creating={creating}
           onSubmitCreate={submitCreate}
-          onCancelCreate={() => setCreating(null)}
+          onCancelCreate={handleCancelCreate}
           onRename={handleRename}
           onDelete={requestDelete}
           lockedId={ROOT_ID}

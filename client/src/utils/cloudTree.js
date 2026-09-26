@@ -16,7 +16,28 @@ export function toReduxTree(serverNode, previousTree = null) {
     node.children = (serverNode.children ?? []).map((child) => toReduxTree(child, previousTree))
   }
 
+  // STRUCTURAL SHARING: a node that is unchanged (same name/type/path/open state
+  // AND the same child object references) is returned as the PREVIOUS object.
+  // Because children are reused first, reference equality is enough to prove a
+  // whole subtree is unchanged. Combined with memo() on the tree row, an
+  // auto-refresh only re-renders the branches that actually changed instead of
+  // the entire Explorer — which matters now that the tree may contain thousands
+  // of node_modules entries.
+  if (previous && areSameNode(previous, node)) return previous
   return node
+}
+
+function areSameNode(a, b) {
+  if (a.name !== b.name || a.type !== b.type || a.path !== b.path || a.isOpen !== b.isOpen) {
+    return false
+  }
+  const aChildren = a.children ?? []
+  const bChildren = b.children ?? []
+  if (aChildren.length !== bChildren.length) return false
+  for (let i = 0; i < aChildren.length; i += 1) {
+    if (aChildren[i] !== bChildren[i]) return false
+  }
+  return true
 }
 
 export function findNodeByPath(nodes, path) {

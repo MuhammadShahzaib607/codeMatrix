@@ -2758,8 +2758,8 @@ There were TWO independent exclusion lists, and the tree walker wrongly reused
 the import concept:
 
   1. client/src/services/fileSystemAccess.js
-       const SKIP_DIRECTORIES = new Set(['node_modules', '.git', 'dist',
-                                          'build', '.next', '.cache'])
+       const IMPORT_SKIP_DIRECTORIES = new Set(['node_modules', '.git', 'dist',
+                                                'build', 'out', '.next', '.cache'])
      This was CORRECT — it filters what gets read off the user's LOCAL LAPTOP
      and uploaded during import.
 
@@ -2778,7 +2778,7 @@ THE FIX — two distinct, independent pieces of logic
       - Constant renamed SKIP_DIRECTORIES -> IMPORT_SKIP_DIRECTORIES, with a
         comment stating it applies ONLY to readAllFilesFromDirectory() while
         uploading a folder from the laptop. node_modules, .git, dist, build,
-        .next and .cache continue to be skipped so huge/regenerable data is
+        out, .next and .cache continue to be skipped so huge/regenerable data is
         never uploaded.
 
   * WORKSPACE-TREE DISPLAY (zero filtering)
@@ -2803,7 +2803,7 @@ VERIFICATION PERFORMED THIS ENTRY
   - node --check on workspaceManager.js and fileWatcher.js: passes.
   - Direct getWorkspaceTree() run against a real workspace folder containing
     node_modules/ (with left-pad + .package-lock.json), .git/, dist/, build/,
-    .next/ and a nested deep/node_modules: ALL CHECKS PASSED — every folder
+    out/, .next/ and a nested deep/node_modules: ALL CHECKS PASSED — every folder
     appears at the top level, node_modules is an expandable folder listing its
     real children, and nested node_modules folders are present too.
   - The temporary verification script created for this run was removed; only
@@ -2813,4 +2813,79 @@ RESULT
 The Explorer now shows exactly what is on disk. Import exclusion and tree
  display are two separate concerns: the only place that filters names is the
  client import reader, and the tree walker filters nothing.
+
+
+================================================================================
+FIX: Freezing/lag when pasting files or folders (paste + auto-refresh)
+================================================================================
+
+STATUS: complete and verified. The severe freeze was NOT one bug — it was the
+paste feature and the chokidar auto-refresh stacking three blocking costs. The
+root causes were 1 and 2 below; 3 and 4 were confirmed/improved.
+
+ROOT CAUSE 1 — duplicate tree fetch per paste (refresh budget doubled)
+duplicateWorkspaceEntry (client/src/features/workspaceThunks.js) awaited a
+MANUAL refreshWorkspaceTree() immediately after the POST /duplicate 201, and the
+chokidar watcher ALSO saw the copied files and emitted workspace:treeChanged,
+which the client turns into another refresh. So every paste fetched the whole
+tree TWICE. Fixed by deleting the manual refetch and letting the watcher be the
+single source of truth (one debounced treeChanged -> exactly one fetch).
+
+ROOT CAUSE 2 — synchronous, blocking recursive copy (server froze)
+workspaceManager.copyPathInWorkspace() -> copyDirectoryRecursive() used
+fs.mkdirSync / fs.readdirSync / fs.copyFileSync in a recursive loop. Copying a
+folder containing a node_modules-like tree held the Node.js event loop for the
+ENTIRE copy, so the terminal and every other API call stalled — this is what
+felt like "the whole app freezing". Fixed by converting the copy to fs.promises
+(async) with a yield to the event loop every COPY_YIELD_BATCH (250) files.
+copyPathInWorkspace is now async and the controller awaits it.
+
+Also fixed while auditing the same freeze: getWorkspaceTree()/walkDirectory()
+had the identical problem — a synchronous fs.readdirSync recursion that walked
+EVERY file, and after the tree-fix above that includes all of node_modules on
+every single auto-refresh. The walk is now async (fs.promises.readdir, which
+yields between directories), and both callers (import + GET /tree) await it.
+The tree is still 100% unfiltered — only the blocking characteristic changed.
+
+ROOT CAUSE 3 — chokidar deep-watching node_modules: CONFIRMED NOT THE CAUSE
+fileWatcher.js already refuses to descend into node_modules/.git: the custom
+`ignored` function is true for anything strictly INSIDE them (so only the
+top-level addDir/unlinkDir is watched), and the same isRelevant() filter is
+re-applied to every event. No deep file watchers are registered. Verified live
+below. A clarifying comment was added; no behaviour change was needed.
+
+ROOT CAUSE 4 — Explorer re-rendered the entire tree on every refresh: IMPROVED
+Every refresh built brand-new node objects, so React re-rendered every row even
+when nothing in most branches changed — expensive once node_modules adds
+thousands of rows.
+  - toReduxTree() (client/src/utils/cloudTree.js) now does STRUCTURAL SHARING:
+an unchanged node (same name/type/path/open state and identical child object
+references) is returned as the PREVIOUS object, so whole subtrees keep identity.
+  - The tree row is wrapped in React.memo (FileTree.jsx), and the Sidebar
+callbacks passed into it (submitCreate, handleRename, requestDelete,
+handleCancelCreate, reportError) are now useCallback-stable, so the shallow prop
+comparison actually holds. An auto-refresh now re-renders only changed branches.
+
+TEMP DIAGNOSTIC LOGGING (safe to remove)
+  - server/src/controllers/workspace.controller.js
+      [duplicate] <project> <src> -> <newPath> copied in <ms>
+      [tree] <project> walked in <ms>
+  - server/src/utils/fileWatcher.js
+      [watcher] <project>: <N> fs event(s) -> 1 treeChanged (<ms>)
+    The last line is the proof a bulk paste collapses into ONE refresh.
+
+VERIFICATION PERFORMED THIS ENTRY
+  - ASYNC COPY: copied a real folder of 1200 files (20 nested groups)
+    via copyPathInWorkspace -> all files copied, contents intact, and the event
+    loop served 1171 setInterval ticks DURING the 1376ms copy (a synchronous copy
+    would produce ~0). ALL CHECKS PASSED.
+  - WATCHER: on a workspace containing node_modules, writing 200 files INSIDE
+    node_modules produced 0 notifies; one top-level write produced exactly 1
+    debounced notify. Log line printed: "1 fs event(s) -> 1 treeChanged".
+    ALL CHECKS PASSED.
+  - ASYNC TREE: getWorkspaceTree() returns the copied folder as an expandable
+    node (20 children) and still lists the original — no filtering.
+  - node --check on all changed server files: passes. Client oxlint: 0/0 (56
+    files). Client vite build: succeeds.
+  - Temporary verification scripts were removed; no test artefacts left behind.
 

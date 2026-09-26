@@ -19,6 +19,19 @@ const PROJECT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 // on demand and never registered in MongoDB.
 const SCRATCH_ID_PATTERN = /^scratch-[A-Za-z0-9_-]{1,100}$/
 
+// fs.promises is used for any operation that can touch a LARGE tree (recursive
+// copy, tree walk). The synchronous fs API blocks the whole event loop, which is
+// what made the server unresponsive while pasting a folder with many files.
+const fsp = fs.promises
+
+// After this many copied files the recursive copy yields to the event loop, so
+// terminal output and other API calls keep flowing during a big paste.
+const COPY_YIELD_BATCH = 250
+
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
 // ---------------------------------------------------------------------------
 // On-disk workspace registry
 // ---------------------------------------------------------------------------
@@ -462,13 +475,26 @@ export function renamePathInWorkspace(projectId, oldRelativePath, newRelativePat
   return { oldPath: from.relative, newPath: to.relative }
 }
 
-function copyDirectoryRecursive(fromAbsolute, toAbsolute) {
-  fs.mkdirSync(toAbsolute, { recursive: true })
-  for (const entry of fs.readdirSync(fromAbsolute, { withFileTypes: true })) {
+/**
+ * Recursively copies a directory using ASYNC fs calls (fs.promises), yielding
+ * back to the event loop every COPY_YIELD_BATCH files. A synchronous copy of a
+ * large folder (e.g. one containing a node_modules-like tree) froze the entire
+ * server — including the terminal — until it finished.
+ */
+async function copyDirectoryRecursive(fromAbsolute, toAbsolute, progress) {
+  await fsp.mkdir(toAbsolute, { recursive: true })
+  const entries = await fsp.readdir(fromAbsolute, { withFileTypes: true })
+
+  for (const entry of entries) {
     const childFrom = path.join(fromAbsolute, entry.name)
     const childTo = path.join(toAbsolute, entry.name)
-    if (entry.isDirectory()) copyDirectoryRecursive(childFrom, childTo)
-    else if (entry.isFile()) fs.copyFileSync(childFrom, childTo)
+    if (entry.isDirectory()) {
+      await copyDirectoryRecursive(childFrom, childTo, progress)
+    } else if (entry.isFile()) {
+      await fsp.copyFile(childFrom, childTo)
+      progress.copied += 1
+      if (progress.copied % COPY_YIELD_BATCH === 0) await yieldToEventLoop()
+    }
   }
 }
 
@@ -499,7 +525,7 @@ function uniqueNameInFolder(folderAbsolute, name) {
  * If the target folder already holds an item of that name, the copy is given a
  * de-duplicated " (copy)" name rather than failing with a conflict.
  */
-export function copyPathInWorkspace(projectId, sourceRelativePath, targetFolderRelativePath = '') {
+export async function copyPathInWorkspace(projectId, sourceRelativePath, targetFolderRelativePath = '') {
   assertWorkspaceExists(projectId)
   const source = resolveInsideWorkspace(projectId, sourceRelativePath)
   const targetFolder = resolveInsideWorkspace(projectId, targetFolderRelativePath)
@@ -511,7 +537,7 @@ export function copyPathInWorkspace(projectId, sourceRelativePath, targetFolderR
     throw new ApiError(404, `"${source.relative}" was not found in this workspace.`, 'FILE_MISSING')
   }
 
-  const sourceIsDirectory = fs.statSync(source.absolute).isDirectory()
+  const sourceIsDirectory = (await fsp.stat(source.absolute)).isDirectory()
   if (
     sourceIsDirectory &&
     (targetFolder.relative === source.relative ||
@@ -524,7 +550,10 @@ export function copyPathInWorkspace(projectId, sourceRelativePath, targetFolderR
     )
   }
 
-  if (fs.existsSync(targetFolder.absolute) && !fs.statSync(targetFolder.absolute).isDirectory()) {
+  if (
+    fs.existsSync(targetFolder.absolute) &&
+    !(await fsp.stat(targetFolder.absolute)).isDirectory()
+  ) {
     throw new ApiError(
       400,
       `"${targetFolder.relative}" is not a folder.`,
@@ -535,9 +564,12 @@ export function copyPathInWorkspace(projectId, sourceRelativePath, targetFolderR
   const name = uniqueNameInFolder(targetFolder.absolute, path.basename(source.absolute))
   const destinationAbsolute = path.join(targetFolder.absolute, name)
 
-  fs.mkdirSync(targetFolder.absolute, { recursive: true })
-  if (sourceIsDirectory) copyDirectoryRecursive(source.absolute, destinationAbsolute)
-  else fs.copyFileSync(source.absolute, destinationAbsolute)
+  await fsp.mkdir(targetFolder.absolute, { recursive: true })
+  if (sourceIsDirectory) {
+    await copyDirectoryRecursive(source.absolute, destinationAbsolute, { copied: 0 })
+  } else {
+    await fsp.copyFile(source.absolute, destinationAbsolute)
+  }
 
   const newPath = path
     .relative(getWorkspacePath(projectId), destinationAbsolute)
@@ -557,19 +589,24 @@ function sortChildren(children) {
 /**
  * Walks a workspace folder for the Explorer tree. This is a DISPLAY concern and
  * therefore has ZERO filtering: every file and folder that exists on disk
- * (node_modules, .git, dist, build, …) is returned exactly as it is. Import-time
- * exclusion is a separate concern that lives ONLY in the client's
- * services/fileSystemAccess.js (SKIP_DIRECTORIES), so folders created later by
- * the terminal are never hidden here.
+ * (node_modules, .git, dist, build, out, .next, .cache, …) is returned exactly
+ * as it is. Import-time exclusion is a separate concern that lives ONLY in the
+ * client's services/fileSystemAccess.js (IMPORT_SKIP_DIRECTORIES), so folders
+ * created later by the terminal are never hidden here.
  */
-function walkDirectory(directory, rootName, relativePath) {
+async function walkDirectory(directory, rootName, relativePath) {
   const children = []
 
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+  // ASYNC readdir: each level awaits, which yields to the event loop between
+  // directories. A fully synchronous recursive walk of a workspace that now
+  // includes node_modules (thousands of entries) blocked the server for the
+  // whole scan on every auto-refresh.
+  const entries = await fsp.readdir(directory, { withFileTypes: true })
+  for (const entry of entries) {
     const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name
 
     if (entry.isDirectory()) {
-      children.push(walkDirectory(path.join(directory, entry.name), rootName, childRelative))
+      children.push(await walkDirectory(path.join(directory, entry.name), rootName, childRelative))
     } else if (entry.isFile()) {
       children.push({ name: entry.name, type: 'file', path: childRelative })
     }
@@ -583,7 +620,7 @@ function walkDirectory(directory, rootName, relativePath) {
   }
 }
 
-export function getWorkspaceTree(projectId, options = {}) {
+export async function getWorkspaceTree(projectId, options = {}) {
   assertWorkspaceExists(projectId)
   const root = getWorkspacePath(projectId)
   const rootName = options.name || path.basename(root)

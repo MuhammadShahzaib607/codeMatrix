@@ -67,11 +67,21 @@ function resolveWatchRoot(projectRoot) {
 function scheduleNotify(projectId) {
   const entry = watchers.get(projectId)
   if (!entry) return
+  entry.eventCount += 1
   if (entry.timer) clearTimeout(entry.timer)
   entry.timer = setTimeout(() => {
     entry.timer = null
+    const coalesced = entry.eventCount
+    entry.eventCount = 0
+    const startedAt = Date.now()
     try {
       entry.notify(projectId)
+      // TEMP DIAGNOSTIC (safe to remove): proves a bulk operation collapses to a
+      // single auto-refresh. A 50-file paste should read "~50 fs event(s) -> 1".
+      console.log(
+        `[watcher] ${projectId}: ${coalesced} fs event(s) -> 1 treeChanged ` +
+          `(${Date.now() - startedAt}ms)`,
+      )
     } catch (error) {
       console.warn(`[watcher] notify ${projectId} failed: ${error?.message ?? error}`)
     }
@@ -122,7 +132,7 @@ export function startWatchingProject(projectId, notify) {
     return false
   }
 
-  watchers.set(projectId, { watcher, refs: 1, timer: null, notify })
+  watchers.set(projectId, { watcher, refs: 1, timer: null, eventCount: 0, notify })
 
   // Structural + content events all funnel into one debounced refresh. The
   // ignore rules are re-applied here as well as passed to chokidar: a directory

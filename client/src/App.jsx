@@ -12,7 +12,7 @@ import TerminalPanel from './components/Terminal/TerminalPanel'
 import Toast from './components/Toast/Toast'
 import Topbar from './components/Topbar/Topbar'
 import { fetchCurrentUser } from './features/authSlice'
-import { fetchApiKeys } from './features/aiSlice'
+import { fetchApiKeys, fetchKeyUsage } from './features/aiSlice'
 import { clearExplorerHistory } from './features/explorerHistorySlice'
 import { clearWorkspace } from './features/fileSystemSlice'
 import { fetchAvailableShells, resetTerminals } from './features/terminalSlice'
@@ -91,6 +91,7 @@ export default function App() {
   // the user signs in (the panel needs it to show the zero-key prompt).
   useEffect(() => {
     if (isAuthenticated) dispatch(fetchApiKeys())
+    if (isAuthenticated) dispatch(fetchKeyUsage())
   }, [isAuthenticated, dispatch])
 
   // The content cache is keyed by workspace id, so drop it whenever the active

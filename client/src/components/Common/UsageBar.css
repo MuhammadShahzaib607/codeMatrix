@@ -1,0 +1,61 @@
+.usage-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.usage-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.usage-bar-label {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.usage-bar-fraction {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.usage-bar-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--hover-tint);
+  overflow: hidden;
+}
+
+.usage-bar.is-compact .usage-bar-track {
+  height: 3px;
+  border-radius: 2px;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.25s ease, background 0.25s ease;
+}
+
+/* Color shifts from the theme accent toward orange, then red, as usage climbs. */
+.usage-bar.is-ok .usage-bar-fill {
+  background: var(--accent);
+}
+
+.usage-bar.is-warn .usage-bar-fill {
+  background: var(--warning, #d98e04);
+}
+
+.usage-bar.is-danger .usage-bar-fill {
+  background: var(--danger, #e5534b);
+}
+
+.usage-bar.is-none .usage-bar-fill {
+  background: var(--border);
+}

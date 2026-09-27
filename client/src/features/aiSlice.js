@@ -29,6 +29,12 @@ const initialState = {
   // The Groq model the LAST run actually used (resolved server-side from the
   // user's key). Shown in the panel so it is never a mystery which model ran.
   model: null,
+  // Latest Groq rate-limit usage per saved key id, captured server-side from
+  // real response headers. Fed by GET /api/keys/usage and by the live
+  // 'agent:usage' socket event. A key with no entry has never been used.
+  usageByKeyId: {},
+  usageStatus: 'idle', // idle | loading | ready | error
+  usageError: null,
   running: false,
   thinking: false,
   thinkingText: '',
@@ -46,6 +52,22 @@ export const fetchApiKeys = createAsyncThunk('ai/fetchKeys', async (_, { rejectW
     return rejectWithValue(error.message)
   }
 })
+
+/**
+ * The latest CAPTURED Groq usage for every saved key (no fresh Groq call). Used
+ * when Settings opens and after a run finishes; during a run the 'agent:usage'
+ * socket event updates the same state live.
+ */
+export const fetchKeyUsage = createAsyncThunk(
+  'ai/fetchKeyUsage',
+  async (_, { rejectWithValue }) => {
+    try {
+      return await agentKeysApi.usage()
+    } catch (error) {
+      return rejectWithValue(error.message)
+    }
+  },
+)
 
 export const addApiKey = createAsyncThunk(
   'ai/addKey',
@@ -212,6 +234,13 @@ const aiSlice = createSlice({
       state.keysError = null
     },
 
+    /** One live usage snapshot streamed over the socket ('agent:usage'). */
+    usageUpdated(state, action) {
+      const record = action.payload
+      if (!record?.keyId) return
+      state.usageByKeyId = { ...state.usageByKeyId, [record.keyId]: record }
+    },
+
     agentStarted(state, action) {
       state.running = true
       state.thinking = true
@@ -307,6 +336,22 @@ const aiSlice = createSlice({
         state.keysStatus = 'error'
         state.keysError = action.payload ?? 'Could not load API keys.'
       })
+      .addCase(fetchKeyUsage.pending, (state) => {
+        state.usageStatus = 'loading'
+      })
+      .addCase(fetchKeyUsage.fulfilled, (state, action) => {
+        state.usageStatus = 'ready'
+        state.usageError = null
+        const next = { ...state.usageByKeyId }
+        for (const entry of action.payload?.keys ?? []) {
+          if (entry?.id && entry.usage) next[entry.id] = entry.usage
+        }
+        state.usageByKeyId = next
+      })
+      .addCase(fetchKeyUsage.rejected, (state, action) => {
+        state.usageStatus = 'error'
+        state.usageError = action.payload ?? 'Could not load API usage.'
+      })
   },
 })
 
@@ -314,6 +359,7 @@ export const {
   setFramework,
   selectKeyId,
   setKeys,
+  usageUpdated,
   agentStarted,
   agentAction,
   agentDone,

@@ -10,6 +10,7 @@ import {
   writeFileToWorkspace,
 } from '../utils/workspaceManager.js'
 import { buildSystemPrompt } from './agentFrameworks.js'
+import { recordUsageFromHeaders } from './usageService.js'
 
 // ---------------------------------------------------------------------------
 // The AI CODING AGENT.
@@ -30,20 +31,27 @@ import { buildSystemPrompt } from './agentFrameworks.js'
 export const MAX_TOOL_CALLS = 25
 
 // ---------------------------------------------------------------------------
-// Model selection — DYNAMIC, never hardcoded
+// Model selection — DEFAULT llama-3.1-8b-instant, with a dynamic fallback plan
 // ---------------------------------------------------------------------------
 //
-// Groq retires models over time. `llama-3.3-70b-versatile` — the old default
-// here — was announced for retirement in 2026 and now answers 404
-// "model does not exist" on keys that no longer serve it (that was the
-// root cause of the agent's 404). Hardcoding ANY id is therefore a time bomb.
+// The PRIMARY model is now `llama-3.1-8b-instant`. Groq's free tier gives it a
+// dramatically larger daily request budget than the bigger 70b/120b models
+// (~14,400 requests/day vs ~1,000/day), which is what makes extended agent
+// sessions usable across a whole day. The larger, generally more capable models
+// are KEPT in the list BELOW it: whenever 8b-instant is rate-limited the agent
+// falls through to them (and to the user's other saved keys), exactly as before,
+// instead of failing.
 //
-// So, at the start of every run, the agent asks Groq which models THIS user's
-// key can actually use (GET /models) and picks the first id from the
-// tool-capable allowlist below. The allowlist mirrors Groq's "Tool Use"
-// support table (verified against console.groq.com/docs/tool-use).
+// Selection stays dynamic in one respect: Groq retires models over time, so at
+// the start of each run the agent asks which models THIS user's key can actually
+// use (GET /models) and picks the first id from the allowlist below that is
+// available. Keeping 8b-instant first makes it the default for every task. The
+// allowlist mirrors Groq's "Tool Use" support table.
 const TOOL_CAPABLE_MODELS = [
-  // Current, recommended (best agentic/tool behaviour first).
+  // DEFAULT — highest daily request limit, best choice for long sessions.
+  'llama-3.1-8b-instant',
+  // Fallback chain — larger / more capable models, tried when the default is
+  // rate-limited. Each has a much smaller daily request budget.
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
   'qwen/qwen3.8-27b',
@@ -51,7 +59,6 @@ const TOOL_CAPABLE_MODELS = [
   // Still tool-capable, but being retired — kept so keys that still serve
   // them keep working rather than erroring.
   'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant',
   'openai/gpt-oss-safeguard-20b',
   // Older ids, for keys that still have access.
   'moonshotai/kimi-k2-instruct-0905',
@@ -67,8 +74,12 @@ function preferredModelOrder() {
   return [preferred, ...TOOL_CAPABLE_MODELS.filter((id) => id !== preferred)]
 }
 
-/** The model ids this key can use, straight from Groq's live /models list. */
-export async function listAvailableModels(apiKey) {
+/**
+ * The model ids this key can use, straight from Groq's live /models list.
+ * `onResponse` (optional) receives every HTTP response so the caller can capture
+ * the rate-limit headers even on a non-2xx answer.
+ */
+export async function listAvailableModels(apiKey, onResponse = null) {
   const key = String(apiKey ?? '').trim()
   if (!key) throw new Error('No Groq API key is available for this run.')
 
@@ -80,6 +91,12 @@ export async function listAvailableModels(apiKey) {
       headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
       signal: controller.signal,
     })
+
+    if (typeof onResponse === 'function') {
+      try {
+        onResponse(response)
+      } catch {}
+    }
 
     if (!response.ok) {
       let detail = ''
@@ -134,14 +151,25 @@ export async function resolveGroqModel(apiKey) {
  * the remaining keys are still consulted. Only when NO key can list models does
  * this throw, with that key's error.
  */
-export async function resolveModelPlan(apiKeys) {
+export async function resolveModelPlan(apiKeys, { userId = null } = {}) {
   const union = new Set()
   let firstError = null
   let anyListed = false
 
   for (const key of apiKeys) {
     try {
-      const available = await listAvailableModels(key.plain)
+      // Capture the rate-limit headers from the /models call too — it gives the
+      // UI real numbers before the first chat completion has happened.
+      const onResponse = key.id
+        ? (response) =>
+            recordUsageFromHeaders({
+              keyId: key.id,
+              userId,
+              label: key.label,
+              headers: response.headers,
+            })
+        : null
+      const available = await listAvailableModels(key.plain, onResponse)
       anyListed = true
       for (const id of available) union.add(id)
     } catch (error) {
@@ -565,7 +593,7 @@ function parseRetryAfterMs(response, detail) {
   return fromText(detail)
 }
 
-async function callGroq(apiKey, messages, model) {
+async function callGroq(apiKey, messages, model, onResponse = null) {
   // Defensive trimming: a key or model string that picked up whitespace from
   // an .env file or a copy/paste would otherwise become a 401/404 at Groq.
   const key = String(apiKey ?? '').trim()
@@ -590,6 +618,14 @@ async function callGroq(apiKey, messages, model) {
       }),
       signal: controller.signal,
     })
+
+    // Capture the rate-limit headers BEFORE the status check, so a 429 (the
+    // budget being exhausted) is still recorded and shown in the UI.
+    if (typeof onResponse === 'function') {
+      try {
+        onResponse(response)
+      } catch {}
+    }
 
     if (!response.ok) {
       let detail = ''
@@ -651,7 +687,16 @@ const RATE_LIMIT_FINAL_MESSAGE =
  *   Resolves with the final summary; rejects on fatal errors (bad key, network),
  *   after already emitting an 'error' action so the UI can show it too.
  */
-export async function runAgent({ projectId, task, framework, apiKey, apiKeys, emit = () => {} }) {
+export async function runAgent({
+  projectId,
+  task,
+  framework,
+  apiKey,
+  apiKeys,
+  emit = () => {},
+  emitUsage = () => {},
+  userId = null,
+}) {
   const startedAt = Date.now()
   let toolCalls = 0
 
@@ -688,7 +733,7 @@ export async function runAgent({ projectId, task, framework, apiKey, apiKeys, em
   // clear message instead of a 404 halfway through the loop.
   let models
   try {
-    models = await resolveModelPlan(keys)
+    models = await resolveModelPlan(keys, { userId })
   } catch (error) {
     event('error', error.message, { status: 'done' })
     throw error
@@ -721,10 +766,28 @@ export async function runAgent({ projectId, task, framework, apiKey, apiKeys, em
 
     const failures = []
 
+    // Every Groq response is fed through this: the rate-limit headers are
+    // stored as the LATEST usage for that saved key and streamed to the UI.
+    const captureUsage = (combo) => (response) => {
+      if (!combo.key.id) return
+      const record = recordUsageFromHeaders({
+        keyId: combo.key.id,
+        userId,
+        label: combo.key.label,
+        headers: response.headers,
+      })
+      if (record) emitUsage(record)
+    }
+
     for (let index = 0; index < ordered.length; index += 1) {
       const combo = ordered[index]
       try {
-        const response = await callGroq(combo.key.plain, messagesForRequest, combo.model)
+        const response = await callGroq(
+          combo.key.plain,
+          messagesForRequest,
+          combo.model,
+          captureUsage(combo),
+        )
         if (combo.key !== activeKey || combo.model !== model) {
           activeKey = combo.key
           model = combo.model
@@ -788,7 +851,12 @@ export async function runAgent({ projectId, task, framework, apiKey, apiKeys, em
       )
       await new Promise((resolve) => setTimeout(resolve, shortWait))
       try {
-        const response = await callGroq(activeKey.plain, messagesForRequest, model)
+        const response = await callGroq(
+          activeKey.plain,
+          messagesForRequest,
+          model,
+          captureUsage({ key: activeKey }),
+        )
         event('fallback', `Recovered after the wait — continuing on ${model}.`, {
           status: 'done',
           model,

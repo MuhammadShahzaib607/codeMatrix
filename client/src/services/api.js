@@ -141,6 +141,13 @@ export const agentKeysApi = {
     return request('/api/keys')
   },
 
+  // The LATEST captured Groq rate-limit numbers for each saved key. Does not
+  // call Groq itself — the server returns what the most recent agent request
+  // observed, so it can be slightly stale until the next request refreshes it.
+  usage() {
+    return request('/api/keys/usage')
+  },
+
   create(key, label) {
     return request('/api/keys', {
       method: 'POST',

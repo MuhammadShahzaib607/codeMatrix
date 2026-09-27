@@ -18,7 +18,13 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import { addApiKey, deleteApiKey, fetchApiKeys, selectKeyId } from '../../features/aiSlice'
+import {
+  addApiKey,
+  deleteApiKey,
+  fetchApiKeys,
+  fetchKeyUsage,
+  selectKeyId,
+} from '../../features/aiSlice'
 import { logout } from '../../features/authSlice'
 import {
   closeSettings,
@@ -30,8 +36,10 @@ import {
 } from '../../features/settingsSlice'
 import { openDeleteProjectModal, showToast } from '../../features/uiSlice'
 import { saveSelectedKeyId } from '../../services/aiStorage'
+import { resetHint, usageStats, usageTone } from '../../utils/rateLimit'
 import { THEMES } from '../../utils/themes'
 import { isCloudWorkspace } from '../../utils/workspace'
+import UsageBar from '../Common/UsageBar'
 import KeyAccessModal from './KeyAccessModal'
 import './SettingsModal.css'
 
@@ -104,6 +112,53 @@ function Stepper({ value, min, max, onChange, suffix = 'px' }) {
   )
 }
 
+/**
+ * The captured Groq rate-limit summary for ONE saved key: a thin bar for the
+ * daily request budget and one for the per-minute token budget. A key that has
+ * never been used (no captured headers yet) shows a neutral "Not used yet".
+ */
+function KeyUsage({ usage }) {
+  const requests = usageStats(usage, 'requests')
+  const tokens = usageStats(usage, 'tokens')
+  if (!requests && !tokens) {
+    return <span className="settings-key-usage-empty">Not used yet</span>
+  }
+  return (
+    <div className="settings-key-usage">
+      {requests && (
+        <UsageBar
+          label="Requests today"
+          used={requests.used}
+          limit={requests.limit}
+          usedPercent={requests.usedPercent}
+          tone={usageTone(requests.usedPercent)}
+          title={[
+            `${requests.remaining} of ${requests.limit} requests left today`,
+            resetHint(requests.resetAt),
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        />
+      )}
+      {tokens && (
+        <UsageBar
+          label="Tokens this minute"
+          used={tokens.used}
+          limit={tokens.limit}
+          usedPercent={tokens.usedPercent}
+          tone={usageTone(tokens.usedPercent)}
+          title={[
+            `${tokens.remaining} of ${tokens.limit} tokens left this minute`,
+            resetHint(tokens.resetAt),
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        />
+      )}
+    </div>
+  )
+}
+
 function Row({ label, hint, children }) {
   return (
     <div className="settings-row">
@@ -135,9 +190,11 @@ export default function SettingsModal() {
   // The one key currently shown in full ({ id, value }); null = all masked.
   const [revealedKey, setRevealedKey] = useState(null)
 
-  // Refresh the masked key list every time Settings opens.
+  // Refresh the masked key list AND the captured usage every time Settings opens.
   useEffect(() => {
-    if (isOpen && isAuthenticated) dispatch(fetchApiKeys())
+    if (!isOpen || !isAuthenticated) return
+    dispatch(fetchApiKeys())
+    dispatch(fetchKeyUsage())
   }, [isOpen, isAuthenticated, dispatch])
 
   // Re-mask a revealed key shortly after it is shown.
@@ -492,6 +549,7 @@ export default function SettingsModal() {
                                   {key.label || 'No label'}
                                   {inUse ? ' · used by the agent' : ''}
                                 </span>
+                                <KeyUsage usage={ai.usageByKeyId[key.id]} />
                               </div>
                               {isRevealed && (
                                 <button

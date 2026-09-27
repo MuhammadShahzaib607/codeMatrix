@@ -18,12 +18,14 @@ export const env = {
   // Server-side only — never sent to the client. When unset, keyVault falls
   // back to a value derived from jwtSecret and warns in development.
   encryptionSecret: process.env.ENCRYPTION_SECRET || '',
-  // OPTIONAL preferred Groq model. The agent NO LONGER relies on a hardcoded
-  // id (Groq retires models — the old `llama-3.3-70b-versatile` default started
-  // 404ing): at the start of each run it lists the models the user's key can use
-  // and picks the first tool-capable one. When GROQ_MODEL is set here, that id
-  // is tried first and the dynamic list is the fallback. There is NO built-in
-  // Groq API key anywhere in this app: every request uses a key the user saved.
+  // OPTIONAL preferred Groq model OVERRIDE. By default the agent uses
+  // "llama-3.1-8b-instant" (see TOOL_CAPABLE_MODELS in services/agentService.js)
+  // because Groq's free tier allows a far higher daily request budget for it
+  // than for the larger models, then falls back through the rest of the
+  // allowlist. At the start of each run it still lists the models the user's key
+  // can use and picks the first available allowlisted id. When GROQ_MODEL is set
+  // here, that id is tried first instead. There is NO built-in Groq API key
+  // anywhere in this app: every request uses a key the user saved.
   groqModel: (process.env.GROQ_MODEL || '').trim(),
   // Overridable so tests can point the agent at a local stand-in for Groq.
   // Leading/trailing whitespace is stripped so a stray space in .env can never

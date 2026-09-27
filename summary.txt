@@ -4215,3 +4215,178 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
   - The watcher already skips descending into node_modules/.git/dist/build/out/
     .next/.cache, so a change in those does not reload a preview.
 
+
+================================================================================
+AI Code Editor — Phase 9: Default Model = llama-3.1-8b-instant + Live Rate-Limit Usage
+================================================================================
+
+STATUS: complete. The agent's primary model is now llama-3.1-8b-instant, and the
+        Groq rate-limit numbers returned in every response header are captured,
+        stored, streamed live, and drawn as progress bars in Settings and the AI
+        panel.
+
+--------------------------------------------------------------------------------
+PART 1 — THE DEFAULT AGENT MODEL IS NOW llama-3.1-8b-instant
+--------------------------------------------------------------------------------
+server/src/services/agentService.js
+  - TOOL_CAPABLE_MODELS now lists 'llama-3.1-8b-instant' FIRST, so it is the
+    model every new task resolves to. Reason: Groq's free tier grants it a far
+    larger daily request budget than the 70b/120b models (~14,400/day vs
+    ~1,000/day), which is what makes all-day agent sessions sustainable.
+  - The larger / more capable models stay in the SAME list right below it
+    (openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b, minimax-m2.7,
+    llama-3.3-70b-versatile, gpt-oss-safeguard-20b, and the older ids), so the
+    existing fallback chain is UNCHANGED: a 429 on 8b-instant falls through to
+    the next model (and the user's next saved key) exactly as before.
+  - Selection stays dynamic: at the start of each run the agent asks GET /models
+    which ids THIS key can use and picks the first allowlisted one. GROQ_MODEL
+    still overrides the front of the list when set (config/env.js comment updated).
+
+server/src/services/agentFrameworks.js
+  - SHARED_RULES rewritten to suit a smaller model: an explicit NUMBERED
+    workflow (1 UNDERSTAND → 2 INSPECT with list_directory/read_file → 3 PLAN the
+    smallest change → 4 ACT with the tools → 5 VERIFY via read-back/build →
+    6 FINISH with a tool-call-free summary), a clear relative-path rule, and
+    direct RULES (only the provided tools, non-interactive scaffolding, never a
+    long-running dev server, treat tool errors as facts). Less ambiguity, more
+    step-by-step than the previous prose paragraphs.
+
+CLIENT — the AI panel model indicator
+  - NEW client/src/utils/agentDefaults.js exports DEFAULT_AGENT_MODEL =
+    'llama-3.1-8b-instant' (mirrors TOOL_CAPABLE_MODELS[0]).
+  - AIPanel shows `model ?? DEFAULT_AGENT_MODEL`, so before the first run the
+    header reads llama-3.1-8b-instant; once a run starts the real resolved id
+    (possibly a fallback) streams in and replaces it.
+
+--------------------------------------------------------------------------------
+PART 2 — CAPTURING GROQ RATE-LIMIT HEADERS
+--------------------------------------------------------------------------------
+Every Groq HTTP response carries: x-ratelimit-limit-requests,
+-remaining-requests, -limit-tokens, -remaining-tokens, -reset-requests and
+-reset-tokens. They are now captured on EVERY call.
+
+NEW server/src/services/usageService.js
+  - recordUsageFromHeaders({ keyId, userId, label, headers }) parses those six
+    headers into one record:
+      { keyId, userId, label, remainingRequests, limitRequests,
+        remainingTokens, limitTokens, resetRequestsAt, resetTokensAt, updatedAt }
+    Reset windows arrive as durations ("1m2.4s", "350ms", "30" seconds, "1h") and
+    are parsed to ABSOLUTE ISO timestamps.
+  - Storage is a two-tier cache: an always-present in-memory Map (authoritative
+    while the process runs, and works with no database) plus a best-effort
+    MongoDB upsert so the numbers survive a restart. getUsageForKeys() reads the
+    Map and hydrates anything missing from the DB when one is connected.
+  - A key that has never made a request has NO record, which is exactly what
+    drives the neutral "Not used yet" state in the UI.
+
+NEW server/src/models/ApiKeyUsage.model.js
+  - keyId (unique), userId, label, the four limit/remaining numbers, the two
+    reset timestamps and updatedAt. Durable mirror only — never stores the key.
+
+server/src/services/agentService.js
+  - listAvailableModels() and callGroq() accept an onResponse callback invoked as
+    soon as each HTTP response arrives — BEFORE the status check, so the headers
+    of a 429 (budget exhausted) are captured too.
+  - resolveModelPlan() records the /models call's headers per key, so real
+    numbers can appear before the first chat completion.
+  - runAgent() gained emitUsage and userId; every key/model combination (and the
+    post-wait retry) reports its captured record through emitUsage.
+
+server/src/socket/agentSocket.js
+  - Forwards each record as a new 'agent:usage' socket event, emitted alongside
+    the 'agent:action' feed, so the UI updates live with no polling.
+
+server/src/controllers/apiKey.controller.js + routes/apiKey.routes.js
+  - NEW GET /api/keys/usage (JWT-protected). Returns, per saved key, the masked
+    id/label plus `usage` (or null). It NEVER calls Groq itself — it returns the
+    most recently captured values, so it can be slightly stale until the next
+    real agent request refreshes it.
+
+--------------------------------------------------------------------------------
+PART 2 — DISPLAYING THE USAGE
+--------------------------------------------------------------------------------
+NEW client/src/utils/rateLimit.js
+  - usageStats(usage, 'requests' | 'tokens') -> { limit, remaining, used,
+    usedPercent, remainingPercent, resetAt }. Requests = daily budget; tokens =
+    per-minute budget.
+  - usageTone(usedPercent): <70% 'ok', 70-90% 'warn', 90%+ 'danger'.
+  - resetHint(resetAt) -> "resets in 3m".
+
+NEW client/src/components/Common/UsageBar.jsx + .css
+  - A thin progress bar shared by BOTH views (so the numbers can never drift).
+    The fill uses the theme accent until 70% used, then orange (--warning), then
+    red (--danger). Full mode shows "Requests today  X / Y used"; compact mode is
+    a bare 3px bar.
+
+client/src/features/aiSlice.js
+  - New state usageByKeyId (map) + usageStatus. New thunk fetchKeyUsage()
+    (GET /api/keys/usage) and reducer usageUpdated(record) for the live socket
+    snapshot.
+
+client/src/hooks/useAgentEvents.js
+  - Listens for 'agent:usage' and dispatches usageUpdated live, AND refetches
+    GET /api/keys/usage once an 'agent:done' arrives (reconcile after the run).
+
+client/src/components/Settings/SettingsModal.jsx
+  - Each saved key row now shows TWO thin bars under its label: "Requests today"
+    and "Tokens this minute" (X / Y used), coloured by usageTone. A key with no
+    captured usage shows the neutral "Not used yet". Usage is (re)fetched every
+    time Settings opens.
+
+client/src/components/AIPanel/AIPanel.jsx
+  - The model indicator became a full-width strip just under the header (it used
+    to be a cramped inline label) reading e.g.
+    "llama-3.1-8b-instant · 68% daily requests remaining", followed by a thin bar
+    with the same tone colour. The active key is the explicit selection, else the
+    newest key (which is the server's default). Before any usage is captured it
+    reads "not used yet". The strip's tooltip carries the exact X / Y and reset
+    window. The strip keeps the .ai-model-label class, so existing selectors keep
+    working.
+
+client/src/App.jsx dispatches fetchKeyUsage() on sign-in alongside fetchApiKeys().
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (81 files). vite build: succeeds.
+  - node --check on every changed/new server file: passes.
+  - Full in-process test (temporary server/tmp-usage-e2e.mjs, 25/25 checks) against
+    a local MOCK Groq (GROQ_BASE_URL), no real key needed:
+      PART 1 — a run completed with model llama-3.1-8b-instant, Groq was called
+        with exactly that model id, and the thinking event advertised it.
+      PART 1b — with the mock 429-ing llama-3.1-8b-instant, the agent tried it
+        first and FELL BACK to openai/gpt-oss-120b with a fallback event, and the
+        rate-limit headers from the 429 were captured (remaining = 0).
+      PART 2 — the usage callback fired with keyId + all four numbers, reset
+        timestamps parsed to valid dates, the in-memory cache stored it, and
+        getUsageForKeys returned the used key and omitted the unused one.
+      PART 2b — duration parsing: 1m2s→62000, 350ms→350, 2.5s→2500, 30→30000,
+        1h→3600000.
+      PART 2c — live API: GET /api/keys/usage is 401 without a token and reaches
+        the DB-gated key lookup with one (503 KEYS_UNAVAILABLE here, since the
+        sandbox's MongoDB DNS is unreachable), proving the route is mounted.
+  - Client pure helpers checked directly: usageStats returns 68% used for
+    1000/320, usageTone maps 68→ok, 80→warn, 95→danger; --warning/--danger exist
+    in index.css.
+  - NOT browser-tested end-to-end: this sandbox has no reachable MongoDB (the
+    Atlas SRV lookup is refused) and no real Groq key, so no signed-in user could
+    be created to populate the Settings/AI-panel bars with live numbers. The UI
+    wiring is exercised by the build + the pure-helper checks above.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - To change the default model again, edit TOOL_CAPABLE_MODELS[0] in
+    server/src/services/agentService.js AND keep client/src/utils/agentDefaults.js
+    in sync (it is only the pre-run label).
+  - Usage is captured per SAVED KEY, not per model, and only for keys with a
+    database id. A single-key/test caller with no key id still runs but records
+    nothing.
+  - The usage endpoint reads the last captured values; it never spends Groq
+    quota. Numbers go stale between agent requests by design.
+  - The MongoDB mirror (ApiKeyUsage) exists so numbers survive a restart; if the
+    database is down everything still works from the in-memory cache alone.
+  - usageTone thresholds (<70 / 70-90 / 90+) and the accent→orange→red palette
+    live in client/src/utils/rateLimit.js and Common/UsageBar.css; keep the AI
+    panel's .ai-usage-mini colours in step with them.
+

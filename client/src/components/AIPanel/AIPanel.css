@@ -56,16 +56,86 @@
   }
 }
 
-/* Which Groq model the last run actually resolved (shown after the badge). */
+/* The model the last run resolved, plus the compact live usage indicator for
+   the active key. A full-width strip under the header, so the model name and
+   the usage text never have to fight the header row for space. */
 .ai-model-label {
-  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
   min-width: 0;
-  max-width: 150px;
+  height: 22px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 10px;
   color: var(--text-dim);
+  user-select: none;
+}
+
+.ai-model-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-model-sep {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.ai-model-usage {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-model-usage.is-ok {
+  color: var(--accent);
+}
+
+.ai-model-usage.is-warn {
+  color: var(--warning);
+}
+
+.ai-model-usage.is-danger {
+  color: var(--danger);
+}
+
+.ai-model-usage.is-none {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Thin bar mirroring the Settings bars, coloured by the same tone thresholds. */
+.ai-usage-mini {
+  flex: 0 0 auto;
+  width: 54px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--hover-tint);
+  overflow: hidden;
+}
+
+.ai-usage-mini > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease, background 0.25s ease;
+}
+
+.ai-usage-mini.is-warn > span {
+  background: var(--warning);
+}
+
+.ai-usage-mini.is-danger > span {
+  background: var(--danger);
 }
 
 .ai-header-action {

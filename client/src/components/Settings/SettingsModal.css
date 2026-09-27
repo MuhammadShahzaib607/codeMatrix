@@ -466,6 +466,23 @@
   color: var(--text-muted);
 }
 
+/* Live Groq rate-limit bars per saved key (daily requests + per-minute tokens). */
+.settings-key-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  max-width: 360px;
+  margin-top: 7px;
+}
+
+.settings-key-usage-empty {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-style: italic;
+}
+
 .settings-key-inuse {
   flex: 0 0 auto;
   padding: 2px 8px;

@@ -167,6 +167,13 @@ export default function registerAgentSocket(io) {
           if (socket.connected) socket.emit('agent:action', event)
         }
 
+        // The rate-limit snapshot captured from the most recent Groq response,
+        // streamed alongside the action feed so the AI panel's usage indicator
+        // updates live without polling.
+        const emitUsage = (usage) => {
+          if (socket.connected) socket.emit('agent:usage', usage)
+        }
+
         // Transition a scratch workspace into a named, tracked project before
         // the first tool call, so the UI shows a real name from the start. A
         // failure here must never block the task itself.
@@ -183,6 +190,8 @@ export default function registerAgentSocket(io) {
             framework: payload?.framework,
             apiKeys: keys,
             emit,
+            emitUsage,
+            userId,
           })
           if (socket.connected) {
             socket.emit('agent:done', {

@@ -8,6 +8,8 @@ const router = Router()
 // service layer (every query is filtered by req.user.id).
 router.use(protect)
 router.get('/', apiKeyController.listKeys)
+// Latest captured rate-limit usage for every saved key (no fresh Groq call).
+router.get('/usage', apiKeyController.listKeyUsage)
 router.post('/', apiKeyController.createKey)
 // Password-gated (body: { password }): the only routes that ever touch the
 // decrypted key at rest.

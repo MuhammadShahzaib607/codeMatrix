@@ -32,7 +32,9 @@ import { openSettings } from '../../features/settingsSlice'
 import { openAuthModal } from '../../features/uiSlice'
 import useAuthGuard from '../../hooks/useAuthGuard'
 import { saveFrameworkFor, saveSelectedKeyId, frameworkFor } from '../../services/aiStorage'
+import { DEFAULT_AGENT_MODEL } from '../../utils/agentDefaults'
 import { FRAMEWORKS } from '../../utils/agentFrameworks'
+import { resetHint, usageStats, usageTone } from '../../utils/rateLimit'
 import './AIPanel.css'
 
 // Icon per streamed action type (spec: FilePlus=create, Pencil=edit,
@@ -193,6 +195,7 @@ export default function AIPanel() {
     selectedKeyId,
     framework,
     model,
+    usageByKeyId,
     running,
     thinking,
     thinkingText,
@@ -202,6 +205,23 @@ export default function AIPanel() {
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
 
   const projectId = workspace.projectId
+
+  // The key this session's runs use: the explicit selection, else the newest
+  // key (the server orders the list newest-first and defaults the same way).
+  const activeKey = keys.find((key) => key.id === selectedKeyId) ?? keys[0] ?? null
+  const activeUsage = activeKey ? (usageByKeyId[activeKey.id] ?? null) : null
+  const requestsStats = usageStats(activeUsage, 'requests')
+  const requestsTone = usageTone(requestsStats?.usedPercent)
+  // Default to the primary model before the first run reports the real one.
+  const modelLabel = model ?? DEFAULT_AGENT_MODEL
+  const modelTooltip = activeKey
+    ? `${modelLabel} · ${activeKey.label || activeKey.masked}` +
+      (requestsStats
+        ? ` — ${requestsStats.used} / ${requestsStats.limit} requests used today${
+            resetHint(requestsStats.resetAt) ? ` (${resetHint(requestsStats.resetAt)})` : ''
+          }`
+        : ' — no usage captured yet')
+    : `Groq model: ${modelLabel}`
 
   // Keep the feed pinned to the newest action while the agent works.
   useEffect(() => {
@@ -296,13 +316,7 @@ export default function AIPanel() {
         <span className="ai-header-title">AI Agent</span>
         <span className={`ai-badge ${running ? 'is-working' : ''}`}>
           {running ? 'Working' : 'Ready'}
-        </span>
-        {model && (
-          <span className="ai-model-label" title={`Groq model: ${model}`}>
-            {model}
-          </span>
-        )}
-        {timeline.length > 0 && !running && (
+        </span>        {timeline.length > 0 && !running && (
           <button
             type="button"
             className="ai-header-action"
@@ -312,6 +326,29 @@ export default function AIPanel() {
           >
             <Eraser size={14} />
           </button>
+        )}
+      </div>
+
+      {/* The model the last run resolved, plus a compact live usage indicator
+          for the active key. Full-width so it never fights the header for room. */}
+      <div className="ai-model-label" title={modelTooltip}>
+        <span className="ai-model-name">{modelLabel}</span>
+        {activeKey && (
+          <>
+            <span className="ai-model-sep">·</span>
+            {requestsStats ? (
+              <span className={`ai-model-usage is-${requestsTone}`}>
+                {requestsStats.remainingPercent}% daily requests remaining
+              </span>
+            ) : (
+              <span className="ai-model-usage is-none">not used yet</span>
+            )}
+            {requestsStats && (
+              <span className={`ai-usage-mini is-${requestsTone}`} aria-hidden="true">
+                <span style={{ width: `${requestsStats.usedPercent}%` }} />
+              </span>
+            )}
+          </>
         )}
       </div>
 

@@ -9,6 +9,7 @@ import {
   updateKeyForUser,
   verifyAccountPassword,
 } from '../services/apiKeyService.js'
+import { getUsageForKeys } from '../services/usageService.js'
 
 /**
  * GET /api/keys -> the user's saved keys, MASKED only ("gsk_...a1b2").
@@ -18,6 +19,30 @@ import {
 export const listKeys = asyncHandler(async (req, res) => {
   const keys = await listKeysForUser(req.user.id)
   res.json({ keys, max: MAX_KEYS_PER_USER })
+})
+
+/**
+ * GET /api/keys/usage -> the LATEST captured Groq rate-limit numbers for each
+ * of the user's saved keys (masks + remaining/limit + reset times).
+ *
+ * This never calls Groq itself: the values were captured from the response
+ * headers of real agent requests (see services/usageService.js), so they may be
+ * slightly stale until the next agent request refreshes them. A key that has
+ * not been used yet comes back with usage: null and the UI shows "Not used yet".
+ */
+export const listKeyUsage = asyncHandler(async (req, res) => {
+  const keys = await listKeysForUser(req.user.id)
+  const usage = await getUsageForKeys(keys.map((key) => key.id))
+
+  res.json({
+    keys: keys.map((key) => ({
+      id: key.id,
+      label: key.label,
+      masked: key.masked,
+      usage: usage.get(key.id) ?? null,
+    })),
+    capturedAt: new Date().toISOString(),
+  })
 })
 
 /** POST /api/keys { key, label } -> encrypts + saves (max 3 per user). */

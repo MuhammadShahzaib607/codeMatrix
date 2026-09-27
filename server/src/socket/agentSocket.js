@@ -1,70 +1,11 @@
-import crypto from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { isDatabaseConnected } from '../config/db.js'
 import { env } from '../config/env.js'
-import { findProject, upsertProject } from '../models/project.repository.js'
+import { findProject } from '../models/project.repository.js'
 import { resolveKeysForUser } from '../services/apiKeyService.js'
-import { deriveProjectName, runAgent } from '../services/agentService.js'
-import {
-  ensureScratchWorkspace,
-  getWorkspaceRecord,
-  isScratchProjectId,
-  renameWorkspaceFolder,
-} from '../utils/workspaceManager.js'
-
-// The default on-disk folder name a scratch workspace is registered under. Once
-// it has been renamed, the workspace has been adopted as a real project.
-const SCRATCH_FOLDER_NAME = 'Scratch'
-
-/**
- * Turns an ANONYMOUS scratch workspace ("Scratch", id scratch-<userId>) into a
- * named, tracked project the first time the agent runs a task in it.
- *
- * The project name is derived from the task itself ("Create a todo app with
- * localStorage" -> "todo-app"), the folder is renamed on disk using the SAME
- * collision-safe naming as regular imports, a Project record is created in
- * MongoDB, and a 'project' event is streamed so the Explorer root label and the
- * topbar chip update immediately.
- *
- * The project id is deliberately UNCHANGED: the folder (and therefore every
- * path the agent's tools resolve) keeps working mid-run. A real imported project
- * is never touched — this only applies to a scratch id.
- */
-async function maybeAdoptScratchProject({ projectId, task, userId, emit }) {
-  if (!isScratchProjectId(projectId)) return null
-
-  const record = getWorkspaceRecord(projectId)
-  const alreadyNamed = Boolean(record && record.folderName !== SCRATCH_FOLDER_NAME)
-  if (alreadyNamed) {
-    const existing = isDatabaseConnected() ? await findProject(projectId) : null
-    const name = existing?.name || record.folderName
-    return { projectId, name, adopted: false }
-  }
-
-  const name = deriveProjectName(task)
-  const folder = renameWorkspaceFolder(projectId, { displayName: name })
-  if (!folder) return null
-
-  if (isDatabaseConnected()) {
-    await upsertProject({
-      projectId,
-      name,
-      owner: userId,
-      diskPath: folder.path,
-      diskFolderName: folder.folderName,
-    })
-  }
-
-  emit({
-    type: 'project',
-    description: `Named this workspace “${name}” from your task.`,
-    details: { status: 'done', projectId, name, tool: 'project' },
-    actionId: crypto.randomUUID(),
-    at: Date.now(),
-  })
-
-  return { projectId, name, adopted: true }
-}
+import { runAgent } from '../services/agentService.js'
+import { adoptScratchProject } from '../services/scratchProjectService.js'
+import { ensureScratchWorkspace, isScratchProjectId } from '../utils/workspaceManager.js'
 
 // ---------------------------------------------------------------------------
 // The agent's real-time channel.
@@ -174,13 +115,27 @@ export default function registerAgentSocket(io) {
           if (socket.connected) socket.emit('agent:usage', usage)
         }
 
-        // Transition a scratch workspace into a named, tracked project before
-        // the first tool call, so the UI shows a real name from the start. A
-        // failure here must never block the task itself.
-        try {
-          await maybeAdoptScratchProject({ projectId, task, userId, emit })
-        } catch (error) {
-          console.warn(`[agent] scratch adoption failed for ${projectId}: ${error.message}`)
+        // Turn an anonymous scratch workspace into a real, NAMED project. The
+        // model is asked to open its first message with a PROJECT_NAME line, so
+        // adoption runs as soon as that first message arrives; a run that fails
+        // before the model speaks is adopted in the `finally` below. Either way
+        // the workspace is never left called "Scratch".
+        const scratchRun = isScratchProjectId(projectId)
+        let scratchAdopted = false
+        const adopt = async (modelSuggestedName = null) => {
+          if (!scratchRun) return
+          try {
+            const result = await adoptScratchProject({
+              projectId,
+              task,
+              userId,
+              emit,
+              modelSuggestedName,
+            })
+            if (result?.adopted) scratchAdopted = true
+          } catch (error) {
+            console.warn(`[agent] scratch adoption failed for ${projectId}: ${error.message}`)
+          }
         }
 
         try {
@@ -192,6 +147,7 @@ export default function registerAgentSocket(io) {
             emit,
             emitUsage,
             userId,
+            onProjectName: (name) => adopt(name),
           })
           if (socket.connected) {
             socket.emit('agent:done', {
@@ -212,6 +168,9 @@ export default function registerAgentSocket(io) {
             })
           }
         } finally {
+          // Safety net: if the run failed before the model named the project,
+          // still give the scratch workspace a real name derived from the task.
+          if (scratchRun && !scratchAdopted) await adopt(null)
           active = false
           // The plaintext keys live only in this scope; drop the references now.
           keys = null

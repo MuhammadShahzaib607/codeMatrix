@@ -1,7 +1,7 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import { isWorkspaceMissingError, projectApi, workspaceApi } from '../services/api'
 import { clearFileContentCache, setCachedFileContent } from '../services/fileContentCache'
-import { clearWorkspaceRef } from '../services/workspaceStorage'
+import { clearWorkspaceRef, saveWorkspaceRef } from '../services/workspaceStorage'
 import { toReduxTree } from '../utils/cloudTree'
 import {
   TS_CONFIG_FILENAMES,
@@ -17,7 +17,6 @@ import {
   refreshTree,
   remapPaths,
   removeNode,
-  setCloudWorkspace,
   setScratchWorkspace,
 } from './fileSystemSlice'
 
@@ -57,43 +56,29 @@ export const refreshWorkspaceTree = createAsyncThunk(
   },
 )
 
-export const reopenWorkspace = createAsyncThunk(
-  'workspace/reopen',
-  async ({ projectId, name }, { dispatch }) => {
-    try {
-      const data = await workspaceApi.getTree(projectId)
-      dispatch(
-        setCloudWorkspace({
-          projectId,
-          name: data.name ?? name,
-          tree: [toReduxTree(data.tree)],
-        }),
-      )
-      return data
-    } catch (error) {
-      throw handleFailure(error, dispatch)
-    }
-  },
-)
-
 /**
- * Boots (or re-opens) the per-user scratch workspace and makes it the active
- * workspace. The server creates the folder on demand, so a plain tree read is
- * enough — and it also returns any files created earlier, which is how the
- * scratch workspace is reused across sessions.
+ * Boots (or REUSES) the user's single scratch workspace and makes it active.
+ *
+ * The server decides which workspace this is: an existing scratch the user
+ * already has is reused (so reopening the app never spawns a duplicate
+ * "Scratch"), and only a
+ * genuinely free slot creates a new one. Once the workspace has been adopted as
+ * a named project, a later call opens a fresh scratch instead.
  */
 export const openScratchWorkspace = createAsyncThunk(
   'workspace/openScratch',
-  async ({ projectId, name = 'Scratch' }, { dispatch }) => {
+  async (_, { dispatch }) => {
     try {
-      const data = await workspaceApi.getTree(projectId)
+      const data = await workspaceApi.openScratch()
+      const name = data?.name ?? 'Scratch'
       dispatch(
         setScratchWorkspace({
-          projectId,
+          projectId: data.projectId,
           name,
           tree: [toReduxTree(data.tree)],
         }),
       )
+      saveWorkspaceRef({ projectId: data.projectId, name })
       return data
     } catch (error) {
       throw handleFailure(error, dispatch)

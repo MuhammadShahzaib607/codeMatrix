@@ -1,4 +1,5 @@
 import Editor from '@monaco-editor/react'
+import { emmetCSS, emmetHTML, emmetJSX } from 'emmet-monaco-es'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
@@ -17,6 +18,24 @@ import './Editor.css'
 // The monospace stack used when the font setting is "System Default".
 const DEFAULT_MONO_FONT =
   "'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace"
+
+// Emmet is registered ONCE per Monaco instance (WeakSet, so a re-created editor
+// is set up again). HTML supports "!" + Tab for a full boilerplate and selectors
+// like "div.container>ul>li*3"; CSS supports "m10" -> "margin: 10px;"; JSX works
+// in javascript/typescript (which is what .jsx/.tsx map to).
+const emmetRegisteredFor = new WeakSet()
+
+function registerEmmet(monaco) {
+  if (!monaco || emmetRegisteredFor.has(monaco)) return
+  emmetRegisteredFor.add(monaco)
+  try {
+    emmetHTML(monaco, ['html'])
+    emmetCSS(monaco, ['css', 'scss', 'less'])
+    emmetJSX(monaco, ['javascript', 'typescript'])
+  } catch (error) {
+    console.warn('[emmet] could not register:', error?.message ?? error)
+  }
+}
 
 export default function EditorArea() {
   // Auto-save runs as a component-level hook so it stays active for every open
@@ -199,6 +218,8 @@ export default function EditorArea() {
               // is not silently replaced by Monaco's fallback at startup.
               defineAppMonacoThemes(monaco)
               monaco.editor.setTheme(monacoThemeFor(themeRef.current))
+              // Emmet abbreviations (typable in html/css/jsx and expanded with Tab).
+              registerEmmet(monaco)
               // Monaco's TS worker only resolves path aliases against real file
               // URIs, so models use file:/// and the project's compilerOptions
               // (baseUrl/paths/jsx/…) are pushed in here.

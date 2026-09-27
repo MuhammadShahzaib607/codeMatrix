@@ -198,15 +198,81 @@ export async function resolveModelPlan(apiKeys, { userId = null } = {}) {
 // before the name is built ("create a todo app" -> "todo-app").
 const PROJECT_NAME_STOPWORDS = new Set([
   'create', 'build', 'make', 'add', 'write', 'generate', 'implement', 'develop',
+  'design', 'set', 'setup', 'fix', 'update', 'refactor',
   'a', 'an', 'the', 'for', 'with', 'using', 'use', 'to', 'of', 'and', 'or', 'in',
-  'on', 'my', 'me', 'please', 'new', 'simple', 'basic',
+  'on', 'my', 'me', 'please', 'new', 'simple', 'basic', 'that', 'this', 'some',
+])
+
+// Names that carry no information. Rejected when a MODEL suggests one (so the
+// task-derived fallback is used instead), but still allowed as the deterministic
+// fallback for a task that has no useful words at all.
+const MEANINGLESS_PROJECT_NAMES = new Set([
+  'scratch', 'untitled', 'untitled-project', 'project', 'new-project', 'my-project',
+  'test', 'testing', 'app', 'sample', 'example', 'demo',
 ])
 
 /**
- * A short, filesystem-safe project name inferred from the user's task. This is
- * the deterministic fallback (no extra model call) used when a task starts in
- * the anonymous scratch workspace: "Create a todo app with localStorage" ->
- * "todo-app". Empty/meaningless tasks become "my-project".
+ * Normalizes ANY candidate project name into a safe kebab-case slug. Returns
+ * null when the candidate is empty or carries no real meaning, so a model that
+ * answers "PROJECT_NAME: project" still falls back to the task-derived name.
+ */
+export function slugifyProjectName(value) {
+  const slug = String(value ?? '')
+    .toLowerCase()
+    .replace(/[`'"]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/g, '')
+
+  if (!slug || slug.length < 2) return null
+  const words = slug.split('-').filter(Boolean)
+  if (words.length === 0) return null
+  // A lone meaningless word is not a name; a longer phrase containing one
+  // (e.g. "todo-app") is fine.
+  if (words.length === 1 && MEANINGLESS_PROJECT_NAMES.has(words[0])) return null
+  return slug
+}
+
+/**
+ * Pulls a project name out of the model's own text. Deliberately tolerant of the
+ * phrasings a model realistically uses rather than one brittle literal match:
+ *   PROJECT_NAME: todo-app         project name = "todo app"
+ *   Project-Name: `todo-app`       {"projectName":"todo-app"}
+ * Returns a normalized slug, or null when the model did not name the project.
+ */
+export function extractProjectName(text) {
+  const value = String(text ?? '')
+  if (!value) return null
+
+  const patterns = [
+    /project[\s_-]*name\s*[:=]\s*[*_`"'\s]*([A-Za-z0-9][A-Za-z0-9 ._-]{0,60})/i,
+    /["']project[\s_-]*name["']\s*:\s*["']([^"']{1,60})["']/i,
+    /["']projectName["']\s*:\s*["']([^"']{1,60})["']/i,
+  ]
+
+  for (const pattern of patterns) {
+    const match = value.match(pattern)
+    const candidate = match?.[1]
+    if (!candidate) continue
+    const slug = slugifyProjectName(candidate)
+    if (slug) return slug
+  }
+  return null
+}
+
+/** Removes a leading "PROJECT_NAME: …" line so it never shows in a summary. */
+export function stripProjectNameLine(text) {
+  return String(text ?? '')
+    .replace(/^\s*project[\s_-]*name\s*[:=][^\n]*\n?/i, '')
+    .trim()
+}
+
+/**
+ * A short, filesystem-safe project name inferred from the user's ORIGINAL TASK.
+ * This is the deterministic fallback used when the model did not suggest a
+ * usable name: "Create a todo app with localStorage" -> "todo-app". An
+ * empty/meaningless task becomes "my-project".
  */
 export function deriveProjectName(task) {
   const words = String(task ?? '')
@@ -216,14 +282,8 @@ export function deriveProjectName(task) {
     .filter(Boolean)
     .filter((word) => !PROJECT_NAME_STOPWORDS.has(word))
 
-  const picked = words.slice(0, 2)
-  const name = picked
-    .join('-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40)
-    .replace(/[.\s]+$/, '')
-
-  return name || 'my-project'
+  const picked = words.slice(0, 2).join('-')
+  return slugifyProjectName(picked) || picked || 'my-project'
 }
 
 const LLM_TIMEOUT_MS = 120000 // Groq is fast; 2 min per call is already generous
@@ -695,10 +755,13 @@ export async function runAgent({
   apiKeys,
   emit = () => {},
   emitUsage = () => {},
+  onProjectName = null,
   userId = null,
 }) {
   const startedAt = Date.now()
   let toolCalls = 0
+  let firstAssistantSeen = false
+  let suggestedName = null
 
   const event = (type, description, details = {}) => {
     // Re-using an actionId in details makes two events describe ONE logical
@@ -904,18 +967,44 @@ export async function runAgent({
       event('error', error.message, { status: 'done' })
       throw error
     }
+
+    // The model was asked to open its FIRST message with a PROJECT_NAME line
+    // when it is starting a brand-new project. Parse it once, from that first
+    // message, and let the caller rename the scratch workspace if it applies.
+    if (!firstAssistantSeen) {
+      firstAssistantSeen = true
+      const fromModel = extractProjectName(message.content)
+      if (fromModel) {
+        suggestedName = fromModel
+        if (typeof onProjectName === 'function') {
+          try {
+            await onProjectName(fromModel)
+          } catch (error) {
+            console.warn(`[agent] project naming failed: ${error?.message ?? error}`)
+          }
+        }
+      }
+    }
+
     messages.push(message)
 
     const calls = Array.isArray(message.tool_calls) ? message.tool_calls : []
     if (calls.length === 0) {
-      const finalText = String(message.content ?? '').trim() || 'Task complete.'
+      const finalText =
+        stripProjectNameLine(String(message.content ?? '').trim()) || 'Task complete.'
       event('complete', finalText, {
         status: 'done',
         durationMs: Date.now() - startedAt,
         toolCalls,
         model,
       })
-      return { message: finalText, toolCalls, durationMs: Date.now() - startedAt, model }
+      return {
+        message: finalText,
+        toolCalls,
+        durationMs: Date.now() - startedAt,
+        model,
+        suggestedName,
+      }
     }
 
     event('thinking', 'Working on it…', { status: 'thinking' })
@@ -936,6 +1025,7 @@ export async function runAgent({
           durationMs: Date.now() - startedAt,
           limitReached: true,
           model,
+          suggestedName,
         }
       }
       toolCalls += 1

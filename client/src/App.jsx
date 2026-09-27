@@ -21,6 +21,7 @@ import { loadWorkspaceTsConfig } from './features/workspaceThunks'
 import {
   AI_PANEL_WIDTH_KEY,
   SIDEBAR_WIDTH_KEY,
+  resetStorageNotice,
   setAiPanelWidth,
   setSidebarWidth,
 } from './features/uiSlice'
@@ -56,6 +57,12 @@ export default function App() {
   useEffect(() => {
     dispatch(fetchCurrentUser())
   }, [dispatch])
+
+  // The temporary-storage warning must reappear for every new session: reset
+  // its dismissed flag whenever the auth state changes (sign in or sign out).
+  useEffect(() => {
+    dispatch(resetStorageNotice())
+  }, [isAuthenticated, dispatch])
 
   // Themes are DATA: utils/themes.js holds every palette, and applying one just
   // writes its CSS custom properties onto <html>. index.css keeps the default

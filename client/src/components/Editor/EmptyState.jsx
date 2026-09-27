@@ -2,8 +2,9 @@ import { FileCode2, FolderInput, FolderTree } from 'lucide-react'
 import { useSelector } from 'react-redux'
 import { isFileSystemAccessSupported } from '../../services/fileSystemAccess'
 import { UNSUPPORTED_MESSAGE } from '../../utils/messages'
-import { workspaceLabel } from '../../utils/workspace'
+import { hasActiveWorkspace, workspaceLabel } from '../../utils/workspace'
 import Logo from '../Logo/Logo'
+import RecentProjects from '../Projects/RecentProjects'
 import './Editor.css'
 
 const SHORTCUTS = [
@@ -16,6 +17,7 @@ export default function EmptyState() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const label = workspaceLabel(workspace)
   const isSupported = isFileSystemAccessSupported()
+  const hasWorkspace = hasActiveWorkspace(workspace)
 
   return (
     <div className="empty-state">
@@ -39,13 +41,16 @@ export default function EmptyState() {
           </div>
         )}
 
-        {isSupported && !label && (
+        {/* With no workspace open, the useful thing to show is the projects the
+            user already has — not a prompt to create yet another scratch. */}
+        {!hasWorkspace && <RecentProjects />}
+
+        {isSupported && !hasWorkspace && (
           <div className="empty-state-banner">
             <FolderInput size={15} />
             <span>
-              No project imported. Click <strong>New File</strong> in the Explorer to start a
-              scratch workspace, or <strong>Import Folder</strong> in the top bar to import a folder
-              from your device.
+              Or <strong>Import Folder</strong> in the top bar to bring a folder in from your
+              device, or <strong>New File</strong> in the Explorer to start a scratch workspace.
             </span>
           </div>
         )}
@@ -61,7 +66,7 @@ export default function EmptyState() {
 
         <div className="empty-state-footer">
           <FolderTree size={14} />
-          <span>{label ? `Workspace: ${label}` : 'No project imported yet'}</span>
+          <span>{label ? `Workspace: ${label}` : 'No project open'}</span>
         </div>
       </div>
     </div>

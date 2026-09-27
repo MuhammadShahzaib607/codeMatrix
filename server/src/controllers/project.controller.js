@@ -9,7 +9,12 @@ import {
 import { suppressWatcher } from '../utils/fileWatcher.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
-import { createWorkspaceFolder, deleteWorkspaceFolder } from '../utils/workspaceManager.js'
+import {
+  createWorkspaceFolder,
+  deleteWorkspaceFolder,
+  isScratchProjectId,
+  scratchOwnerIdFromProjectId,
+} from '../utils/workspaceManager.js'
 
 function toPublicProject(project) {
   return {
@@ -17,6 +22,7 @@ function toPublicProject(project) {
     name: project.name,
     diskPath: project.diskPath,
     diskFolderName: project.diskFolderName || null,
+    isScratch: Boolean(project.isScratch),
     createdAt: project.createdAt,
     lastAccessedAt: project.lastAccessedAt,
   }
@@ -66,11 +72,42 @@ export const listProjectsHandler = asyncHandler(async (req, res) => {
 
 /**
  * Deletes an ENTIRE project: its workspace folder on disk (recursive) and its
- * Project record in MongoDB. Ownership is enforced through the project record —
- * a missing record is a 404, so a user can never delete (or discover) another
- * user's project by guessing an id.
+ * Project record in MongoDB.
+ *
+ * This works for EVERY workspace type:
+ *   - a real project  -> ownership is enforced through its Project record;
+ *   - a scratch workspace that has no record yet -> allowed for its OWNER only,
+ *     detected from the `scratch-<ownerId>` id (so a scratch is deletable exactly
+ *     like any other project, which the Explorer and the Recent Projects list
+ *     both rely on).
+ * A real project whose record is missing (or when the DB is down) is still a
+ * 404/503 — a record is required to prove ownership.
  */
 export const deleteProjectHandler = asyncHandler(async (req, res) => {
+  const { projectId } = req.params
+  const project = isDatabaseConnected() ? await findProject(projectId) : null
+
+  if (project) {
+    if (String(project.owner) !== String(req.user.id)) {
+      throw new ApiError(403, 'You do not have access to this project.', 'FORBIDDEN')
+    }
+    suppressWatcher(projectId)
+    await deleteWorkspaceFolder(projectId)
+    await deleteProject(projectId)
+    return res.json({ deleted: true, projectId })
+  }
+
+  // No record. Only a scratch workspace the caller owns may be deleted this way.
+  const ownsScratch =
+    isScratchProjectId(projectId) &&
+    scratchOwnerIdFromProjectId(projectId) === String(req.user.id)
+
+  if (ownsScratch) {
+    suppressWatcher(projectId)
+    await deleteWorkspaceFolder(projectId)
+    return res.json({ deleted: true, projectId })
+  }
+
   if (!isDatabaseConnected()) {
     throw new ApiError(
       503,
@@ -78,22 +115,5 @@ export const deleteProjectHandler = asyncHandler(async (req, res) => {
       'PROJECTS_UNAVAILABLE',
     )
   }
-
-  const { projectId } = req.params
-  const project = await findProject(projectId)
-  if (!project) {
-    throw new ApiError(404, 'Project not found.', 'PROJECT_NOT_FOUND')
-  }
-  if (String(project.owner) !== String(req.user.id)) {
-    throw new ApiError(403, 'You do not have access to this project.', 'FORBIDDEN')
-  }
-
-  // Drop filesystem events caused by our own delete, so the already-connected
-  // client does not schedule a redundant tree refresh for a workspace it is
-  // about to clear.
-  suppressWatcher(projectId)
-  await deleteWorkspaceFolder(projectId)
-  await deleteProject(projectId)
-
-  res.json({ deleted: true, projectId })
+  throw new ApiError(404, 'Project not found.', 'PROJECT_NOT_FOUND')
 })

@@ -8,6 +8,11 @@ import validateProjectId from '../middlewares/validateProjectId.js'
 const router = Router()
 
 router.use(protect)
+
+// The user's single reusable scratch workspace. Must be registered BEFORE the
+// '/:projectId' guard below so 'scratch' is not treated as a project id.
+router.post('/scratch', workspaceController.openScratchWorkspaceHandler)
+
 router.use('/:projectId', validateProjectId, authorizeProject)
 
 router.post('/:projectId/import', workspaceController.importProject)

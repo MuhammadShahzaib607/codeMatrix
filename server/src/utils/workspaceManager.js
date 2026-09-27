@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -321,6 +322,67 @@ export function isScratchProjectId(projectId) {
   return typeof projectId === 'string' && SCRATCH_ID_PATTERN.test(projectId)
 }
 
+// A scratch workspace's on-disk folder is "Scratch" (or "Scratch-2" on a name
+// clash). Once a project is adopted it is renamed, so a folder matching this
+// pattern is by definition still an anonymous scratch.
+const SCRATCH_FOLDER_PATTERN = /^scratch(?:-\d+)?$/i
+
+export function isScratchFolderName(folderName) {
+  return SCRATCH_FOLDER_PATTERN.test(String(folderName ?? '').trim())
+}
+
+/**
+ * The OWNER a scratch id belongs to. Scratch ids are "scratch-<ownerId>" or,
+ * once the original id has been adopted as a real project,
+ * "scratch-<ownerId>-<shortSuffix>". Owner ids (Mongo ObjectIds) never contain a
+ * dash, so the first segment after the prefix is always the owner.
+ */
+export function scratchOwnerIdFromProjectId(projectId) {
+  const rest = String(projectId ?? '').replace(/^scratch-/, '')
+  const [owner] = rest.split('-')
+  return owner || 'guest'
+}
+
+/**
+ * The user's existing UNNAMED scratch workspace, or null. Detected from the
+ * on-disk registry (not from MongoDB), so it works even if the DB is down:
+ * a registry entry in the owner's container whose folder name still matches
+ * "Scratch*" AND whose folder actually exists.
+ */
+export function findScratchWorkspaceId(ownerId) {
+  const container = workspaceOwnerKey(ownerId)
+  const registry = loadRegistry()
+  let best = null
+
+  for (const [projectId, record] of Object.entries(registry)) {
+    if (!isScratchProjectId(projectId)) continue
+    if (!record || record.container !== container) continue
+    if (!isScratchFolderName(record.folderName)) continue
+    const folderPath = folderPathFor(record.container, record.folderName)
+    if (!fs.existsSync(folderPath)) continue
+    const mtime = fs.statSync(folderPath).mtimeMs
+    if (!best || mtime > best.mtime) best = { projectId, mtime }
+  }
+
+  return best?.projectId ?? null
+}
+
+/**
+ * A fresh, unused scratch id for the user: "scratch-<ownerId>" when that slot is
+ * still free, otherwise "scratch-<ownerId>-<hex>". The owner is still derivable
+ * from the suffixed form (see scratchOwnerIdFromProjectId).
+ */
+export function nextScratchProjectId(ownerId) {
+  const base = `scratch-${ownerId || 'guest'}`
+  const registry = loadRegistry()
+  if (!registry[base]) return base
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = `${base}-${crypto.randomBytes(3).toString('hex')}`
+    if (!registry[candidate]) return candidate
+  }
+  return `${base}-${Date.now().toString(36)}`
+}
+
 export function ensureScratchWorkspace(projectId) {
   if (!isScratchProjectId(projectId)) {
     throw new ApiError(400, 'Not a scratch workspace id.', 'INVALID_PROJECT_ID')
@@ -333,10 +395,10 @@ export function ensureScratchWorkspace(projectId) {
     return folderPath
   }
 
-  // "scratch-<userId>" lives in the SAME per-user container a real project of
+  // A scratch workspace lives in the SAME per-user container a real project of
   // that user would use, so the terminal (which starts at the container) shows
   // both side by side as enterable subfolders.
-  const ownerId = projectId.replace(/^scratch-/, '')
+  const ownerId = scratchOwnerIdFromProjectId(projectId)
   return registerWorkspaceFolder(projectId, { ownerId, displayName: 'Scratch' }).path
 }
 

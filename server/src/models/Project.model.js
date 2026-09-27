@@ -34,6 +34,14 @@ const projectSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    // True only for the user's ONE disposable "Scratch" workspace. It is flipped
+    // to false the moment the agent (or the user) gives the workspace a real
+    // name, which is what frees up the scratch slot for a new one.
+    isScratch: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     lastAccessedAt: {
       type: Date,
       default: Date.now,

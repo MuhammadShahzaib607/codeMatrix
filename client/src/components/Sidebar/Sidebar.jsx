@@ -5,6 +5,7 @@ import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
 import { recordExplorerAction } from '../../features/explorerHistorySlice'
 import { deleteExplorerEntry } from '../../features/explorerHistoryThunks'
 import { collapseAll, setFolderOpen } from '../../features/fileSystemSlice'
+import { fetchRecentProjects } from '../../features/projectsSlice'
 import {
   closeDeleteProjectModal,
   openDeleteProjectModal,
@@ -19,13 +20,14 @@ import {
 } from '../../features/workspaceThunks'
 import useAuthGuard from '../../hooks/useAuthGuard'
 import ConfirmModal from '../Common/ConfirmModal'
+import RecentProjects from '../Projects/RecentProjects'
 import Tooltip from '../Common/Tooltip'
 import { ROOT_ID } from '../../services/fileSystemAccess'
 import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { openPreviewTab } from '../../utils/preview'
 import { findNode, findParentId } from '../../utils/tree'
-import { hasActiveWorkspace, isCloudWorkspace, scratchProjectIdFor } from '../../utils/workspace'
+import { hasActiveWorkspace } from '../../utils/workspace'
 import FileTree from './FileTree'
 import './Sidebar.css'
 
@@ -35,14 +37,14 @@ export default function Sidebar() {
   const tree = useSelector((state) => state.fileSystem.tree)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const clipboard = useSelector((state) => state.clipboard)
-  const userId = useSelector((state) => state.auth.user?.id)
   const isDeleteProjectOpen = useSelector((state) => state.ui.isDeleteProjectModalOpen)
   // A scratch workspace counts as an active workspace: everything below treats
   // it exactly like an imported project.
   const hasProject = hasActiveWorkspace(workspace)
-  // Only a real imported project (backed by a Project record) can be deleted as
-  // a whole; the scratch workspace is not a project.
-  const canDeleteProject = isCloudWorkspace(workspace)
+  // Deletion is available for EVERY workspace type — a scratch workspace's root
+  // folder is deletable exactly like a named project (the server authorizes a
+  // record-less scratch by its owner).
+  const canDeleteProject = hasProject
 
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(null)
@@ -98,16 +100,17 @@ export default function Sidebar() {
     if (projectIdRef.current) return projectIdRef.current
     setIsPreparing(true)
     try {
-      const scratchId = scratchProjectIdFor(userId)
-      const data = await dispatch(openScratchWorkspace({ projectId: scratchId })).unwrap()
-      return data?.projectId ?? scratchId
+      // The server REUSES the user's existing scratch workspace (or opens a free
+      // one), so clicking New File twice never creates two conflicting scratches.
+      const data = await dispatch(openScratchWorkspace()).unwrap()
+      return data?.projectId ?? null
     } catch (error) {
       reportError(`Could not open a scratch workspace: ${error.message}`)
       return null
     } finally {
       setIsPreparing(false)
     }
-  }, [dispatch, reportError, userId])
+  }, [dispatch, reportError])
 
   function resolveTargetParentId() {
     if (!selectedId) return ROOT_ID
@@ -337,6 +340,7 @@ export default function Sidebar() {
     if (!activeProjectId) return
     try {
       await dispatch(deleteWorkspaceProject({ projectId: activeProjectId })).unwrap()
+      dispatch(fetchRecentProjects())
       dispatch(showToast({ message: `Deleted project ${name}.`, type: 'success' }))
     } catch (error) {
       reportError(`Could not delete the project: ${error.message}`)
@@ -393,6 +397,14 @@ export default function Sidebar() {
             No project imported — <strong>New File</strong> starts a scratch workspace, or click{' '}
             <strong>Import Folder</strong> to import a folder from your device.
           </span>
+        </div>
+      )}
+
+      {/* Explorer empty state: the user's existing projects, so reopening the
+          app offers them instead of silently starting a fresh scratch. */}
+      {!hasProject && (
+        <div className="sidebar-recent">
+          <RecentProjects variant="compact" />
         </div>
       )}
 

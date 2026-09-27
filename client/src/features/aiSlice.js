@@ -2,7 +2,6 @@ import { createAsyncThunk, createSlice, nanoid } from '@reduxjs/toolkit'
 import { agentKeysApi, getAuthToken } from '../services/api'
 import { loadSelectedKeyId, saveSelectedKeyId } from '../services/aiStorage'
 import { getSocket } from '../services/socket'
-import { scratchProjectIdFor } from '../utils/workspace'
 import { showToast } from './uiSlice'
 import { openScratchWorkspace } from './workspaceThunks'
 
@@ -163,10 +162,11 @@ export const startAgentTask = createAsyncThunk(
       // blocking the run — the agent's first tool calls then create the files.
       let activeProjectId = projectId
       if (!activeProjectId) {
-        const userId = getState().auth.user?.id
-        const scratchId = scratchProjectIdFor(userId)
-        const data = await dispatch(openScratchWorkspace({ projectId: scratchId })).unwrap()
-        activeProjectId = data?.projectId ?? scratchId
+        // No project open: reuse the user's existing scratch workspace (or open
+        // a fresh one) rather than creating a conflicting new one.
+        const data = await dispatch(openScratchWorkspace()).unwrap()
+        activeProjectId = data?.projectId ?? null
+        if (!activeProjectId) throw new Error('Could not open a workspace for the agent.')
       }
 
       const socket = getSocket()

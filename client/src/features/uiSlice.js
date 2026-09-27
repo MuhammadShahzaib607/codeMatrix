@@ -75,6 +75,16 @@ const uiSlice = createSlice({
       state.isStorageNoticeDismissed = true
     },
 
+    /**
+     * Re-shows the temporary-storage warning. The dismissal is intentionally
+     * NOT persisted to localStorage, and this is dispatched on every auth change
+     * (sign in / sign out), so the banner returns each session instead of being
+     * silenced forever after one click.
+     */
+    resetStorageNotice(state) {
+      state.isStorageNoticeDismissed = false
+    },
+
     setActiveSidebarView(state, action) {
       state.activeSidebarView = action.payload
       state.isSidebarOpen = true
@@ -137,6 +147,7 @@ export const {
   showToast,
   hideToast,
   dismissStorageNotice,
+  resetStorageNotice,
   setActiveSidebarView,
   setSidebarWidth,
   setAiPanelWidth,

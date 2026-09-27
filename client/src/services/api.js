@@ -181,6 +181,11 @@ export const agentKeysApi = {
 export const workspaceApi = {
   baseUrl: API_BASE_URL,
 
+  // The user's ONE reusable scratch workspace (created on demand server-side).
+  openScratch() {
+    return request('/api/workspace/scratch', { method: 'POST' })
+  },
+
   importProject(projectId, payload) {
     return request(workspacePath(projectId, '/import'), {
       method: 'POST',

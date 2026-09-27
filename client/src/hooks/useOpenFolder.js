@@ -1,14 +1,14 @@
 import { useCallback, useState } from 'react'
 import { useDispatch } from 'react-redux'
+import { fetchRecentProjects, openRecentProject } from '../features/projectsSlice'
 import { showToast } from '../features/uiSlice'
-import { importWorkspace, reopenWorkspace } from '../features/workspaceThunks'
+import { importWorkspace } from '../features/workspaceThunks'
 import { projectApi } from '../services/api'
 import {
   isFileSystemAccessSupported,
   openFolder,
   readAllFilesFromDirectory,
 } from '../services/fileSystemAccess'
-import { saveWorkspaceRef } from '../services/workspaceStorage'
 import { UNSUPPORTED_MESSAGE } from '../utils/messages'
 
 export default function useOpenFolder() {
@@ -43,11 +43,13 @@ export default function useOpenFolder() {
         importWorkspace({ projectId: project.id, name: project.name, files }),
       ).unwrap()
 
+      // Load the freshly imported project's tree and make it active. Uses the
+      // same path as opening a project from Recent Projects, which also
+      // remembers the workspace ref.
       await dispatch(
-        reopenWorkspace({ projectId: project.id, name: result.name ?? project.name }),
+        openRecentProject({ projectId: project.id, name: result.name ?? project.name }),
       ).unwrap()
-
-      saveWorkspaceRef({ projectId: project.id, name: project.name })
+      dispatch(fetchRecentProjects())
 
       const skippedResult = result.failedCount
         ? ` (${result.failedCount} file${result.failedCount === 1 ? '' : 's'} skipped)`

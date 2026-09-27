@@ -82,6 +82,15 @@
 
 /* ---------- Workspace notices ---------- */
 
+/* Recent Projects shown in the Explorer while no workspace is open. */
+.sidebar-recent {
+  flex: 0 0 auto;
+  padding: 10px 12px 4px;
+  border-bottom: 1px solid var(--border);
+  overflow-y: auto;
+  max-height: 45%;
+}
+
 .sidebar-notice {
   display: flex;
   align-items: flex-start;

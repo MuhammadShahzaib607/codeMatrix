@@ -1,7 +1,14 @@
 import { isDatabaseConnected } from '../config/db.js'
 import Project from './Project.model.js'
 
-export async function upsertProject({ projectId, name, owner, diskPath, diskFolderName }) {
+export async function upsertProject({
+  projectId,
+  name,
+  owner,
+  diskPath,
+  diskFolderName,
+  isScratch,
+}) {
   if (!isDatabaseConnected()) return null
   try {
     return await Project.findOneAndUpdate(
@@ -12,6 +19,9 @@ export async function upsertProject({ projectId, name, owner, diskPath, diskFold
           owner,
           diskPath,
           ...(diskFolderName ? { diskFolderName } : {}),
+          // Only touched when the caller actually knows the scratch state — an
+          // import (which never passes it) must not clear an existing flag.
+          ...(typeof isScratch === 'boolean' ? { isScratch } : {}),
           lastAccessedAt: new Date(),
         },
       },
@@ -23,7 +33,30 @@ export async function upsertProject({ projectId, name, owner, diskPath, diskFold
   }
 }
 
-export async function createProject({ projectId, name, owner, diskPath, diskFolderName }) {
+/**
+ * The user's single disposable scratch workspace, if one exists on record. Used
+ * to REUSE it rather than creating a second "Scratch" every time the app opens.
+ */
+export async function findScratchProjectForOwner(owner) {
+  if (!isDatabaseConnected()) return null
+  try {
+    return await Project.findOne({ owner, isScratch: true })
+      .sort({ lastAccessedAt: -1 })
+      .lean()
+  } catch (error) {
+    console.warn(`[project] could not find scratch for ${owner}: ${error.message}`)
+    return null
+  }
+}
+
+export async function createProject({
+  projectId,
+  name,
+  owner,
+  diskPath,
+  diskFolderName,
+  isScratch = false,
+}) {
   if (!isDatabaseConnected()) return null
   try {
     const project = await Project.create({
@@ -32,6 +65,7 @@ export async function createProject({ projectId, name, owner, diskPath, diskFold
       owner,
       diskPath,
       diskFolderName: diskFolderName || '',
+      isScratch,
       lastAccessedAt: new Date(),
     })
     return project.toObject()

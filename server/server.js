@@ -14,7 +14,7 @@ import { WORKSPACES_ROOT } from './src/utils/workspaceManager.js'
 
 fs.mkdirSync(WORKSPACES_ROOT, { recursive: true })
 
-const server = http.createServer(app)
+const server = http.createServer(app);
 
 // Fail gracefully on listen errors instead of dumping an unhandled stack trace.
 server.on('error', (err) => {

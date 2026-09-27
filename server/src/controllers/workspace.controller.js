@@ -1,5 +1,11 @@
 import archiver from 'archiver'
-import { findProject, touchProject, upsertProject } from '../models/project.repository.js'
+import { isDatabaseConnected } from '../config/db.js'
+import {
+  findProject,
+  findScratchProjectForOwner,
+  touchProject,
+  upsertProject,
+} from '../models/project.repository.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
 import { suppressWatcher } from '../utils/fileWatcher.js'
@@ -8,10 +14,17 @@ import {
   createFolderInWorkspace,
   createWorkspaceFolder,
   deleteFromWorkspace,
+  ensureScratchWorkspace,
+  findScratchWorkspaceId,
   getWorkspacePath,
+  getWorkspaceRecord,
   getWorkspaceTree,
+  isScratchProjectId,
+  nextScratchProjectId,
   readFileFromWorkspace,
+  registerWorkspaceFromDiskPath,
   renamePathInWorkspace,
+  workspaceFolderPath,
   writeFileToWorkspace,
 } from '../utils/workspaceManager.js'
 
@@ -125,8 +138,79 @@ export const getTree = asyncHandler(async (req, res) => {
   res.json({
     projectId,
     name: project?.name || tree.name,
+    // Lets the client restore the workspace with the right source (scratch vs a
+    // real project) without guessing from the id — an ADOPTED scratch keeps its
+    // scratch-<id> id but becomes a real project.
+    isScratch: project ? Boolean(project.isScratch) : isScratchProjectId(projectId),
     tree,
   })
+})
+
+/**
+ * POST /api/workspace/scratch -> the user's ONE reusable scratch workspace.
+ *
+ * Resolution order (fix for duplicate/conflicting scratch folders):
+ *   1. an existing scratch Project record (isScratch: true)  -> reuse it;
+ *   2. otherwise an on-disk registry entry still named "Scratch*" -> reuse it;
+ *   3. only when neither exists -> create a FRESH scratch in the free slot.
+ *
+ * Once a scratch is adopted (renamed by the agent, or otherwise turned into a
+ * real named project), `findScratch*` no longer matches it, so the NEXT call
+ * creates a new scratch — a user never accumulates two anonymous scratch
+ * workspaces.
+ */
+export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
+  const ownerId = req.user.id
+
+  let projectId = null
+  let created = false
+
+  const recorded = await findScratchProjectForOwner(ownerId)
+  if (recorded) {
+    // Rebuild the folder mapping from MongoDB if the registry was lost.
+    registerWorkspaceFromDiskPath(recorded.projectId, recorded.diskPath)
+    ensureScratchWorkspace(recorded.projectId)
+    projectId = recorded.projectId
+  } else {
+    const fromRegistry = findScratchWorkspaceId(ownerId)
+    if (fromRegistry) {
+      ensureScratchWorkspace(fromRegistry)
+      projectId = fromRegistry
+    } else {
+      projectId = nextScratchProjectId(ownerId)
+      const folder = createWorkspaceFolder(projectId, { ownerId, displayName: 'Scratch' })
+      created = true
+      if (isDatabaseConnected()) {
+        await upsertProject({
+          projectId,
+          name: 'Scratch',
+          owner: ownerId,
+          diskPath: folder.path,
+          diskFolderName: folder.folderName,
+          isScratch: true,
+        })
+      }
+    }
+  }
+
+  // Keep the record's scratch flag fresh and bump lastAccessedAt so the
+  // workspace sorts to the top of Recent Projects.
+  if (isDatabaseConnected() && !created) {
+    const record = getWorkspaceRecord(projectId)
+    if (record) {
+      await upsertProject({
+        projectId,
+        name: 'Scratch',
+        owner: ownerId,
+        diskPath: workspaceFolderPath(record.container, record.folderName),
+        diskFolderName: record.folderName,
+        isScratch: true,
+      })
+    }
+  }
+
+  const tree = await getWorkspaceTree(projectId, { name: 'Scratch' })
+  res.json({ projectId, name: 'Scratch', isScratch: true, created, tree })
 })
 
 export const getFile = asyncHandler(async (req, res) => {

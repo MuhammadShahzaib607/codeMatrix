@@ -10,6 +10,7 @@ import {
   FolderPlus,
   Link,
   Pencil,
+  Play,
   Scissors,
   Trash2,
 } from 'lucide-react'
@@ -17,6 +18,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { addTab, toggleFolder } from '../../features/fileSystemSlice'
 import { ROOT_ID } from '../../services/fileSystemAccess'
+import { isHtmlPath } from '../../utils/preview'
 import { findNode } from '../../utils/tree'
 import TreeContextMenu from './TreeContextMenu'
 
@@ -326,6 +328,7 @@ function FileTree({
   onCopy,
   onPaste,
   onCopyPath,
+  onPreview,
   canDeleteProject = false,
   onDeleteProject,
 }) {
@@ -406,6 +409,9 @@ function FileTree({
     const isLocked = lockedId !== null && node.id === lockedId
     const isFolder = node.type === 'folder'
     const canPaste = isFolder && Boolean(clipboard.path)
+    // "Open with Live Server" is offered for .html files only (mirrors the
+    // Topbar Play button; a CSS/JS file has nothing to render on its own).
+    const canPreview = !isFolder && isHtmlPath(node.path ?? node.id)
 
     if (isLocked) {
       // The workspace root can't be cut or renamed, but the whole PROJECT can be
@@ -501,6 +507,15 @@ function FileTree({
         icon: Link,
         onSelect: () => onCopyPath(node),
       },
+      canPreview ? { separator: true } : null,
+      canPreview
+        ? {
+            id: 'live-preview',
+            label: 'Open with Live Server',
+            icon: Play,
+            onSelect: () => onPreview?.(node),
+          }
+        : null,
     ]
   }
 
@@ -512,14 +527,20 @@ function FileTree({
       onMouseDown={handleMouseDown}
       onKeyDown={handleKeyDown}
     >
-      {creating && creating.parentId === null && (
-        <NewNodeInput
-          depth={0}
-          type={creating.type}
-          onSubmit={onSubmitCreate}
-          onCancel={onCancelCreate}
-        />
-      )}
+      {/* Root-level inline create row. It renders here (top level, NO indentation)
+          whenever the target parent has no row of its own yet — which is exactly
+          the case before the first scratch workspace is bootstrapped. Once a
+          workspace exists its root row renders the row instead (see TreeNode). */}
+      {creating &&
+        (creating.parentId === null || creating.parentId === ROOT_ID) &&
+        !nodes.some((node) => node.id === creating.parentId) && (
+          <NewNodeInput
+            depth={0}
+            type={creating.type}
+            onSubmit={onSubmitCreate}
+            onCancel={onCancelCreate}
+          />
+        )}
       {nodes.map((node) => (
         <TreeNode
           key={node.id}

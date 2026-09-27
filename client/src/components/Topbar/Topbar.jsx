@@ -25,6 +25,7 @@ import useSyncToLaptop from '../../hooks/useSyncToLaptop'
 import { hasActiveWorkspace, isCloudWorkspace, workspaceLabel } from '../../utils/workspace'
 import Tooltip from '../Common/Tooltip'
 import Logo from '../Logo/Logo'
+import LivePreviewButton from './LivePreviewButton'
 import TopbarSearch from './TopbarSearch'
 import './Topbar.css'
 
@@ -181,6 +182,8 @@ export default function Topbar() {
             <Save size={18} />
           </button>
         </Tooltip>
+
+        <LivePreviewButton />
 
         <Tooltip label={isTerminalOpen ? 'Hide terminal panel' : 'Show terminal panel'}>
           <button

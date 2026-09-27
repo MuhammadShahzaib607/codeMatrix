@@ -6,9 +6,11 @@ import {
   Eraser,
   Eye,
   FilePlus,
+  FolderCog,
   KeyRound,
   Loader2,
   Pencil,
+  RefreshCw,
   Search,
   Send,
   Settings,
@@ -20,7 +22,6 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import {
-  agentDone,
   clearTimeline,
   fetchApiKeys,
   selectKeyId,
@@ -32,7 +33,6 @@ import { openAuthModal } from '../../features/uiSlice'
 import useAuthGuard from '../../hooks/useAuthGuard'
 import { saveFrameworkFor, saveSelectedKeyId, frameworkFor } from '../../services/aiStorage'
 import { FRAMEWORKS } from '../../utils/agentFrameworks'
-import { hasActiveWorkspace } from '../../utils/workspace'
 import './AIPanel.css'
 
 // Icon per streamed action type (spec: FilePlus=create, Pencil=edit,
@@ -44,6 +44,10 @@ const ACTION_ICONS = {
   list_directory: Search,
   delete_file: Trash2,
   run_command: Terminal,
+  // Key/model fallback notes (429 → next key/model) and the scratch-workspace
+  // → named-project transition both stream as their own feed rows.
+  fallback: RefreshCw,
+  project: FolderCog,
   complete: Check,
   error: AlertTriangle,
 }
@@ -188,6 +192,7 @@ export default function AIPanel() {
     keysError,
     selectedKeyId,
     framework,
+    model,
     running,
     thinking,
     thinkingText,
@@ -196,7 +201,6 @@ export default function AIPanel() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
 
-  const hasWorkspace = hasActiveWorkspace(workspace)
   const projectId = workspace.projectId
 
   // Keep the feed pinned to the newest action while the agent works.
@@ -241,20 +245,9 @@ export default function AIPanel() {
       return
     }
 
-    // Sending with no project used to be a silent no-op (the button was
-    // disabled and Enter returned early), which looked like the send button
-    // was broken. Surface it as a visible agent error instead.
-    if (!hasWorkspace) {
-      dispatch(
-        agentDone({
-          ok: false,
-          message:
-            'Failed to reach the AI agent: open or import a project first — the agent needs a workspace to work in.',
-        }),
-      )
-      return
-    }
-
+    // No workspace check here on purpose: with nothing imported the thunk opens
+    // (or reuses) the scratch workspace and starts the run against it. An empty
+    // workspace is normal — the agent creates the first files itself.
     sendingRef.current = true
     const run = () => {
       setDraft('')
@@ -304,6 +297,11 @@ export default function AIPanel() {
         <span className={`ai-badge ${running ? 'is-working' : ''}`}>
           {running ? 'Working' : 'Ready'}
         </span>
+        {model && (
+          <span className="ai-model-label" title={`Groq model: ${model}`}>
+            {model}
+          </span>
+        )}
         {timeline.length > 0 && !running && (
           <button
             type="button"
@@ -492,11 +490,7 @@ export default function AIPanel() {
               disabled={running}
               spellCheck={false}
               placeholder={
-                !hasWorkspace
-                  ? 'Open or create a project first…'
-                  : running
-                    ? 'The agent is working…'
-                    : 'Describe the task for the agent…'
+                running ? 'The agent is working…' : 'Describe the task for the agent…'
               }
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {

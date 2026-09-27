@@ -3704,3 +3704,514 @@ VERIFICATION PERFORMED THIS ENTRY
     only the intended source files (plus client/tmp-ui-harness.mjs, which only
     lost one unused variable to keep oxlint clean).
 
+================================================================================
+AI Code Editor — Phase 12: Inline Explorer Naming, Dynamic Groq Model
+               Selection, Workspace-Free Agent
+================================================================================
+
+STATUS: complete and verified. Three fixes: (1) "New File"/"New Folder" now
+        prompt for a name inline and create NOTHING until Enter, (2) the Groq
+        404 is fixed at the root by resolving the model dynamically from the
+        user's key instead of hardcoding it, (3) the agent no longer requires a
+        pre-existing project or files — an empty scratch workspace is a normal
+        starting point.
+
+--------------------------------------------------------------------------------
+1. NEW FILE / NEW FOLDER: INLINE NAME, NO AUTO-NAMING ("Scratch")
+--------------------------------------------------------------------------------
+ROOT CAUSE
+  The inline name row already existed, so the visible symptom ("New Folder
+  creates a folder called Scratch") came from an EAGER side effect, not from a
+  default name string. beginCreatingIn() called ensureWorkspaceReady() BEFORE
+  showing the input, and with no imported project that bootstrapped the
+  per-user scratch workspace — whose on-disk folder and root node are literally
+  named "Scratch" (server ensureScratchWorkspace -> displayName 'Scratch').
+  So one click on New Folder instantly materialised a "Scratch" folder that the
+  user read as their new folder, even though the real input row was also shown.
+
+FIX (client only)
+  - components/Sidebar/Sidebar.jsx:
+      * beginCreatingIn(parentId, type) is now SYNCHRONOUS: it only sets the
+        `creating` row. It never touches the server and never opens a workspace.
+      * ensureWorkspaceReady() (useCallback) moved to submitCreate(). It is
+        called ONLY after the user typed a name and pressed Enter, and it
+        RETURNS the project id (projectIdRef is not yet updated inside the same
+        async handler). Nothing is created — not even the scratch folder —
+        before that point.
+      * submitCreate trims the name and returns on an empty one, so confirming
+        an empty field (or Escape) leaves the workspace completely untouched.
+  - components/Sidebar/FileTree.jsx: the root-level inline row now renders
+    whenever the target parent has no row of its own yet
+    (parentId === null || parentId === ROOT_ID, and no node with that id). This
+    is what makes the inline field appear at the TOP level the very first time,
+    when there is no workspace (and therefore no root row) yet.
+  The toolbar buttons and BOTH context-menu entries ("New File"/"New Folder",
+  including the root row) all funnel through this one path, so all of them
+  behave identically.
+
+ONE-TIME CLEANUP
+  The stray, EMPTY "Scratch" folders left by the old eager behavior were removed
+  from server/workspaces (the real projects in the same user container were left
+  untouched): the stale u-<user>/Scratch roots, the empty legacy scratch-guest
+  dir, and the test-only roots created while verifying. A scratch workspace is
+  recreated on demand, so nothing is lost. The regular folder Delete (tree Trash
+  button -> ConfirmModal) was verified to remove a folder from both the tree and
+  the disk, so a stray folder can always be deleted by the user in one click.
+
+--------------------------------------------------------------------------------
+2. GROQ 404 "MODEL DOES NOT EXIST" — ROOT CAUSE + DYNAMIC MODEL SELECTION
+--------------------------------------------------------------------------------
+ROOT CAUSE (confirmed)
+  server/.env has no GROQ_MODEL, so env.groqModel fell back to the hardcoded
+  'llama-3.3-70b-versatile'. Groq announced the retirement/deprecation of
+  llama-3.3-70b-versatile (and qwen/qwen3-32b) in 2026; on a key that no longer
+  serves it the Chat Completions call answers 404 "model does not exist". The
+  endpoint and header were already correct — the model string was simply dead.
+  (This is a config/time problem, not a formatting bug: the endpoint really is
+  https://api.groq.com/openai/v1/chat/completions and the key really was sent as
+  "Bearer <key>". Both are now also defensively .trim()'d so a stray space can
+  never corrupt them.)
+
+FIX — the model is resolved per run, never hardcoded (server)
+  - config/env.js: groqModel now defaults to '' (an OPTIONAL preferred model,
+    trimmed) and groqBaseUrl is .trim()'d, so a stray space in .env cannot break
+    the URL.
+  - services/agentService.js:
+      * TOOL_CAPABLE_MODELS — an allowlist that mirrors Groq's "Tool Use"
+        support table (verified against console.groq.com/docs/tool-use), ordered
+        best-first: openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b,
+        minimaxai/minimax-m2.7, llama-3.3-70b-versatile, llama-3.1-8b-instant,
+        openai/gpt-oss-safeguard-20b, then older ids (kimi-k2, qwen3-32b,
+        llama-4-maverick/scout) for keys that still have them.
+      * listAvailableModels(apiKey): GET {groqBaseUrl}/models with
+        "Authorization: Bearer <trimmed key>" and a 20s timeout; 401/403 ->
+        "key rejected", clear error otherwise.
+      * resolveGroqModel(apiKey): the first allowlisted id the key actually
+        has; throws a clear, actionable message listing what IS available when
+        none match. GROQ_MODEL, when set, is tried first.
+      * runAgent resolves the model ONCE before the loop, emits it with the
+        first 'thinking' event AND in the final 'complete'/'error' event, and
+        returns it; callGroq(apiKey, messages, model) trims both the key and the
+        model id before sending.
+  - socket/agentSocket.js: agent:done now carries `model` too.
+
+CLIENT — the panel shows the model in use
+  - features/aiSlice.js: state.model (null initially); any agent event whose
+    details.model is present updates it, as does the agent:done payload.
+  - components/AIPanel/AIPanel.jsx + .css: a small, ellipsised .ai-model-label
+    next to the Ready/Working badge showing the resolved model id.
+
+--------------------------------------------------------------------------------
+3. THE AGENT NO LONGER REQUIRES A PRE-EXISTING PROJECT OR FILES
+--------------------------------------------------------------------------------
+  - socket/agentSocket.js: the "!workspaceExists(projectId)" pre-check is GONE.
+    An empty (or brand-new) workspace is a normal starting state; the agent's
+    first tool calls create the scaffolding. A missing task is still rejected.
+    The workspace id itself is still required (the client always provides the
+    active one). For a scratch id, ensureScratchWorkspace() is called so the
+    folder exists before the tools run.
+  - features/aiSlice.js: startAgentTask no longer throws when there is no
+    project. If the active workspace is empty/absent it opens (or reuses) the
+    scratch workspace via openScratchWorkspace and runs against it.
+  - components/AIPanel/AIPanel.jsx: the old "open or import a project first"
+    guard/error and the "Open or create a project first…" placeholder are
+    removed. The only remaining requirements are a signed-in user, a saved/
+    selectable Groq key, a task, and (already enforced) a framework.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (75 files). vite build: succeeds.
+  - node --check on every changed server file: passes.
+  - Socket/API test (real server + Mongo + scripted mock Groq, 17/17 checks):
+      Task 3: a BRAND-NEW account with NO project imported and NO files started
+      the agent against its empty scratch workspace (ack ok), the scratch folder
+      was created on demand, and the run scaffolded package.json + src/App.jsx
+      from nothing and finished with the summary.
+      Task 2: exactly one GET /models call; the model resolved to
+      openai/gpt-oss-120b (the mock only offered gpt-oss-120b, gpt-oss-20b and
+      llama-3.1-8b-instant, so a hardcoded id would have failed); EVERY
+      /chat/completions request used that id, the header was exactly
+      "Bearer <key>" (trimmed), all 6 tools were sent, and the model came back
+      to the client. config/env.js is asserted to be the exact
+      https://api.groq.com/openai/v1 endpoint with no hardcoded model left.
+  - Real-App jsdom harness (Vite SSR) against the live API, 51/51 checks — the
+    full pre-existing agent flow plus two new ones: the panel shows
+    "openai/gpt-oss-120b" after the run, i.e. the dynamically resolved model.
+  - Inline-create harness (real App in jsdom, 21/21 checks):
+      * toolbar New Folder shows a focused inline field and creates NOTHING —
+        no workspace bootstrapped, no folder on disk;
+      * Enter creates a folder with the typed name (on disk too), bootstrapping
+        the scratch workspace only then;
+      * Escape cancels with no row and no file;
+      * right-click -> New Folder inside a folder also shows the inline field,
+        creates nothing on click, and creates the typed name on Enter;
+      * the regular Delete (Trash -> confirm) removes the folder from the tree
+        AND the disk (the one-time cleanup path).
+  - Temporary harnesses/scripts (client/tmp-*.mjs + tmp-mock-groq.mjs) were used
+    to verify, matching the existing temporary-test convention; no debug/log
+    lines were left in src.
+
+
+================================================================================
+AI Code Editor — Phase 13: Automatic Key/Model Fallback on 429, Token-Lean
+               Agent Prompts, Scratch -> Named Project Adoption
+================================================================================
+
+STATUS: complete and verified. Three fixes to the AI Agent system:
+        (1) 429 rate limits are handled transparently by cycling the user's
+            saved keys and then the tool-capable models — the task keeps going;
+        (2) the prompt sent to Groq each turn is trimmed so a simple task no
+            longer resends every old file body / tool result forever;
+        (3) an empty "Scratch" workspace is renamed after the task into a real,
+            tracked project (e.g. "todo-app") and the UI relabels immediately.
+
+--------------------------------------------------------------------------------
+1. AUTOMATIC KEY + MODEL FALLBACK ON 429
+--------------------------------------------------------------------------------
+THE CHAIN, IN ORDER (server/src/services/agentService.js)
+  When an agent run starts, agentSocket resolves ALL of the caller's saved keys
+  in preference order (explicit keyId first, then newest-first) via the new
+  apiKeyService.resolveKeysForUser(ownerId, keyId). runAgent receives that list
+  as `apiKeys` and builds a MODEL PLAN with resolveModelPlan(keys):
+      * every saved key is asked for its live GET /models list;
+      * the union is filtered through the existing TOOL_CAPABLE_MODELS allowlist
+        (preferredModelOrder, so GROQ_MODEL still wins if set) -> the ordered
+        list of models this user can actually run.
+      * A key that cannot list models is skipped; only when NO key can list does
+        the run fail with that key's error.
+  For every chat completion, requestCompletion() tries, in this exact order:
+      1. the currently-active model with the currently-active key;
+      2. every REMAINING saved key on that SAME model (key 2, key 3 …);
+      3. only then the NEXT model in the allowlist, again across all saved keys
+         (model x key matrix).
+  So "gpt-oss-120b rate-limited" walks gpt-oss-120b/key1 -> gpt-oss-120b/key2
+  -> gpt-oss-120b/key3 -> llama-3.3-70b/key1 -> … -> llama-3.1-8b/keyN.
+
+WHAT COUNTS AS "TRY THE NEXT ONE"
+  - 429  -> rate limit: advance to the next key/model (the whole point).
+  - 404  -> that model is not served by that key: skip just that pair.
+  - 401/403 -> that key is rejected: skip that key.
+  Any other status (5xx, network) is a real failure and is surfaced as before.
+
+RETRY-AFTER RESPECTED
+  callGroq attaches error.retryAfterMs by reading the standard `Retry-After`
+  header (seconds OR an HTTP date) and/or Groq's own text ("Please try again in
+  15.79s", "…in 1m30s"). After EVERY key/model pair has been tried and all were
+  rate-limited, if the shortest suggested wait is <= 15s (MAX_FALLBACK_WAIT_MS),
+  the agent emits a "waiting Ns before one retry" note, sleeps exactly that
+  long, and retries the active combination ONCE. Only if that also fails (or the
+  wait is long) does the run end. The FINAL error is exactly:
+      "All available API keys/models are currently rate-limited. Please wait a
+       moment and try again, or add another API key in Settings."
+  and carries code RATE_LIMITED.
+
+VISIBLE IN THE LIVE FEED + MODEL INDICATOR
+  Every switch emits an `agent:action` event of type 'fallback' with a plain
+  note ("Rate limit hit on openai/gpt-oss-120b with primary — switching to
+  secondary…", "Rate limited on openai/gpt-oss-120b across saved keys —
+  switching to llama-3.1-8b-instant…", "Recovered — now using …"). Each event
+  also carries details.model, so the AIPanel header's model label updates to the
+  combination actually in use at every point. The panel gained a RefreshCw icon
+  for 'fallback' rows (and FolderCog for the rename row below).
+  agentSocket no longer picks a single key: it passes the whole decrypted list
+  and still drops every reference in `finally`.
+
+--------------------------------------------------------------------------------
+2. TOKEN-USAGE REDUCTION PER TURN
+--------------------------------------------------------------------------------
+  The loop still keeps the FULL canonical history in `messages`, but it now
+  sends a TRIMMED view every turn via trimMessages():
+    - the most recent 8 messages (KEEP_RECENT_MESSAGES) are sent untouched — the
+      model always sees the immediate context in full;
+    - older `role:'tool'` results longer than 400 chars are replaced with
+      "[Older tool result omitted to save tokens (N chars). Re-run the tool if
+      you need it again.]" — so a big read_file no longer rides along for 20
+      more turns;
+    - older assistant tool_calls have their arguments slimmed: create_file /
+      edit_file file bodies are DROPPED, leaving only { path } (plus command for
+      run_command). This is the single largest win, because a create_file call
+      embeds the entire file in its arguments.
+  Nothing is mutated on the canonical history (re-running a tool is always
+  possible), and tool_call/tool pairing stays intact (we only shrink strings).
+  Also reduced the per-result caps: MAX_TOOL_RESULT_CHARS 12000 -> 8000 and
+  MAX_READ_CHARS 30000 -> 24000. The system prompt still carries only the
+  dynamic tree context; no static repetition was added.
+  Net effect: a basic HTML/CSS/JS todo task stays lean because each turn only
+  pays for the last few turns plus the current tool result, not the whole run.
+
+--------------------------------------------------------------------------------
+3. SCRATCH WORKSPACE -> NAMED, TRACKED PROJECT
+--------------------------------------------------------------------------------
+  On agent:run, before the first tool call, agentSocket calls
+  maybeAdoptScratchProject({ projectId, task, userId, emit }):
+    - Only for a scratch id (scratch-<userId>). A real imported project is never
+      touched (its Project record + folder stay exactly as imported).
+    - If the scratch folder is still the default 'Scratch', a project name is
+      derived deterministically from the task WITHOUT an extra model call:
+      deriveProjectName() lowercases, drops filler verbs/prepositions, and joins
+      the first two meaningful words — "Create a todo app with localStorage" ->
+      "todo-app", "Build a landing page with a contact form" -> "landing-page",
+      empty -> "my-project".
+    - The folder is renamed on disk by the new workspaceManager
+      renameWorkspaceFolder(projectId, { displayName }), which reuses the SAME
+      sanitizeFolderName + availableFolderName collision handling as a real
+      import (name free -> use it, else "-2", "-3" …), and updates the
+      .workspaces.json registry in place.
+    - upsertProject() creates the MongoDB Project record (name, owner,
+      diskPath, diskFolderName), transitioning the anonymous workspace into a
+      real tracked project.
+    - The projectId is deliberately UNCHANGED, so all paths/tools that are
+      mid-run keep resolving; a 'project' agent:action event with
+      { projectId, name } is streamed.
+  CLIENT
+    - useAgentEvents intercepts the 'project' event, dispatches the new
+      fileSystem.applyAgentProject reducer (keeps tree + tabs, flips source to
+      'cloud', renames the Explorer root node) and persists it via
+      saveWorkspaceRef so a reload restores the project under its new name.
+    - Because source changes 'scratch' -> 'cloud', useWorkspaceWatcher re-runs
+      and re-subscribes on the RENAMED path, so live tree updates keep working.
+    - Topbar chip now shows the project name (workspaceLabel returns
+      workspace.name for a cloud workspace); the Explorer root label follows the
+      renamed root node immediately, while the agent is still working.
+  If the user is already in a real imported project, adoption is a no-op.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (76 files). vite build: succeeds.
+  - node --check on every changed server file: passes.
+  - In-process unit test (tmp-agent-fallback-unit.mjs, 13/13 checks): the real
+    runAgent loop with a stubbed fetch proved
+      A) ALL combos 429 with a long Retry-After -> the exact final rate-limit
+         message + code RATE_LIMITED, an error action emitted, >=3 fallback
+         notes, and NO pointless wait;
+      B) ALL combos 429 with Retry-After 0.3s -> waits ~0.3s, retries once and
+         SUCCEEDS ("Recovered after the wait"), model reported in the result;
+      C) deriveProjectName cases (todo-app / landing-page / my-project).
+  - Full Socket.IO integration test (client/tmp-agent-fallback-test.mjs, 24/24
+    checks) against the live server + Mongo + a rate-limiting mock Groq:
+      * a mid-task 429 completed the run: the feed showed exactly the expected
+        notes (gpt-oss-120b/primary -> secondary -> llama-3.1-8b-instant);
+      * the final model indicator was llama-3.1-8b-instant;
+      * the empty scratch folder was renamed to "todo-app" on disk, the old
+        "Scratch" folder was gone, the agent's files landed in the renamed
+        folder, and GET /api/projects showed the new Project record with
+        diskFolderName "todo-app";
+      * a 'project' event with name "todo-app" streamed to the client;
+      * prompt trimming verified from the recorded request bodies: the big
+        read_file result became the "[Older tool result omitted" placeholder in
+        later turns, the big.js body was sent in FULL while recent and slimmed
+        to {"path":"big.js"} once old, and every tool-call argument in the last
+        prompt was < 1200 chars.
+  - Regression: the pre-existing dynamic-model test (client/tmp-agent-model-
+    test.mjs, 17/17) still passes — one GET /models for a single key, every
+    chat call on openai/gpt-oss-120b, 6 tools sent, model returned to the
+    client. (It now also observes the scratch folder named from the task, which
+    is expected with the new adoption step.)
+  - Temporary harnesses/scripts (tmp-agent-fallback-unit.mjs,
+    tmp-mock-groq-fallback.mjs, client/tmp-agent-fallback-test.mjs) were used to
+    verify, matching the existing temporary-test convention.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - The agent still has NO built-in Groq key: every key comes from the user's
+    saved, encrypted keys and is dropped at the end of the run.
+  - Fallback is intentionally per chat completion; a run that hits the limit
+    later simply falls back again on the next turn.
+  - The final error string and its RATE_LIMITED code are user-facing contract
+    text — keep them in sync with whatever the panel shows.
+  - trimMessages only changes what is SENT, never the stored history. If you add
+    a tool whose result is large AND needed long-term, prefer writing it to the
+    workspace and re-reading on demand over enlarging KEEP_RECENT_MESSAGES.
+  - Scratch adoption keys off the registry folder name 'Scratch'; if you change
+    ensureScratchWorkspace's displayName, update SCRATCH_FOLDER_NAME in
+    socket/agentSocket.js to match.
+
+
+================================================================================
+AI Code Editor — Phase 8: Live Server Preview (static preview + auto reload)
+================================================================================
+
+STATUS: complete and verified. A project can now be viewed like VS Code's Live
+        Server: open an .html file in a real browser tab and it reloads itself
+        whenever the workspace changes on disk — including when you save a file
+        from inside CodeMatrix.
+
+--------------------------------------------------------------------------------
+PART 1 — THE STATIC PREVIEW ROUTE (/preview/:projectId/*)
+--------------------------------------------------------------------------------
+Mounted at the app level in src/app.js (NOT under /api), so the URL is a clean
+static path a browser can load directly:
+
+    GET /preview/:projectId/index.html?token=<jwt>
+    GET /preview/:projectId/styles/site.css?token=<jwt>
+    GET /preview/:projectId/                 -> index.html
+
+NEW SERVER FILES
+  src/routes/preview.routes.js
+    Two patterns — '/:projectId' (bare root) and '/:projectId/*' (everything
+    else, captured in req.params[0]) — both behind the SAME guard chain:
+      protectPreview -> validateProjectId -> authorizeProject -> ensureWorkspace
+    The last three are the exact middlewares the /api/workspace routes use, so
+    ownership and 'folder exists' semantics are identical.
+
+  src/middlewares/protectPreview.js
+    Reuses the existing JWT (jsonwebtoken + env.jwtSecret). Because a preview is
+    opened as a PLAIN browser tab it cannot send the Authorization header, so
+    the token is read from the `token` query parameter (and the Authorization
+    header too, for programmatic callers). A missing/expired/forged token -> 401;
+    a valid token sets req.user = { id } exactly like authMiddleware.protect.
+
+  src/controllers/preview.controller.js
+    - contentTypeFor(path): small built-in MIME map (html/htm, css, js/mjs/cjs/
+      jsx, json/map, txt, xml, svg, png/jpg/jpeg/gif/webp/avif/bmp/ico, woff/
+      woff2/ttf/otf/eot, mp3/wav/ogg, mp4/webm, pdf, wasm, zip); anything else is
+      application/octet-stream. No new dependency.
+    - servePreviewFile: resolves the request path with resolveWorkspaceFile()
+      (the same traversal guard as every other workspace path builder), turns a
+      directory (or empty path) into its index.html, 404s a missing file, and
+      always sets Cache-Control: no-store + X-Content-Type-Options: nosniff so
+      a reload shows the current bytes, never a cached copy.
+    - HTML injection: for .html/.htm ONLY, the response body gets a small script
+      inserted immediately before the closing </body> tag via a string replace
+      (the file on disk is NEVER modified). If there is no closing </body>
+      (malformed/fragment HTML) the script is appended at the end instead.
+    - Binary safety: non-HTML files are read and sent as raw bytes (Buffer), so
+      images/fonts survive byte-for-byte.
+
+  src/utils/workspaceManager.js
+    + resolveWorkspaceFile(projectId, relativePath) -> { root, absolute, relative }
+      (reuses the private resolveInsideWorkspace guard; lets the preview read raw
+      bytes instead of the UTF-8 decoded readFileFromWorkspace).
+
+--------------------------------------------------------------------------------
+THE INJECTED LIVE-RELOAD SCRIPT
+--------------------------------------------------------------------------------
+Inside every served .html file, just before </body>:
+
+    <script>
+    (function () {
+      var PROJECT_ID = "<projectId>";
+      function connect() {
+        var socket = window.io({ transports: ['websocket', 'polling'] });
+        socket.on('connect', function () {
+          socket.emit('preview:watch', { projectId: PROJECT_ID });
+        });
+        socket.on('preview:reload', function (p) {
+          if (!p || p.projectId === PROJECT_ID) window.location.reload();
+        });
+      }
+      var s = document.createElement('script');
+      s.src = '/socket.io/socket.io.js';   // served by the SAME Socket.IO server
+      s.async = true; s.onload = connect;
+      document.body.appendChild(s);
+    })();
+    </script>
+
+The Socket.IO client bundle is loaded from /socket.io/socket.io.js, which the
+Socket.IO server already serves on its own origin. The preview page is served
+by that same server, so the connection is same-origin — no CORS, no second URL.
+The projectId is validated to [A-Za-z0-9_-] before it reaches here and is
+JSON-encoded into the script.
+
+--------------------------------------------------------------------------------
+PART 2 — LIVE RELOAD THROUGH THE EXISTING CHOKIDAR + SOCKET SYSTEM
+--------------------------------------------------------------------------------
+No new watcher was added. The one chokidar watcher per active project
+(src/utils/fileWatcher.js, already used for Explorer auto-refresh) now drives
+BOTH signals:
+
+  - src/utils/fileWatcher.js
+      startWatchingProject(projectId, notify, previewNotify) gained a second,
+      optional notifier. Each relevant fs event schedules:
+        scheduleNotify()          -> debounced 750ms -> notify()
+        schedulePreviewReload()   -> debounced 350ms -> previewNotify()
+      The preview timer is deliberately NOT gated by suppressWatcher(): a save
+      made through our own API suppresses the redundant full-tree walk, but that
+      save is EXACTLY the change a preview must reflect, so it still reloads.
+      A burst of writes (8 saves in a row) collapses into ONE reload. Both timers
+      are cleared in stopWatchingProject / closeAllWatchers.
+
+  - src/socket/workspaceSocket.js
+      One helper builds the watcher callbacks:
+        treeChanged -> io.to('workspace:<id>').emit('workspace:treeChanged')
+        preview     -> io.to('workspace:<id>').emit('preview:reload')
+      In addition to workspace:watch, a new client event preview:watch joins the
+      SAME room and takes the SAME reference-counted watcher reference. That
+      means a preview tab left open with no editor attached keeps the watcher —
+      and therefore live reload — alive on its own. disconnect/workspace:unwatch
+      release references exactly as before.
+
+  FLOW: save style.css -> server writes the file -> chokidar 'change' -> the
+  debounced preview timer fires -> preview:reload to the project room -> the
+  injected script calls location.reload() -> the tab shows the new CSS, with no
+  manual refresh.
+
+--------------------------------------------------------------------------------
+PART 3 — THE TWO FRONTEND TRIGGERS (both open a NEW browser tab)
+--------------------------------------------------------------------------------
+NEW CLIENT FILE  src/utils/preview.js
+  isHtmlPath(), collectHtmlFiles(tree), findRootIndexHtml(tree),
+  buildPreviewUrl(projectId, path) — builds
+      <API_BASE_URL>/preview/<projectId>/<path>?token=<current jwt>
+  (reads the token from services/api.getAuthToken() at click time, so it is
+  always the live token), and openPreviewTab() which calls window.open(url,
+  '_blank'). API_BASE_URL is the API/Socket.IO origin — the tab must point there,
+  not at the Vite dev origin.
+
+1. EXPLORER RIGHT-CLICK — "Open with Live Server"
+   src/components/Sidebar/FileTree.jsx adds the menu item (lucide Play icon)
+   ONLY for non-folder nodes whose path ends in .html/.htm. The Sidebar wires
+   the onPreview handler (stable-ref pattern, like paste/requestCreate) and it
+   calls openPreviewTab(projectId, node.path).
+
+2. TOPBAR PLAY BUTTON — src/components/Topbar/LivePreviewButton.jsx
+   A lucide Play icon-btn placed just left of the Terminal toggle, with the
+   tooltip "Open live preview". It is enabled only while the active workspace
+   hasActiveWorkspace() AND the tree contains at least one .html file
+   (collectHtmlFiles). Click resolution order:
+     1. the file currently open in the editor, when it is .html;
+     2. index.html at the workspace root;
+     3. otherwise a small dropdown listing every .html file (a lone .html file
+        is opened directly).
+   Every path goes through useAuthGuard (opens Sign In when signed out) and
+   opens a real tab via window.open.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (78 files). vite build: succeeds.
+  - node --check on every changed/new server file: passes.
+  - Full end-to-end test (temporary client/tmp-preview-e2e.mjs, 23/23 checks)
+    against the real server on a throwaway WORKSPACES_ROOT:
+      * HTML 200 + text/html + Cache-Control: no-store; the reload script is
+        present and sits BEFORE </body>; malformed.html (no body tag) still gets
+        the script appended.
+      * CSS -> text/css (not injected); JS -> text/javascript; PNG -> image/png
+        with bytes intact; a directory request resolves to index.html.
+      * no token -> 401; garbage token -> 401; ..%2F traversal -> not 200;
+        missing file -> 404.
+      * Socket.IO: after preview:watch, (a) a direct on-disk write fired
+        preview:reload with the right projectId, (b) a PUT /api/workspace save
+        (the in-app save path, which calls suppressWatcher) STILL fired
+        preview:reload, and (c) a burst of 8 writes collapsed to exactly ONE
+        reload.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - The preview server lives on the API origin and is intentionally NOT under
+    /api. The JWT always travels in ?token= (a plain tab cannot send headers);
+    protectPreview also accepts the Authorization header.
+  - HTML injection is a response-time string replace; the file on disk is never
+    touched, so Export/Import and the editor buffer are unaffected.
+  - The preview reload timer must stay OUTSIDE suppressWatcher — that is what
+    makes save-from-CodeMatrix reload the preview. Only the tree refresh is
+    suppressed for our own API mutations.
+  - Absolute asset paths in a previewed page (/style.css) resolve against the
+    server root, not the project. Relative paths and the usual ./ / ../ work.
+  - The watcher already skips descending into node_modules/.git/dist/build/out/
+    .next/.cache, so a change in those does not reload a preview.
+

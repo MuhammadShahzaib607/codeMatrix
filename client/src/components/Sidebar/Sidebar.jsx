@@ -23,6 +23,7 @@ import Tooltip from '../Common/Tooltip'
 import { ROOT_ID } from '../../services/fileSystemAccess'
 import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
 import { copyTextToClipboard } from '../../utils/clipboard'
+import { openPreviewTab } from '../../utils/preview'
 import { findNode, findParentId } from '../../utils/tree'
 import { hasActiveWorkspace, isCloudWorkspace, scratchProjectIdFor } from '../../utils/workspace'
 import FileTree from './FileTree'
@@ -81,25 +82,32 @@ export default function Sidebar() {
   // memoized FileTree without capturing stale values.
   const pasteRef = useRef(null)
   const requestCreateRef = useRef(null)
+  const previewRef = useRef(null)
 
   /**
-   * Makes sure there is a workspace to write into. With no imported project it
-   * opens (or reuses) the per-user scratch workspace on the server — the very
-   * same folder the terminal runs in. Returns false when the bootstrap failed.
+   * Makes sure there is a workspace to write into and returns its project id —
+   * or null when the bootstrap failed. With no imported project it opens (or
+   * reuses) the per-user scratch workspace on the server, the very same folder
+   * the terminal runs in.
+   *
+   * It is deliberately called from submitCreate (AFTER the user names the new
+   * item) and never from the "New File"/"New Folder" click itself: clicking the
+   * button must not create ANYTHING yet — see beginCreatingIn.
    */
-  async function ensureWorkspaceReady() {
-    if (hasActiveWorkspace(workspace)) return true
+  const ensureWorkspaceReady = useCallback(async () => {
+    if (projectIdRef.current) return projectIdRef.current
     setIsPreparing(true)
     try {
-      await dispatch(openScratchWorkspace({ projectId: scratchProjectIdFor(userId) })).unwrap()
-      return true
+      const scratchId = scratchProjectIdFor(userId)
+      const data = await dispatch(openScratchWorkspace({ projectId: scratchId })).unwrap()
+      return data?.projectId ?? scratchId
     } catch (error) {
       reportError(`Could not open a scratch workspace: ${error.message}`)
-      return false
+      return null
     } finally {
       setIsPreparing(false)
     }
-  }
+  }, [dispatch, reportError, userId])
 
   function resolveTargetParentId() {
     if (!selectedId) return ROOT_ID
@@ -110,12 +118,19 @@ export default function Sidebar() {
     return parentId === undefined ? ROOT_ID : parentId
   }
 
-  async function beginCreatingIn(parentId, type) {
-    const ready = await ensureWorkspaceReady()
-    if (!ready) return
-
+  /**
+   * Starts an inline "name your new file/folder" row at `parentId`.
+   *
+   * Nothing is created here and no default name is ever used: the temporary
+   * input row is all the user sees until they type a name and press Enter. A
+   * scratch workspace is bootstrapped later, in submitCreate, so clicking the
+   * button can never leave a surprise folder (e.g. "Scratch") behind.
+   */
+  function beginCreatingIn(parentId, type) {
     setCreating({ parentId, type })
-    if (parentId) dispatch(setFolderOpen({ id: parentId, isOpen: true }))
+    if (parentId && parentId !== ROOT_ID) {
+      dispatch(setFolderOpen({ id: parentId, isOpen: true }))
+    }
   }
 
   // Creating a file is a server-side operation, so sign-in comes first — the
@@ -205,6 +220,23 @@ export default function Sidebar() {
     }
   }
 
+  /**
+   * "Open with Live Server" for a .html file: opens a new browser tab at
+   * /preview/:projectId/<path>?token=<jwt>. The current token is read at click
+   * time by buildPreviewUrl, so it is always fresh.
+   */
+  const handlePreview = useCallback(
+    (node) => {
+      const activeProjectId = projectIdRef.current
+      if (!activeProjectId) return
+      guard(
+        () => openPreviewTab(activeProjectId, node.path ?? node.id),
+        'Please sign in to open a live preview',
+      )
+    },
+    [guard],
+  )
+
   const handleCopyPath = useCallback(async (node) => {
     const relativePath = node.id === ROOT_ID ? '' : node.id
     const copied = await copyTextToClipboard(relativePath)
@@ -221,6 +253,7 @@ export default function Sidebar() {
   useEffect(() => {
     pasteRef.current = handlePaste
     requestCreateRef.current = handleRequestCreate
+    previewRef.current = handlePreview
   })
 
   const stablePaste = useCallback((folderNode) => pasteRef.current?.(folderNode), [])
@@ -228,17 +261,25 @@ export default function Sidebar() {
     (parentId, type) => requestCreateRef.current?.(parentId, type),
     [],
   )
+  const stablePreview = useCallback((node) => previewRef.current?.(node), [])
 
   const submitCreate = useCallback(
     async (rawName) => {
-      const { parentId, type } = creating
+      const { parentId, type } = creating ?? {}
       setCreating(null)
 
-      const name = rawName.trim()
-      const activeProjectId = projectIdRef.current
-      if (!name || !activeProjectId) return
+      // An empty name cancels silently: Escape and confirming an empty field
+      // must both leave the workspace untouched (never a default-named folder).
+      const name = String(rawName ?? '').trim()
+      if (!name) return
 
-      const parentPath = parentId === ROOT_ID ? '' : parentId
+      // First real write: bootstrap the workspace NOW (scratch if nothing is
+      // imported). ensureWorkspaceReady returns the id directly, because the
+      // projectIdRef effect has not run yet inside this same async handler.
+      const activeProjectId = await ensureWorkspaceReady()
+      if (!activeProjectId) return
+
+      const parentPath = parentId === ROOT_ID || parentId == null ? '' : parentId
       const newPath = joinPath(parentPath, name)
       try {
         await dispatch(
@@ -249,7 +290,7 @@ export default function Sidebar() {
         reportError(`Could not create ${name}: ${error.message}`)
       }
     },
-    [creating, dispatch, reportError],
+    [creating, dispatch, ensureWorkspaceReady, reportError],
   )
 
   const handleRename = useCallback(
@@ -371,6 +412,7 @@ export default function Sidebar() {
           onCopy={handleCopy}
           onPaste={stablePaste}
           onCopyPath={handleCopyPath}
+          onPreview={stablePreview}
           canDeleteProject={canDeleteProject}
           onDeleteProject={requestDeleteProject}
         />

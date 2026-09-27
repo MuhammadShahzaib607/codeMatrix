@@ -211,6 +211,47 @@ export function registerWorkspaceFolder(projectId, options = {}) {
 }
 
 /**
+ * Renames a workspace's on-disk folder to match a new DISPLAY name, using the
+ * same sanitizing + collision handling as a fresh import (name free -> use it,
+ * otherwise "-2", "-3", …). The registry mapping is updated in place; the
+ * projectId is unchanged, so every path builder keeps resolving correctly.
+ *
+ * Used by the agent to turn an anonymous "Scratch" folder into a real project
+ * named after the task. Returns { container, folderName, path } or null when the
+ * workspace has no registry record (nothing to rename).
+ */
+export function renameWorkspaceFolder(projectId, { displayName = null } = {}) {
+  const record = getWorkspaceRecord(projectId)
+  if (!record) return null
+
+  const registry = loadRegistry()
+  const nextName = availableFolderName(
+    registry,
+    projectId,
+    record.container,
+    sanitizeFolderName(displayName),
+    record,
+  )
+  const nextPath = folderPathFor(record.container, nextName)
+
+  if (nextName !== record.folderName) {
+    const currentPath = folderPathFor(record.container, record.folderName)
+    if (fs.existsSync(currentPath)) {
+      fs.mkdirSync(path.dirname(nextPath), { recursive: true })
+      fs.renameSync(currentPath, nextPath)
+    } else {
+      fs.mkdirSync(nextPath, { recursive: true })
+    }
+    registry[projectId] = { container: record.container, folderName: nextName }
+    saveRegistry(registry)
+  } else {
+    fs.mkdirSync(nextPath, { recursive: true })
+  }
+
+  return { container: record.container, folderName: nextName, path: nextPath }
+}
+
+/**
  * Writes (or rewrites) a registry entry without going through the naming logic.
  * Used by the startup migration, which has already chosen the final name.
  */
@@ -399,6 +440,20 @@ export function writeFileToWorkspace(projectId, relativeFilePath, content = '') 
   fs.mkdirSync(path.dirname(absolute), { recursive: true })
   fs.writeFileSync(absolute, typeof content === 'string' ? content : String(content ?? ''), 'utf8')
   return relative
+}
+
+/**
+ * Resolves a workspace-relative path to its absolute location ON DISK without
+ * reading it, using the same traversal guard as every other path builder. The
+ * live-preview static file server needs the raw bytes (images, fonts, …), so
+ * `readFileFromWorkspace`'s UTF-8 decode is not appropriate there.
+ *
+ * Returns { root, absolute, relative }. Never throws for a missing file — the
+ * caller stats `absolute` itself so it can also detect a directory.
+ */
+export function resolveWorkspaceFile(projectId, relativePath = '') {
+  assertWorkspaceExists(projectId)
+  return resolveInsideWorkspace(projectId, relativePath)
 }
 
 export function readFileFromWorkspace(projectId, relativeFilePath) {

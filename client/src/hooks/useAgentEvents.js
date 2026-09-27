@@ -1,7 +1,9 @@
 import { useEffect } from 'react'
 import { useDispatch } from 'react-redux'
 import { agentAction, agentDone } from '../features/aiSlice'
+import { applyAgentProject } from '../features/fileSystemSlice'
 import { getSocket } from '../services/socket'
+import { saveWorkspaceRef } from '../services/workspaceStorage'
 
 /**
  * Bridges the agent's Socket.IO stream into Redux: every 'agent:action'
@@ -16,6 +18,16 @@ export default function useAgentEvents() {
     const socket = getSocket()
 
     function handleAction(event) {
+      // A scratch workspace adopted as a real project mid-run. Update the
+      // Explorer root label + topbar chip immediately and remember the name so
+      // a reload restores the project under its new identity. The event still
+      // lands in the feed as a normal action row.
+      if (event?.type === 'project' && event.details?.projectId && event.details?.name) {
+        dispatch(
+          applyAgentProject({ projectId: event.details.projectId, name: event.details.name }),
+        )
+        saveWorkspaceRef({ projectId: event.details.projectId, name: event.details.name })
+      }
       if (event) dispatch(agentAction(event))
     }
 

@@ -2,7 +2,9 @@ import { createAsyncThunk, createSlice, nanoid } from '@reduxjs/toolkit'
 import { agentKeysApi, getAuthToken } from '../services/api'
 import { loadSelectedKeyId, saveSelectedKeyId } from '../services/aiStorage'
 import { getSocket } from '../services/socket'
+import { scratchProjectIdFor } from '../utils/workspace'
 import { showToast } from './uiSlice'
+import { openScratchWorkspace } from './workspaceThunks'
 
 // ---------------------------------------------------------------------------
 // Everything the AI panel shows:
@@ -24,6 +26,9 @@ const initialState = {
   keysError: null,
   selectedKeyId: loadSelectedKeyId(),
   framework: 'react',
+  // The Groq model the LAST run actually used (resolved server-side from the
+  // user's key). Shown in the panel so it is never a mystery which model ran.
+  model: null,
   running: false,
   thinking: false,
   thinkingText: '',
@@ -130,10 +135,16 @@ export const startAgentTask = createAsyncThunk(
     dispatch(agentStarted({ task }))
 
     try {
-      if (!projectId) {
-        throw new Error(
-          'no project is open. Open or import a project before running the agent.',
-        )
+      // The agent only needs a workspace to write into, and one ALWAYS exists:
+      // an imported project, or the per-user scratch workspace (created on
+      // demand). So an empty/absent workspace is bootstrapped here rather than
+      // blocking the run — the agent's first tool calls then create the files.
+      let activeProjectId = projectId
+      if (!activeProjectId) {
+        const userId = getState().auth.user?.id
+        const scratchId = scratchProjectIdFor(userId)
+        const data = await dispatch(openScratchWorkspace({ projectId: scratchId })).unwrap()
+        activeProjectId = data?.projectId ?? scratchId
       }
 
       const socket = getSocket()
@@ -152,7 +163,7 @@ export const startAgentTask = createAsyncThunk(
           'agent:run',
           {
             token,
-            projectId,
+            projectId: activeProjectId,
             task,
             framework: ai.framework,
             keyId: ai.selectedKeyId,
@@ -215,6 +226,8 @@ const aiSlice = createSlice({
      */
     agentAction(state, action) {
       const event = action.payload ?? {}
+      // Any event that carries the resolved model updates the panel label.
+      if (event.details?.model) state.model = String(event.details.model)
       if (event.type === 'thinking') {
         state.thinking = true
         state.thinkingText = event.description || 'Working…'
@@ -254,7 +267,8 @@ const aiSlice = createSlice({
     },
 
     agentDone(state, action) {
-      const { ok = true, message = '', toolCalls, durationMs, limitReached } = action.payload ?? {}
+      const { ok = true, message = '', toolCalls, durationMs, limitReached, model } = action.payload ?? {}
+      if (model) state.model = String(model)
       state.running = false
       state.thinking = false
       state.thinkingText = ''

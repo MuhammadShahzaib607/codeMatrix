@@ -67,6 +67,23 @@ const fileSystemSlice = createSlice({
     },
 
     /**
+     * The agent adopted a scratch workspace as a real, named project mid-run:
+     * the SAME projectId now has a proper name and a MongoDB Project record. We
+     * keep the tree/tabs (the files did not move in Redux terms) but flip the
+     * source to 'cloud' so Export/Sync/Delete become available, and rename the
+     * root node so the Explorer label matches the new project name.
+     */
+    applyAgentProject(state, action) {
+      const { projectId, name } = action.payload ?? {}
+      if (!projectId || !name) return
+      if (state.workspace.projectId && state.workspace.projectId !== projectId) return
+      state.workspace = { ...state.workspace, projectId, name, source: 'cloud' }
+      state.tree = state.tree.map((node) =>
+        node.type === 'folder' ? { ...node, name } : node,
+      )
+    },
+
+    /**
      * Optimistic removal of ONE node (by id) right after the delete API
      * succeeded. This is what makes a delete feel instant: the row disappears
      * without waiting for a full GET /tree walk, and the background refetch /
@@ -142,6 +159,7 @@ export const {
   setCloudWorkspace,
   setScratchWorkspace,
   refreshTree,
+  applyAgentProject,
   removeNode,
   markWorkspaceMissing,
   clearWorkspaceMissing,

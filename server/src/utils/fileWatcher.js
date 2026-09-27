@@ -19,6 +19,14 @@ import { WORKSPACES_ROOT, getWorkspacePath, isValidProjectId } from './workspace
 
 const DEBOUNCE_MS = 750
 
+// Live preview reloads are debounced separately and much more tightly than the
+// tree refresh: a save should show up in the open preview tab within ~a second,
+// and a burst of writes must collapse into one reload (not a reload storm).
+// Crucially, this timer is NOT gated by suppressWatcher — a save made through
+// our own API is exactly the change a preview must reflect, even though the
+// Explorer already refreshed itself and does not need a treeChanged event.
+const PREVIEW_DEBOUNCE_MS = 350
+
 // A UI-driven mutation (delete/copy/paste/create/save) makes the client refresh
 // the tree itself. The fs events that mutation produces must NOT schedule a
 // second, redundant full-tree walk. The controller marks a suppression window
@@ -52,7 +60,8 @@ const NEVER_DESCEND_INTO = new Set([
   '.cache',
 ])
 
-// projectId -> { watcher, refs, timer, eventCount, suppressUntil, notify }
+// projectId -> { watcher, refs, timer, eventCount, suppressUntil, notify,
+//                previewTimer, previewNotify }
 const watchers = new Map()
 
 /**
@@ -98,6 +107,20 @@ function resolveWatchRoot(projectRoot) {
   return { watchRoot: WORKSPACES_ROOT, scopedTo: projectRoot }
 }
 
+function schedulePreviewReload(projectId) {
+  const entry = watchers.get(projectId)
+  if (!entry || typeof entry.previewNotify !== 'function') return
+  if (entry.previewTimer) clearTimeout(entry.previewTimer)
+  entry.previewTimer = setTimeout(() => {
+    entry.previewTimer = null
+    try {
+      entry.previewNotify(projectId)
+    } catch (error) {
+      console.warn(`[watcher] preview reload ${projectId} failed: ${error?.message ?? error}`)
+    }
+  }, PREVIEW_DEBOUNCE_MS)
+}
+
 function scheduleNotify(projectId) {
   const entry = watchers.get(projectId)
   if (!entry) return
@@ -132,13 +155,14 @@ function scheduleNotify(projectId) {
  * Starts (or joins) the watcher for a project. Returns false when the project id
  * is invalid or its folder does not exist (e.g. the workspace was wiped).
  */
-export function startWatchingProject(projectId, notify) {
+export function startWatchingProject(projectId, notify, previewNotify) {
   if (!isValidProjectId(projectId)) return false
 
   const existing = watchers.get(projectId)
   if (existing) {
     existing.refs += 1
     if (typeof notify === 'function') existing.notify = notify
+    if (typeof previewNotify === 'function') existing.previewNotify = previewNotify
     return true
   }
 
@@ -180,6 +204,8 @@ export function startWatchingProject(projectId, notify) {
     eventCount: 0,
     suppressUntil: 0,
     notify,
+    previewTimer: null,
+    previewNotify: typeof previewNotify === 'function' ? previewNotify : null,
   })
 
   // Structural + content events all funnel into one debounced refresh. The
@@ -196,6 +222,8 @@ export function startWatchingProject(projectId, notify) {
     watcher.on(event, (target) => {
       if (!isRelevant(target)) return
       scheduleNotify(projectId)
+      // Independent of the tree refresh: any real change reloads the preview.
+      schedulePreviewReload(projectId)
     })
   }
   watcher.on('error', (error) => {
@@ -214,6 +242,7 @@ export function stopWatchingProject(projectId) {
 
   watchers.delete(projectId)
   if (entry.timer) clearTimeout(entry.timer)
+  if (entry.previewTimer) clearTimeout(entry.previewTimer)
   Promise.resolve(entry.watcher.close()).catch(() => {})
   return true
 }
@@ -228,6 +257,7 @@ export async function closeAllWatchers() {
   await Promise.all(
     entries.map(async (entry) => {
       if (entry.timer) clearTimeout(entry.timer)
+      if (entry.previewTimer) clearTimeout(entry.previewTimer)
       try {
         await entry.watcher.close()
       } catch {}

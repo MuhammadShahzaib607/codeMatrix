@@ -12,9 +12,12 @@ import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { JSDOM } from 'jsdom'
 import { createServer } from 'vite'
+import { startTestEnvironment } from './tmp-test-server.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const API = process.env.VITE_API_BASE_URL ?? 'http://localhost:4100'
+const env = await startTestEnvironment({ serverPort: 4100, groqPort: 4999 })
+const API = env.api
+process.env.VITE_API_BASE_URL = API
 const WORKSPACES = path.resolve(__dirname, '../server/workspaces')
 const FULL_KEY = `gsk_uiprobe_full_key_value_1234567890abcd`
 
@@ -334,6 +337,15 @@ check(
   agentMessage?.textContent?.slice(-60),
 )
 
+// Task 2: the resolved model is shown in the panel and was NOT hardcoded
+const modelLabel = await waitFor(() => $('.ai-model-label'), 4000)
+check('AI panel shows which Groq model is in use', Boolean(modelLabel), modelLabel?.textContent)
+check(
+  'model shown is a tool-capable model from the dynamic list',
+  modelLabel?.textContent === 'openai/gpt-oss-120b',
+  modelLabel?.textContent,
+)
+
 // ---------------------------------------------------------------------------
 // 5. Explorer picked up the agent's files (watcher refresh)
 // ---------------------------------------------------------------------------
@@ -399,4 +411,5 @@ if (failed.length) {
 root.unmount()
 await vite.close()
 await dom.window.close()
+env.stop()
 process.exit(failed.length ? 1 : 0)

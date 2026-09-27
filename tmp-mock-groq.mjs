@@ -1,11 +1,29 @@
 // TEMPORARY test double (deleted after verification): a scripted stand-in for
-// Groq's OpenAI-compatible chat-completions endpoint. It replies with ONE tool
-// call per round (list -> create -> edit -> delete -> run -> read), then a
-// final natural-language summary — so the REAL agent loop, REAL workspace
-// actions and REAL streaming can be verified deterministically offline.
+// Groq's OpenAI-compatible API. It replies with ONE tool call per round
+// (list -> create -> edit -> delete -> run -> read), then a final
+// natural-language summary — so the REAL agent loop, REAL workspace actions and
+// REAL streaming can be verified deterministically offline.
+//
+// It also implements GET /models (the agent now resolves its model dynamically
+// from that endpoint) and records every request so a test can assert the exact
+// URL, auth header and model that were sent.
 import http from 'node:http'
 
-const PORT = 4999
+const PORT = Number(process.env.MOCK_GROQ_PORT || 4999)
+
+// Models the fake key "can use" — deliberately NOT the retired default, so a
+// passing run proves the dynamic selection (not a hardcoded id) was used.
+export const AVAILABLE_MODELS = [
+  'llama-3.1-8b-instant',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+]
+
+export const mockState = {
+  requests: [],
+  modelListCalls: 0,
+  chatCalls: 0,
+}
 
 const PACKAGE_JSON = JSON.stringify(
   {
@@ -75,7 +93,27 @@ const FINAL_MESSAGE =
 let requestCount = 0
 
 const server = http.createServer((req, res) => {
-  if (req.method !== 'POST' || !req.url.endsWith('/chat/completions')) {
+  const url = new URL(req.url, `http://${req.headers.host}`)
+
+  // GET /models — the dynamic model list.
+  if (req.method === 'GET' && url.pathname.endsWith('/models')) {
+    mockState.modelListCalls += 1
+    mockState.requests.push({
+      method: req.method,
+      path: url.pathname,
+      authorization: req.headers.authorization ?? null,
+    })
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        object: 'list',
+        data: AVAILABLE_MODELS.map((id) => ({ id, object: 'model', owned_by: 'groq' })),
+      }),
+    )
+    return
+  }
+
+  if (req.method !== 'POST' || !url.pathname.endsWith('/chat/completions')) {
     res.writeHead(404, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: { message: 'not found' } }))
     return
@@ -87,11 +125,21 @@ const server = http.createServer((req, res) => {
   })
   req.on('end', () => {
     requestCount += 1
-    let messages = []
+    mockState.chatCalls += 1
+    let parsed = {}
     try {
-      messages = JSON.parse(body)?.messages ?? []
+      parsed = JSON.parse(body)
     } catch {}
 
+    mockState.requests.push({
+      method: req.method,
+      path: url.pathname,
+      authorization: req.headers.authorization ?? null,
+      model: parsed?.model ?? null,
+      tools: Array.isArray(parsed?.tools) ? parsed.tools.length : 0,
+    })
+
+    const messages = parsed?.messages ?? []
     const toolResults = messages.filter((message) => message.role === 'tool').length
     const step = STEPS[toolResults]
 
@@ -109,14 +157,14 @@ const server = http.createServer((req, res) => {
         }
       : { role: 'assistant', content: FINAL_MESSAGE }
 
-    console.log(`[mock-groq] #${requestCount} -> ${step ? step.tool : 'final message'} (${toolResults} tool results so far)`)
+    console.log(`[mock-groq] #${requestCount} model=${parsed?.model} -> ${step ? step.tool : 'final message'} (${toolResults} tool results so far)`)
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(
       JSON.stringify({
         id: `chatcmpl-mock-${requestCount}`,
         object: 'chat.completion',
-        model: 'llama-3.3-70b-versatile',
+        model: parsed?.model ?? 'mock-model',
         choices: [{ index: 0, message, finish_reason: step ? 'tool_calls' : 'stop' }],
         usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
       }),
@@ -127,3 +175,5 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`[mock-groq] listening on http://localhost:${PORT}`)
 })
+
+export { server as mockServer }

@@ -56,6 +56,18 @@
   }
 }
 
+/* Which Groq model the last run actually resolved (shown after the badge). */
+.ai-model-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
 .ai-header-action {
   display: inline-flex;
   align-items: center;

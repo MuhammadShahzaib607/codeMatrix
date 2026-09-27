@@ -124,11 +124,13 @@ async function main() {
   check('delete_file removed tmp-agent.txt', !fs.existsSync(path.join(folder, 'tmp-agent.txt')))
   check('read back did not corrupt App.jsx', /export default function App/.test(appContent))
 
-  // 5. Rejected paths
+  // 5. Rejected paths. NOTE: a MISSING workspace folder is intentionally no
+  //    longer rejected (an empty/absent workspace is a valid starting point) —
+  //    only a missing project id or task is.
   const badAck = await new Promise((resolve) => {
-    socket.emit('agent:run', { token, projectId: 'not-a-project', task: 'x' }, resolve)
+    socket.emit('agent:run', { token, projectId: '', task: 'x' }, resolve)
   })
-  check('missing workspace rejected at ack', badAck?.ok === false, badAck?.message)
+  check('missing project id rejected at ack', badAck?.ok === false, badAck?.message)
   const noKeyAck = await new Promise((resolve) => {
     socket.emit('agent:run', { token: 'garbage-token', projectId, task: 'x' }, resolve)
   })

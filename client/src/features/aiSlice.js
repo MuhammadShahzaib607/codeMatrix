@@ -25,13 +25,19 @@ import { openScratchWorkspace } from './workspaceThunks'
 //   selectedKeyId  which saved key the run uses (null = newest)
 // ---------------------------------------------------------------------------
 
+// Tool calls that write a file. Consecutive writes to the SAME path collapse
+// into one feed line, so "Writing index.html…" simply becomes "Wrote
+// index.html" instead of one row per appended part.
+const WRITE_TYPES = new Set(['create_file', 'append_to_file', 'edit_file'])
+
 const initialState = {
   keys: [],
   providers: [],
   keysStatus: 'idle', // idle | loading | ready | error
   keysError: null,
   selectedKeyId: loadSelectedKeyId(),
-  framework: 'react',
+  // HTML/CSS/JS (Vanilla) is the default for a user with no saved preference.
+  framework: 'html',
   // The model preference chosen in the panel. AUTO_MODEL lets the server pick
   // the allowlisted model with the most remaining per-minute budget.
   modelChoice: loadModelPreference(null),
@@ -339,11 +345,23 @@ const aiSlice = createSlice({
         state.thinkingText = ''
         state.waitingMs = 0
         state.switchingTo = null
+        // The authoritative final text arrives with agent:done, so an
+        // unfinished streamed bubble would only duplicate it.
+        state.timeline = state.timeline.filter(
+          (entry) => !(entry.kind === 'stream' && !entry.done),
+        )
         return
       }
 
       state.thinking = false
       state.thinkingText = ''
+
+      // A tool call closes the streamed text of the turn that produced it.
+      for (let index = state.timeline.length - 1; index >= 0; index -= 1) {
+        const entry = state.timeline[index]
+        if (entry.kind !== 'stream') break
+        entry.done = true
+      }
 
       const existing = state.timeline.find(
         (entry) => entry.kind === 'action' && entry.id === event.actionId,
@@ -355,15 +373,57 @@ const aiSlice = createSlice({
         existing.status = event.details?.status ?? existing.status
         return
       }
+
+      const path = details.args?.path ?? null
+      const last = state.timeline[state.timeline.length - 1]
+      if (
+        path &&
+        last?.kind === 'action' &&
+        last.path === path &&
+        WRITE_TYPES.has(last.type) &&
+        WRITE_TYPES.has(event.type)
+      ) {
+        last.description = event.description ?? last.description
+        last.details = details
+        last.status = details.status ?? last.status
+        return
+      }
+
       state.timeline.push({
         id: event.actionId ?? nanoid(),
         kind: 'action',
         type: event.type,
         description: event.description ?? '',
-        details: event.details ?? {},
-        status: event.details?.status ?? 'done',
+        details,
+        status: details.status ?? 'done',
+        path,
         at: event.at ?? Date.now(),
       })
+    },
+
+    /**
+     * One streamed slice of assistant text ('agent:delta'). Consecutive deltas
+     * grow ONE bubble; the next tool line closes it and starts a new one, so the
+     * feed keeps the real chronological order of text → actions → text.
+     * `reset` drops half-streamed text that a non-streamed retry replaces.
+     */
+    agentDelta(state, action) {
+      const { text = '', reset = false } = action.payload ?? {}
+      if (reset) {
+        for (let index = state.timeline.length - 1; index >= 0; index -= 1) {
+          const entry = state.timeline[index]
+          if (entry.kind !== 'stream') break
+          entry.text = ''
+        }
+        return
+      }
+      if (!text) return
+      const last = state.timeline[state.timeline.length - 1]
+      if (last?.kind === 'stream' && !last.done) {
+        last.text += text
+        return
+      }
+      state.timeline.push({ id: nanoid(), kind: 'stream', text, done: false })
     },
 
     agentDone(state, action) {
@@ -442,6 +502,7 @@ export const {
   usageUpdated,
   agentStarted,
   agentAction,
+  agentDelta,
   agentDone,
   clearTimeline,
 } = aiSlice.actions

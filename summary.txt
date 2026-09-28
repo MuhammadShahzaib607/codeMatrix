@@ -4829,3 +4829,324 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
   - Add new streaming action types to ACTION_ICONS in AIPanel.jsx so they get an
     icon instead of the generic sparkles fallback.
 
+
+================================================================================
+AI Code Editor — Phase 9: Vanilla Agent Output Quality (modular prompts + gate)
+================================================================================
+
+STATUS: complete and verified for the "HTML/CSS/JS (Vanilla)" stack. The other
+        seven stacks still use short stub prompts on purpose and are NOT gated.
+
+SCOPE — READ THIS FIRST
+The whole hand-written blueprint, the design system, the plan schema, the
+per-minute tiering and the deterministic quality gate below apply to the
+*vanilla* stack only. react / next / vue / nuxt / angular / express / nest got a
+few-line stub each ("keep the base workflow, scaffold, build") so the pipeline
+keeps working; they will be trained in later steps. The gate is skipped entirely
+for them (framework !== 'html'), so nothing about their output is newly enforced.
+
+NOTE ON CODE COMMENTS: the no-comments rule is about THIS repository's own
+source. Every file added in this phase is comment-free. The website the agent
+generates is the opposite: the vanilla prompt explicitly asks for "short helpful
+comments marking sections in the generated code", and the gate does not touch
+comments (it only forbids lorem ipsum / TODO / "coming soon").
+
+--------------------------------------------------------------------------------
+1. PROMPT FILE LAYOUT (server/src/agent/prompts/)
+--------------------------------------------------------------------------------
+server/src/agent/prompts/
+  index.js          buildSystemPrompt({ framework, tier, now,
+                    projectStructure }) -> base + runtime context +
+                    "SELECTED STACK: <label>." + stack prompt + design system
+                    (+ PROJECT STRUCTURE when the caller passes the workspace
+                    tree). Exports VANILLA_FRAMEWORK_ID ('html'),
+                    COMPACT_TPM_THRESHOLD (20000), PROMPT_TIERS,
+                    isVanillaFramework(), stackLabel(), resolveTier(),
+                    __testables.
+  context.js        buildRuntimeContext(now) / buildContextBlock(now) /
+                    formatDay(now) — clock only, no other state.
+  base.js           BASE_PROMPT (general agent behaviour) + PLAN_SCHEMA_SECTION.
+  stacks/vanilla.js vanillaPrompt, vanillaDesignSystem and the compact pair
+                    (vanillaCompactPrompt, vanillaCompactDesignSystem).
+  stacks/react.js   reactPrompt            }
+  stacks/next.js    nextPrompt             }  short generic stubs,
+  stacks/vue.js     vuePrompt              }  a few lines each, to be
+  stacks/nuxt.js    nuxtPrompt             }  trained later
+  stacks/angular.js angularPrompt          }
+  stacks/express.js expressPrompt          }
+  stacks/nest.js    nestPrompt             }
+  quality/thresholds.js  MIN_LINE_COUNTS (css/style.css 400, js/main.js 120,
+                    index.html 220, about.html 140, contact.html 120),
+                    EXTENSION_MIN_LINES fallback, SECTION_MIN_CHARS 200,
+                    MIN_REPEATED_ITEMS 3, MIN_FAQ_ITEMS 5, MIN_MEDIA_RULES 2,
+                    GATE_MAX_REPAIR_ROUNDS 3, REQUIRED_STYLESHEET/SCRIPT,
+                    REQUIRED_JS_SNIPPETS, minLinesFor(path).
+  quality/vanillaGate.js vanillaGate({ projectId | root, plan, now }) and
+                    formatGateReport(result).
+
+COMPOSITION ORDER (byte-identical for the whole run, so provider prompt caching
+applies): BASE_PROMPT, RUNTIME CONTEXT, SELECTED STACK line, stack prompt,
+design system (vanilla only), PROJECT STRUCTURE. Tools (OPENAI_TOOLS) are
+unchanged and the system message is built exactly ONCE per run:
+agentService.buildSystemPrompt(framework, treeContext) is gone; runAgent now
+calls buildSystemPrompt({ framework, tier, now: new Date(), projectStructure }).
+
+The tier is chosen from the ACTIVE candidate's per-minute limit:
+resolveTier(candidate.limits) -> 'compact' when tpm < 20000 (every Groq model:
+6K-12K), 'full' otherwise (Mistral: 500K). Compact = terser blueprint plus a
+terser design system (the section ids and every gated requirement are kept, so
+compact output still passes the gate). Full prompt ~6.8K chars, compact ~6.1K.
+
+AGENT_PROMPT DEVIATION (deliberate, please keep): the spec's base text says
+"the plan JSON only (schema in Part 5)". Part 5 is a section of the task
+document the model cannot read, so base.js now carries the schema itself as
+PLAN_SCHEMA_SECTION and the first bullet points at it. Without that the model
+has no way to know the JSON shape.
+
+--------------------------------------------------------------------------------
+2. HOW THE RUNTIME DATE IS INJECTED (fixes the "2023 problem")
+--------------------------------------------------------------------------------
+context.js reads the SERVER CLOCK on every call — new Date(), never a hardcoded
+year — and emits exactly:
+
+  Current date: <YYYY-MM-DD>. Current year: <YYYY>. Treat this as the real
+  present. Use it for copyright years, blog and testimonial dates, timelines
+  and 'since' years. Never use an earlier year as the current year.
+
+runAgent passes `now: new Date()` when it builds the system prompt, so a single
+run is stable while a run started tomorrow carries the new date. The gate
+derives the expected copyright year from the same clock (new Date().getFullYear()).
+
+--------------------------------------------------------------------------------
+3. WHAT THE VANILLA PROMPT ASKS FOR
+--------------------------------------------------------------------------------
+stacks/vanilla.js holds the blueprint: pure HTML5/CSS3/vanilla JS, no library of
+any kind (no Tailwind, no build step), inline-SVG icons, never a remote image,
+Google Fonts via link with a system fallback; index/about/contact at root plus
+css/style.css and js/main.js; identical header and footer on every page with
+class="active" + aria-current="page"; the NAV RULE (an item with no page of its
+own becomes a section on the home page and is linked as index.html#services from
+every page — no dead links, no href="#"); the exact section ids per page
+(home: hero, services, features, testimonials, blogs, faq, cta / about: page-hero,
+story, mission, vision, values, stats, team / contact: page-hero, contact-form,
+contact-info); the per-page content spec (hero with eyebrow, gradient-highlighted
+h1 keyword, two CTAs, SVG/CSS visual, trust stats; 6 service cards; 3
+ testimonials with 5-star SVG; 3 blog cards with a date inside the last 6 months;
+6-item accessible accordion; CTA banner; about timeline/values/counters/team;
+contact form with labels + inline errors + in-page success, info cards, CSS/SVG
+map); the navbar (SVG brand mark, hamburger with aria-label/aria-expanded/
+aria-controls below 900px, sticky with blur, closes on link click, outside click
+and Escape); the footer (blurb, Quick Links, Contact, 4 labelled social SVGs,
+(c) <span id="year">current year</span>); and the design system (tokens --bg,
+--surface, --text, --muted, --primary, --primary-600, --accent, --border, spacing
+scale, radii, shadows, clamp() type, container, transitions, one cohesive brand
+palette, prefers-color-scheme dark, 4.5:1 contrast, gradient hero, glass navbar,
+card lift, focus rings, 5-7rem section padding, IntersectionObserver .in-view
+reveal, prefers-reduced-motion), responsive rules (480/768/1024/1280,
+auto-fit minmax(260px, 1fr), 44px touch targets) and the single guarded
+js/main.js feature list (hamburger, sticky header, active link, smooth scroll
+with header offset, reveal, accordion, count-up, form validation, footer year via
+getFullYear, back-to-top).
+
+--------------------------------------------------------------------------------
+4. PLAN JSON, PROGRESS HINTS AND STAGE GUIDANCE
+--------------------------------------------------------------------------------
+The first model reply is the plan JSON only:
+
+  { project_name, brand { name, tagline, industry, palette { primary, accent,
+    background, text }, fontStack }, nav [{ label, href }],
+    files [{ path, purpose }], pages [{ file, sections[] }],
+    requirements [] }
+
+parsePlanJson() (agentService.js) accepts a fenced block, a bare object or JSON
+surrounded by prose (balanced-brace scan, string/escape aware), validates it and
+returns the normalized shape. planDoc is stored on the agent session
+(agentSessionService now persists `planDoc` next to `plan`) so a resume keeps the
+brand, nav, page map and requirements. `plan` (the array of file paths) is the
+project_name-independent list the missing-file check walks. project_name is
+given to the existing scratch-adoption flow via onProjectName, so the workspace
+folder and display name are the AI-derived slug (never scratch-<id>); the old
+PLAN:/FILES: regex parser is still there as a fallback for a model that ignores
+the JSON instruction.
+
+Every SUCCESSFUL write tool result now ends with:
+
+  Progress X of Y planned files. Remaining: <paths or none>. Next: <path or
+  "finish with your short summary">
+
+STAGE GUIDANCE RULE: plan reminders, the tool-call correction note and the gate
+report are appended to the LAST tool-result message (appendGuidance) instead of
+being pushed as a new user/system message. A user message is only pushed when
+there is no tool result yet (the very first reminder, right after the plan
+reply). This keeps the message prefix stable and keeps providers happy. The
+plan reply is pushed to the history on that reminder path (it used to be lost).
+
+--------------------------------------------------------------------------------
+5. THE QUALITY GATE (deterministic, cheerio)
+--------------------------------------------------------------------------------
+after the model says it is finished (a turn with no tool calls, and only after
+every planned file exists) runAgent runs vanillaGate over the workspace. cheerio
+is now a server dependency (npm install cheerio in server/).
+
+CHECKS, in the order the report lists them:
+  planned-files      every planned file exists and meets minLinesFor(): the five
+                     thresholds from thresholds.js, 100/150/50 lines for other
+                     .html/.css/.js files, 1 line for anything else.
+  page-structure     per .html page: doctype first, html[lang], meta charset,
+                     viewport, non-empty description, non-empty title, exactly
+                     one h1, header, header nav, main, footer, a hamburger button
+                     with aria-expanded AND aria-controls, a stylesheet link that
+                     resolves to css/style.css and a script src that resolves to
+                     js/main.js.
+  shared-header-footer  nav label|href pairs and the normalized footer text are
+                     compared across pages (4-digit years normalized to YYYY).
+  links              every href/src: no "" and no "#"; relative targets must
+                     exist (with a /index.html fallback for directory links); a
+                     #fragment must exist as an id in the target file; remote
+                     <img src> is rejected. plan.nav labels must all appear in
+                     the home page navbar.
+  sections           every section id planned for that file exists with at least
+                     SECTION_MIN_CHARS (200) characters of text; services,
+                     testimonials, blogs and team contain at least 3 repeated
+                     sibling items (same tag+class group); #faq has at least 5
+                     buttons with aria-expanded; the contact page has a form
+                     with labeled name/email/subject/message fields and a submit
+                     button.
+  content-year       no "lorem ipsum", "TODO" or "coming soon" in the HTML/CSS/JS;
+                     a footer copyright year other than the current one is only
+                     accepted when the footer carries <span id="year"> (filled
+                     by js/main.js).
+  assets             js/main.js compiles with vm.Script and contains
+                     addEventListener, IntersectionObserver, aria-expanded and
+                     getFullYear; css/style.css has balanced braces, a :root
+                     block, >= 2 @media rules, prefers-reduced-motion and no
+                     remote url(http...).
+
+REPAIR LOOP: a failing report is truncated to 12 numbered problems and appended
+to the last tool result as "QUALITY GATE FAILED: N problem(s) ... Fix exactly
+these problems with edit_file or append_to_file (never rewrite a file that
+already passes)." plus a 1-second-resolution note. Up to GATE_MAX_REPAIR_ROUNDS
+(3) rounds run, each one a normal tool turn. If it still fails after 3 rounds the
+run finishes HONESTLY: the summary text gets a "Still failing the quality gate:"
+list, the `complete`/returned payload carries gatePassed: false and
+gateFailures, and the session is cleared. Every gate run and result is streamed
+as a `gate` action-feed entry (failures included in details, max 12) and the AI
+panel maps `gate` to the ShieldCheck icon.
+
+--------------------------------------------------------------------------------
+6. MODEL, TEMPERATURE AND THE per-minute BUDGET (vanilla only)
+--------------------------------------------------------------------------------
+For framework 'html' with Auto (no pinned model) pickCandidateForMode() keeps
+the active provider the existing budget logic chose and then takes the STRONGEST
+allowlisted model on it (capabilityScore, e.g. mistral-large-latest on Mistral)
+instead of whatever sat first in the list. An explicitly chosen model is never
+overridden. Temperature is 0.3 for vanilla (0.2 otherwise) and still steps down
+by 0.1 per parse retry. max completion tokens are unchanged: the existing
+planRequest guard sizes them from the per-minute window.
+
+ONE ROBUSTNESS FIX (needed to make an 8K-tpm provider usable at all): the
+`error.budget` branch used to advance to another model and, when none was left,
+spin through waitForCoolingPool() — which returns immediately when nothing is
+cooling — and then throw "no per-minute token budget left". It now cools the
+blocked candidate for BUDGET_WAIT_STEP_MS (20s) and calls the new
+waitForBudgetWindow(), which waits for the earliest cooling reset (or one 20s
+step when nothing is cooling) and retries, bounded by MAX_TOTAL_WAIT_MS (180s).
+A Groq-only run of a 5-file vanilla site therefore waits out the minute window
+instead of dying. The 429 path is untouched.
+
+--------------------------------------------------------------------------------
+7. FILES TOUCHED
+--------------------------------------------------------------------------------
+NEW  server/src/agent/prompts/{index,base,context}.js
+NEW  server/src/agent/prompts/stacks/{vanilla,react,next,vue,nuxt,angular,express,nest}.js
+NEW  server/src/agent/quality/{thresholds,vanillaGate}.js
+NEW  server/tmp-vanilla-gate-test.mjs   fixture-driven gate suite (29 checks)
+NEW  server/tmp-vanilla-agent-test.mjs  mocked-provider loop suite (24 checks)
+MOD  server/src/services/agentService.js      new prompt import, tier, JSON plan,
+     planDoc, progress hints, appendGuidance, gate loop, vanilla model+temp,
+     budget window wait. stage guidance no longer creates user messages.
+MOD  server/src/services/agentFrameworks.js   now only FRAMEWORKS, frameworkLabel
+     and fallbackProjectName (the prompt rules moved to agent/prompts/).
+MOD  server/src/services/agentSessionService.js  persists planDoc.
+MOD  server/package.json + package-lock.json  + cheerio.
+MOD  client/src/components/AIPanel/AIPanel.jsx  ShieldCheck for `gate` entries.
+MOD  client/src/utils/agentFrameworks.js  comment now points at the new prompts.
+
+--------------------------------------------------------------------------------
+8. VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - node --check on every changed/new server file: passes.
+  - client: oxlint 0 warnings / 0 errors (86 files), vite build succeeds.
+  - server/tmp-vanilla-gate-test.mjs — 29/29. Builds a complete, realistic
+    5-file Ember Lane site in a temp dir and asserts: prompt composer (runtime
+    date, no-earlier-year rule, design system present, compact shorter than
+    full, section ids kept, Groq tpm 8K -> compact, Mistral 500K -> full, React
+    stub has no vanilla blueprint); plan JSON parsing (fenced, prose-wrapped,
+    rejected prose); the complete site PASSES all 7 check groups; and a
+    deliberately broken copy (missing description, wrong section id, href="#",
+    only 4 FAQ buttons, remote <img>, wrong footer year without #year, no :root
+    block, removed IntersectionObserver/getFullYear) produces each expected
+    failure, as do a 1-line stylesheet, non-compiling JS and drifted header nav.
+  - server/tmp-vanilla-agent-test.mjs — 24/24. Drives the REAL runAgent against a
+    scripted Groq stand-in (localhost HTTP mock, no MongoDB, no socket) on a
+    throwaway scratch workspace: the JSON plan is parsed (5 files), the AI name
+    ember-lane-coffee reaches onProjectName, the system prompt carries the
+    runtime date + vanilla stack + compact tier, temperature is 0.3, every write
+    result carries "Progress X of 5 planned files ... Remaining ... Next", the
+    gate fails once (missing getFullYear), the failure travels back as the LAST
+    tool-result message (no user message after tool results, system prompt still
+    byte-identical), the repair round fixes the file, the next gate PASSES, the
+    run completes with gatePassed true and no "Still failing" text, and the
+    scratch workspace is deleted afterwards.
+  - Both suites are runnable: `cd server && node tmp-vanilla-gate-test.mjs` and
+    `cd server && node tmp-vanilla-agent-test.mjs` (DEBUG_REQUESTS=1 dumps the
+    wire messages and the gate events).
+  - PART 7 CHECKS (live UI run) — what could and could not be confirmed:
+      * WORKSPACE NAMING: confirmed in code and in the mocked run. The plan's
+        project_name is passed to onProjectName -> adoptScratchProject ->
+        renameWorkspaceFolder, so the on-disk folder AND the Project record use
+        the AI-derived slug ("ember-lane-coffee"), never "Scratch"/
+        "scratch-<id>". Folder renames keep the projectId, so no path goes stale.
+      * PREVIEW URL: NOT name-based, and it stays that way on purpose. The live
+        preview route is /preview/:projectId/<path>?token= (and the injected
+        live-reload script watches that same projectId), and an adopted scratch
+        keeps its scratch-<owner> id, so the preview URL still contains
+        scratch-<id>. Making the URL use the display name needs a
+        folderName -> projectId resolver with owner scoping (folder names are
+        only unique per container) plus a matching change to the preview room; it
+        is deliberately out of scope here. FLAGGED AS A FOLLOW-UP below.
+      * The interactive 375px check (hamburger, accordion, form validation,
+        footer year in a real browser) and the one-line "make a portfolio
+        website" run need a live model + API key + MongoDB, which this sandbox
+        does not have. What CAN be asserted without them is asserted above: the
+        gate (the only deterministic part of that expectation) is verified
+        against a generated site, and the loop is verified against a scripted
+        provider. The prompt side of generalization is real-world tested by the
+        same JSON-schema contract for any task wording.
+
+--------------------------------------------------------------------------------
+9. NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - Vanilla only. If you add a stack blueprint, put it in
+    prompts/stacks/<id>.js and register it in STACKS (prompts/index.js) with
+    label/full/(compact)/(designSystem). The gate is called from exactly one
+    place: the `if (vanillaMode)` block in runAgent's no-tool-calls branch.
+  - Thresholds are the only knobs for strictness: edit quality/thresholds.js.
+    minLinesFor() matches by full path first, then basename, then extension, so
+    "about.html" (140) applies to any about.html anywhere.
+  - The gate reads files from disk through getWorkspacePath(projectId); passing
+    `root` instead (as the test does) points it at any folder, which is how it
+    is unit tested.
+  - Do not re-add a fresh user/system message after tool results — use
+    appendGuidance(messages, text); keeping the prefix stable is what makes
+    provider prompt caching work across the many turns of a build.
+  - gatePassed is false when the gate did not run (non-vanilla) as well as when
+    it failed; the returned `message` is the trustworthy signal.
+  - FOLLOW-UP (flagged, not done): preview URLs still expose the internal
+    projectId for adopted scratch workspaces. Resolving a display name to a
+    projectId would make /preview/<project-name>/index.html read like the
+    workspace folder the user sees.
+  - FOLLOW-UP: the 8K-tpm Groq window forces a 20s wait roughly every 4-5 turns
+    on a 5-file vanilla build. If that is too slow, raise BUDGET_WAIT_STEP_MS or
+    prefer Mistral for vanilla (it already wins whenever a Mistral key exists).
+

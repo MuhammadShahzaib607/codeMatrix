@@ -30,9 +30,21 @@ export function hasActiveWorkspace(workspace) {
   return isCloudWorkspace(workspace) || isScratchWorkspace(workspace)
 }
 
+// The on-disk folder of an anonymous scratch is called "Scratch" (or
+// "Scratch-2", …). That name is an implementation detail: it must never be
+// shown to the user, neither as an Explorer root row nor in the topbar chip.
+const ANONYMOUS_SCRATCH_NAME = /^scratch(-\d+)?$/i
+
+/** True while the workspace is still an unnamed throwaway scratch folder. */
+export function isAnonymousScratchWorkspace(workspace) {
+  if (!isScratchWorkspace(workspace)) return false
+  const name = String(workspace.name ?? '').trim()
+  return !name || ANONYMOUS_SCRATCH_NAME.test(name)
+}
+
 /** Human label for the topbar chip / welcome screen. */
 export function workspaceLabel(workspace) {
   if (isCloudWorkspace(workspace)) return workspace.name
-  if (isScratchWorkspace(workspace)) return 'Scratch workspace'
+  if (isScratchWorkspace(workspace)) return 'Untitled workspace'
   return null
 }

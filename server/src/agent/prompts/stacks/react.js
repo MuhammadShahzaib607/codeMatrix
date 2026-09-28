@@ -1,0 +1,2 @@
+export const reactPrompt = `Stack: React with Vite and npm. Scaffold with "npm create vite@latest . -- --template react" when the workspace is empty, otherwise create package.json, vite.config.js, index.html, src/main.jsx and src/App.jsx by hand. Use function components and hooks only, one component per file under src/components.
+This blueprint is a placeholder: keep the base workflow (plan first, then create every planned file, then verify) and finish with npm install and npm run build.`

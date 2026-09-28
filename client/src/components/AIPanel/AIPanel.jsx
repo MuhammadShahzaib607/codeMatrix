@@ -9,6 +9,7 @@ import {
   FilePlus,
   FilePlus2,
   FolderCog,
+  Globe,
   Info,
   KeyRound,
   ListChecks,
@@ -19,6 +20,7 @@ import {
   Search,
   Send,
   Settings,
+  ShieldCheck,
   Sparkles,
   Terminal,
   Trash2,
@@ -50,10 +52,11 @@ import {
 } from '../../services/aiStorage'
 import { FRAMEWORKS } from '../../utils/agentFrameworks'
 import {
-  AGENT_MODELS,
   AUTO_MODEL,
   PREFERRED_PROVIDERS,
-  modelLabel as modelOptionLabel,
+  modelBelongsToProvider,
+  modelLabelFor,
+  modelsForProvider,
 } from '../../utils/agentModels'
 import { formatCompact, keyStatusLabel, resetHint, usageMeters } from '../../utils/rateLimit'
 import './AIPanel.css'
@@ -74,6 +77,7 @@ const ACTION_ICONS = {
   note: Info,
   resume: RefreshCw,
   complete: Check,
+  gate: ShieldCheck,
   error: AlertTriangle,
 }
 
@@ -103,8 +107,26 @@ function detailsText(entry) {
   return parts.join('\n\n') || entry.description
 }
 
-function ActionRow({ entry, expanded, onToggle }) {
+// Types that are narration rather than tool activity: they render as one small
+// dim line instead of a tool row.
+const NOTE_TYPES = new Set(['note', 'fallback', 'gate', 'plan', 'project', 'resume'])
+
+/**
+ * ONE compact line per tool call, in the same continuous flow as the streamed
+ * text (OpenCode / Freebuff style). Repeated writes to the same file are
+ * collapsed into a single line by the reducer, and the full output stays
+ * reachable through the row's tooltip — there is no accordion any more.
+ */
+function ActionLine({ entry }) {
   const Icon = ACTION_ICONS[entry.type] ?? Sparkles
+  if (NOTE_TYPES.has(entry.type)) {
+    return (
+      <div className={`ai-note-line is-${entry.type}`} title={detailsText(entry)}>
+        <Icon size={11} />
+        <span>{entry.description}</span>
+      </div>
+    )
+  }
   const isRunning = entry.status === 'running'
   const details = entry.details ?? {}
   const meta =
@@ -115,21 +137,27 @@ function ActionRow({ entry, expanded, onToggle }) {
       : ''
 
   return (
-    <div className={`ai-action is-${entry.type} ${isRunning ? 'is-running' : ''}`}>
-      <button
-        type="button"
-        className="ai-action-head"
-        aria-expanded={expanded}
-        onClick={onToggle}
-      >
-        <span className="ai-action-icon">
-          {isRunning ? <Loader2 size={13} className="ai-spin" /> : <Icon size={13} />}
-        </span>
-        <span className="ai-action-desc">{entry.description}</span>
-        {meta && <span className="ai-action-meta">{meta}</span>}
-        <ChevronDown size={12} className={`ai-action-chevron ${expanded ? 'is-open' : ''}`} />
-      </button>
-      {expanded && <pre className="ai-action-details">{detailsText(entry)}</pre>}
+    <div className={`ai-line is-${entry.type} ${isRunning ? 'is-running' : ''}`} title={detailsText(entry)}>
+      <span className="ai-line-icon">
+        {isRunning ? <Loader2 size={12} className="ai-spin" /> : <Icon size={12} />}
+      </span>
+      <span className="ai-line-text">{entry.description}</span>
+      {meta && <span className="ai-line-meta">{meta}</span>}
+    </div>
+  )
+}
+
+/** The live streamed assistant text of the current turn, still growing. */
+function StreamBubble({ entry }) {
+  return (
+    <div className="ai-message is-ai is-stream">
+      <div className="ai-avatar">
+        <Bot size={14} />
+      </div>
+      <div className={`ai-bubble ${entry.done ? '' : 'is-streaming'}`}>
+        <p className="ai-text">{entry.text}</p>
+        {!entry.done && <span className="ai-caret" aria-hidden="true" />}
+      </div>
     </div>
   )
 }
@@ -196,11 +224,23 @@ function FrameworkMenu({ value, onChange, disabled }) {
   )
 }
 
-/** Which Groq model the agent uses: Auto, or a specific pinned model. */
-function ModelMenu({ value, onChange, disabled }) {
+/**
+ * The ONE dropdown used by the provider and the model controls. The model list
+ * is built from modelsForProvider(providerPreference), so picking Groq lists
+ * Groq models only — the other provider's models are hidden, never disabled.
+ */
+function PanelDropdown({
+  value,
+  options,
+  onChange,
+  disabled,
+  title,
+  ariaLabel,
+  icon: Icon,
+}) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef(null)
-  const current = AGENT_MODELS.find((model) => model.id === value) ?? AGENT_MODELS[0]
+  const current = options.find((option) => option.id === value) ?? options[0]
 
   useEffect(() => {
     if (!open) return undefined
@@ -224,18 +264,19 @@ function ModelMenu({ value, onChange, disabled }) {
         type="button"
         className="ai-model-btn"
         disabled={disabled}
-        title="Which Groq model the agent uses for the next task"
+        title={title}
         aria-haspopup="listbox"
+        aria-label={ariaLabel}
         aria-expanded={open}
         onClick={() => setOpen((isOpen) => !isOpen)}
       >
-        <Cpu size={12} />
-        <span className="ai-model-btn-label">{current.label}</span>
+        <Icon size={12} />
+        <span className="ai-model-btn-label">{current?.label ?? ''}</span>
         <ChevronDown size={13} className={`ai-framework-chevron ${open ? 'is-open' : ''}`} />
       </button>
       {open && (
-        <div className="ai-model-menu" role="listbox" aria-label="Agent model">
-          {AGENT_MODELS.map((option) => (
+        <div className="ai-model-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((option) => (
             <button
               key={option.id}
               type="button"
@@ -285,11 +326,12 @@ export default function AIPanel() {
   const dispatch = useDispatch()
   const guard = useAuthGuard()
   const [draft, setDraft] = useState('')
-  const [expandedIds, setExpandedIds] = useState(() => new Set())
   const [metersOpen, setMetersOpen] = useState(false)
   const scrollRef = useRef(null)
   const textareaRef = useRef(null)
   const metersRef = useRef(null)
+  // True while the feed is scrolled to its bottom; see the auto-scroll effect.
+  const pinnedRef = useRef(true)
   // Guards against a rapid double Enter/click dispatching two runs before
   // `running` has re-rendered true.
   const sendingRef = useRef(false)
@@ -311,7 +353,6 @@ export default function AIPanel() {
     waitingMs,
     switchingTo,
     running,
-    thinking,
     thinkingText,
     timeline,
   } = useSelector((state) => state.ai)
@@ -335,9 +376,7 @@ export default function AIPanel() {
 
   const modelLabel = model
     ? `${providerLabelOf(provider)} · ${model}`
-    : modelChoice && modelChoice !== AUTO_MODEL
-      ? modelOptionLabel(modelChoice)
-      : 'Auto'
+    : modelLabelFor(modelChoice, providerPreference)
   const modelTooltip = activeKey
     ? `${modelLabel} · ${activeKey.label || activeKey.masked}`
     : `Preferred provider: ${providerLabelOf(providerPreference)}`
@@ -353,11 +392,18 @@ export default function AIPanel() {
         ? `Switching to ${providerLabelOf(switchingTo)}`
         : null
 
-  // Keep the feed pinned to the newest action while the agent works.
+  // Keep the feed pinned to the newest line while the agent works — but never
+  // yank the view back down when the user has scrolled up to read something.
   useEffect(() => {
     const element = scrollRef.current
-    if (element) element.scrollTop = element.scrollHeight
-  }, [timeline, thinking, thinkingText])
+    if (!element || !pinnedRef.current) return
+    element.scrollTop = element.scrollHeight
+  }, [timeline, thinkingText, running])
+
+  function handleFeedScroll(event) {
+    const element = event.currentTarget
+    pinnedRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48
+  }
 
   useEffect(() => {
     if (!metersOpen) return undefined
@@ -392,6 +438,14 @@ export default function AIPanel() {
     if (stored !== providerPreference) dispatch(setProviderPreference(stored))
   }, [userId, dispatch, providerPreference])
 
+  // A pinned model belongs to one provider: switching the provider back to Auto
+  // (or to the other one) must not leave a model of the other provider selected.
+  useEffect(() => {
+    if (modelBelongsToProvider(modelChoice, providerPreference)) return
+    dispatch(setModelChoice(AUTO_MODEL))
+    saveModelPreference(userId, AUTO_MODEL)
+  }, [modelChoice, providerPreference, dispatch, userId])
+
   function handleFrameworkChange(frameworkId) {
     dispatch(setFramework(frameworkId))
     saveFrameworkFor(projectId, frameworkId)
@@ -405,21 +459,16 @@ export default function AIPanel() {
   function handleProviderPreferenceChange(value) {
     dispatch(setProviderPreference(value))
     saveProviderPreference(userId, value)
+    if (!modelBelongsToProvider(modelChoice, value)) {
+      dispatch(setModelChoice(AUTO_MODEL))
+      saveModelPreference(userId, AUTO_MODEL)
+    }
   }
 
   function handleKeyChange(value) {
     const keyId = value || null
     dispatch(selectKeyId(keyId))
     saveSelectedKeyId(keyId)
-  }
-
-  function toggleDetails(id) {
-    setExpandedIds((current) => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
   }
 
   function handleSend(event) {
@@ -582,7 +631,7 @@ export default function AIPanel() {
         )}
       </div>
 
-      <div className="ai-messages" ref={scrollRef}>
+      <div className="ai-messages" ref={scrollRef} onScroll={handleFeedScroll}>
         {timeline.length === 0 && (
           <div className="ai-message is-ai">
             <div className="ai-avatar">
@@ -611,6 +660,9 @@ export default function AIPanel() {
               </div>
             )
           }
+          if (entry.kind === 'stream') {
+            return <StreamBubble key={entry.id} entry={entry} />
+          }
           if (entry.kind === 'agent') {
             return (
               <div key={entry.id} className={`ai-message is-ai ${entry.ok ? '' : 'is-error'}`}>
@@ -628,20 +680,19 @@ export default function AIPanel() {
               </div>
             )
           }
-          return (
-            <ActionRow
-              key={entry.id}
-              entry={entry}
-              expanded={expandedIds.has(entry.id)}
-              onToggle={() => toggleDetails(entry.id)}
-            />
-          )
+          return <ActionLine key={entry.id} entry={entry} />
         })}
 
-        {running && thinking && (
-          <div className="ai-thinking" role="status">
-            <Loader2 size={13} className="ai-spin" />
-            <span>{thinkingText || 'Thinking…'}</span>
+        {/* The "Working" line sits directly under the last streamed text and
+            disappears the moment the run ends. */}
+        {running && (
+          <div className="ai-working" role="status" aria-live="polite">
+            <span className="ai-working-text">{thinkingText || 'Working'}</span>
+            <span className="ai-working-dots" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
           </div>
         )}
       </div>
@@ -671,7 +722,7 @@ export default function AIPanel() {
       {showSignedOutCard && (
         <div className="ai-nokey">
           <KeyRound size={16} />
-          <p>Sign in to use the AI agent with your own Groq API key.</p>
+          <p>Sign in to use the AI agent with your own API key.</p>
           <button
             type="button"
             className="ai-nokey-btn"
@@ -695,35 +746,42 @@ export default function AIPanel() {
       {showZeroKeyCard && (
         <div className="ai-nokey">
           <KeyRound size={16} />
-          <p>Add a Groq API key in Settings to use the AI assistant.</p>
+          <p>Add a Groq or Mistral API key in Settings to use the AI assistant.</p>
           <button type="button" className="ai-nokey-btn" onClick={() => dispatch(openSettings('ai'))}>
             Add API key
           </button>
         </div>
       )}
 
-      {/* Framework + key controls stay visible even before a key exists (the
-          stack choice is part of composing a NEW TASK); only the composer
-          waits for a usable key. */}
+      {/* Framework + provider + model controls stay visible even before a key
+          exists (composing a NEW TASK needs them); only the composer waits for
+          a usable key. THREE dropdowns, no overlapping duplicates: the stack,
+          the provider (Auto / Mistral / Groq) and the model list of that
+          provider. */}
       {!showSignedOutCard && !keysLoading && !keysFailed && (
         <div className="ai-controls">
-          <FrameworkMenu value={framework} onChange={handleFrameworkChange} disabled={running} />
-          <ModelMenu value={modelChoice} onChange={handleModelChange} disabled={running} />
-          <select
-            className="ai-pref-select"
-            value={providerPreference}
-            disabled={running}
-            title="Preferred provider for automatic fallback"
-            aria-label="Preferred provider"
-            onChange={(event) => handleProviderPreferenceChange(event.target.value)}
-          >
-            {PREFERRED_PROVIDERS.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <div className="ai-controls-right">
+          <div className="ai-dropdown-row">
+            <FrameworkMenu value={framework} onChange={handleFrameworkChange} disabled={running} />
+            <PanelDropdown
+              value={providerPreference}
+              options={PREFERRED_PROVIDERS}
+              onChange={handleProviderPreferenceChange}
+              disabled={running}
+              title="Which provider the next task runs on"
+              ariaLabel="Provider"
+              icon={Globe}
+            />
+            <PanelDropdown
+              value={modelChoice}
+              options={modelsForProvider(providerPreference)}
+              onChange={handleModelChange}
+              disabled={running}
+              title="Which model the next task uses"
+              ariaLabel="Model"
+              icon={Cpu}
+            />
+          </div>
+          <div className="ai-key-row">
             {keys.length > 1 ? (
               <select
                 className="ai-key-select"
@@ -751,7 +809,7 @@ export default function AIPanel() {
             <button
               type="button"
               className="ai-gear"
-              title="Manage Groq API keys"
+              title="Manage API keys"
               aria-label="Manage API keys"
               onClick={() => dispatch(openSettings('ai'))}
             >

@@ -7,7 +7,9 @@ const KEY_ID_KEY = 'code-matrix:aiKeyId'
 const MODEL_KEY = 'code-matrix:aiModel'
 const PROVIDER_KEY = 'code-matrix:aiProviderPreference'
 
-const DEFAULT_FRAMEWORK = 'react'
+// HTML/CSS/JS (Vanilla) is what a first-time user starts on; a saved
+// per-project choice always wins (see frameworkFor).
+const DEFAULT_FRAMEWORK = 'html'
 const DEFAULT_MODEL = 'auto'
 const DEFAULT_PROVIDER_PREFERENCE = 'auto'
 
@@ -20,7 +22,7 @@ function readFrameworks() {
   }
 }
 
-/** The framework last chosen for this project (falls back to React). */
+/** The framework last chosen for this project (falls back to HTML/CSS/JS). */
 export function frameworkFor(projectId) {
   if (!projectId) return DEFAULT_FRAMEWORK
   return readFrameworks()[projectId] ?? DEFAULT_FRAMEWORK

@@ -36,13 +36,14 @@ function prune() {
 
 export function saveAgentSession(
   projectId,
-  { messages, plan, framework, model, provider, condensedSpec, reason = null },
+  { messages, plan, planDoc = null, framework, model, provider, condensedSpec, reason = null },
 ) {
   if (!projectId) return null
   const record = {
     projectId: String(projectId),
     messages: trimSessionMessages(messages),
     plan: Array.isArray(plan) ? plan.slice(0, 100) : [],
+    planDoc: planDoc && typeof planDoc === 'object' ? planDoc : null,
     framework: framework ?? null,
     model: model ?? null,
     provider: provider ?? null,

@@ -27,7 +27,7 @@ import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { openPreviewTab } from '../../utils/preview'
 import { findNode, findParentId } from '../../utils/tree'
-import { hasActiveWorkspace } from '../../utils/workspace'
+import { hasActiveWorkspace, isAnonymousScratchWorkspace } from '../../utils/workspace'
 import FileTree from './FileTree'
 import './Sidebar.css'
 
@@ -48,6 +48,18 @@ export default function Sidebar() {
 
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(null)
+
+  /**
+   * With a still-anonymous scratch workspace the on-disk "Scratch" folder is an
+   * implementation detail, so its ROOT ROW is not rendered at all: its children
+   * are promoted to the top level, exactly like VS Code with no folder open.
+   * The folder stays on disk (it is still the terminal's cwd) — the user simply
+   * never sees a folder called "Scratch". Once the workspace has a real name the
+   * root row comes back under that name.
+   */
+  const rootNode = tree.find((node) => node.id === ROOT_ID) ?? tree[0] ?? null
+  const hideRootRow = isAnonymousScratchWorkspace(workspace)
+  const treeNodes = hideRootRow ? (rootNode?.children ?? []) : tree
   const [isPreparing, setIsPreparing] = useState(false)
   // Node awaiting confirmation from the delete modal (file or folder).
   const [pendingDelete, setPendingDelete] = useState(null)
@@ -71,6 +83,10 @@ export default function Sidebar() {
   )
 
   const handleCancelCreate = useCallback(() => setCreating(null), [])
+
+  // Clicking the tree's empty area (or pressing Escape) drops the selection, so
+  // the next New File / New Folder goes to the workspace ROOT again.
+  const clearSelection = useCallback(() => setSelectedId(null), [])
 
   // Stable identity so the memoized FileTree is not re-rendered by this prop.
   const requestDeleteProject = useCallback(
@@ -410,15 +426,16 @@ export default function Sidebar() {
 
       <div className="sidebar-body">
         <FileTree
-          nodes={tree}
+          nodes={treeNodes}
           selectedId={selectedId}
           onSelect={setSelectedId}
+          onClearSelection={clearSelection}
           creating={creating}
           onSubmitCreate={submitCreate}
           onCancelCreate={handleCancelCreate}
           onRename={handleRename}
           onDelete={requestDelete}
-          lockedId={ROOT_ID}
+          lockedId={hideRootRow ? null : ROOT_ID}
           onRequestCreate={stableRequestCreate}
           onCut={handleCut}
           onCopy={handleCopy}

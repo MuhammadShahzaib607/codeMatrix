@@ -149,6 +149,9 @@
 .file-tree {
   display: flex;
   flex-direction: column;
+  /* Fills the whole scroll area, so the empty space below the rows is
+     clickable: clicking it clears the selection. */
+  min-height: 100%;
   /* Focusable so Ctrl+C/X/V can be scoped to the Explorer, but no focus ring. */
   outline: none;
 }

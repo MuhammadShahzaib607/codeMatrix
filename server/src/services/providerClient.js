@@ -276,7 +276,7 @@ export async function listProviderModels({ providerId, apiKey, onResponse = null
     .filter(Boolean)
 }
 
-export async function providerChat({
+function buildChatRequest({
   providerId,
   apiKey,
   model,
@@ -284,7 +284,7 @@ export async function providerChat({
   tools = null,
   temperature = 0.2,
   maxCompletionTokens = 2500,
-  onResponse = null,
+  stream = false,
 }) {
   const provider = getProvider(providerId)
   if (!provider) throw new ProviderError(`Unknown provider "${providerId}".`, { code: 'BAD_PROVIDER' })
@@ -303,16 +303,176 @@ export async function providerChat({
     payload.tools = tools
     payload.tool_choice = 'auto'
   }
+  if (stream) {
+    payload.stream = true
+    payload.stream_options = { include_usage: true }
+  }
 
-  const response = await fetchWithTimeout(
-    `${providerBaseUrl(providerId)}${provider.chatPath}`,
-    {
+  return {
+    provider,
+    key,
+    modelId,
+    url: `${providerBaseUrl(providerId)}${provider.chatPath}`,
+    init: {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify(payload),
     },
-    REQUEST_TIMEOUT_MS,
-  )
+  }
+}
+
+async function throwChatError(response, providerId) {
+  const { detail, code, failedGeneration } = await readErrorDetail(response)
+  const error = new ProviderError(buildErrorMessage(providerId, response.status, detail), {
+    status: response.status,
+    code: statusCode(response.status),
+    detail,
+    retryAfterMs: parseRetryAfterMs(response, detail),
+  })
+  error.failedGeneration = failedGeneration
+  error.providerCode = code
+  throw error
+}
+
+/**
+ * One chat completion read as an SSE stream (Groq and Mistral are both
+ * OpenAI-compatible). Assistant text deltas are forwarded through onDelta as
+ * they arrive, and streamed tool_call fragments are accumulated per index into
+ * the same { id, type, function: { name, arguments } } shape the non-streaming
+ * path returns — so the caller cannot tell the two apart.
+ */
+export async function providerChatStream({
+  providerId,
+  apiKey,
+  model,
+  messages,
+  tools = null,
+  temperature = 0.2,
+  maxCompletionTokens = 2500,
+  onResponse = null,
+  onDelta = null,
+}) {
+  const { url, init } = buildChatRequest({
+    providerId,
+    apiKey,
+    model,
+    messages,
+    tools,
+    temperature,
+    maxCompletionTokens,
+    stream: true,
+  })
+
+  const response = await fetchWithTimeout(url, init, REQUEST_TIMEOUT_MS)
+  if (typeof onResponse === 'function') {
+    try {
+      onResponse(response)
+    } catch {}
+  }
+  if (!response.ok) await throwChatError(response, providerId)
+  if (!response.body) throw new ProviderError('The provider returned no stream.', { code: 'NO_STREAM' })
+
+  const content = []
+  const toolCalls = new Map()
+  let usage = null
+  let finishReason = null
+
+  const absorb = (chunk) => {
+    if (chunk?.usage) usage = chunk.usage
+    const choice = chunk?.choices?.[0]
+    if (!choice) return
+    if (choice.finish_reason) finishReason = choice.finish_reason
+    const delta = choice.delta ?? {}
+    if (typeof delta.content === 'string' && delta.content) {
+      content.push(delta.content)
+      if (typeof onDelta === 'function') {
+        try {
+          onDelta({ text: delta.content })
+        } catch {}
+      }
+    }
+    for (const call of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
+      const index = Number.isInteger(call?.index) ? call.index : 0
+      const current = toolCalls.get(index) ?? {
+        id: null,
+        type: 'function',
+        function: { name: '', arguments: '' },
+      }
+      if (call?.id) current.id = call.id
+      if (call?.type) current.type = call.type
+      if (call?.function?.name) current.function.name += call.function.name
+      if (typeof call?.function?.arguments === 'string') {
+        current.function.arguments += call.function.arguments
+      }
+      toolCalls.set(index, current)
+    }
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const consumeLines = (flush) => {
+    const lines = buffer.split('\n')
+    buffer = flush ? '' : (lines.pop() ?? '')
+    for (const rawLine of lines) {
+      const line = rawLine.trim()
+      if (!line || !line.startsWith('data:')) continue
+      const data = line.slice(5).trim()
+      if (!data || data === '[DONE]') continue
+      try {
+        absorb(JSON.parse(data))
+      } catch {
+        // A keep-alive comment or a split frame: the next read completes it.
+      }
+    }
+  }
+
+  const reader = response.body.getReader()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    consumeLines(false)
+  }
+  buffer += decoder.decode()
+  consumeLines(true)
+
+  const message = {
+    role: 'assistant',
+    content: content.join(''),
+  }
+  if (toolCalls.size > 0) {
+    message.tool_calls = [...toolCalls.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, call]) => normalizeToolCall(call))
+  }
+
+  return {
+    choices: [{ index: 0, finish_reason: finishReason, message }],
+    usage,
+  }
+}
+
+export async function providerChat({
+  providerId,
+  apiKey,
+  model,
+  messages,
+  tools = null,
+  temperature = 0.2,
+  maxCompletionTokens = 2500,
+  onResponse = null,
+}) {
+  const { url, init } = buildChatRequest({
+    providerId,
+    apiKey,
+    model,
+    messages,
+    tools,
+    temperature,
+    maxCompletionTokens,
+  })
+
+  const response = await fetchWithTimeout(url, init, REQUEST_TIMEOUT_MS)
 
   if (typeof onResponse === 'function') {
     try {
@@ -320,18 +480,7 @@ export async function providerChat({
     } catch {}
   }
 
-  if (!response.ok) {
-    const { detail, code, failedGeneration } = await readErrorDetail(response)
-    const error = new ProviderError(buildErrorMessage(providerId, response.status, detail), {
-      status: response.status,
-      code: statusCode(response.status),
-      detail,
-      retryAfterMs: parseRetryAfterMs(response, detail),
-    })
-    error.failedGeneration = failedGeneration
-    error.providerCode = code
-    throw error
-  }
+  if (!response.ok) await throwChatError(response, providerId)
 
   const body = await response.json()
   const message = body?.choices?.[0]?.message

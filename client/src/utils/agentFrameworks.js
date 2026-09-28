@@ -1,6 +1,6 @@
-// The AI panel's framework selector options. IDs must match the server's
-// FRAMEWORK_RULES keys (server/src/services/agentFrameworks.js) — the selected
-// id travels with every task and picks the agent's system prompt.
+// The AI panel's framework selector options. IDs must match the server's stack
+// prompts (server/src/agent/prompts/stacks/) — the selected id travels with
+// every task and picks the agent's system prompt.
 export const FRAMEWORKS = [
   { id: 'html', label: 'HTML/CSS/JS (Vanilla)', color: '#e44d26' },
   { id: 'react', label: 'React', color: '#61dafb' },

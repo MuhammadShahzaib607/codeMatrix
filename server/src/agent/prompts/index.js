@@ -1,0 +1,83 @@
+import { BASE_PROMPT } from './base.js'
+import { buildContextBlock } from './context.js'
+import { angularPrompt } from './stacks/angular.js'
+import { expressPrompt } from './stacks/express.js'
+import { nestPrompt } from './stacks/nest.js'
+import { nextPrompt } from './stacks/next.js'
+import { nuxtPrompt } from './stacks/nuxt.js'
+import { reactPrompt } from './stacks/react.js'
+import {
+  vanillaCompactDesignSystem,
+  vanillaCompactPrompt,
+  vanillaDesignSystem,
+  vanillaPrompt,
+} from './stacks/vanilla.js'
+import { vuePrompt } from './stacks/vue.js'
+
+export const VANILLA_FRAMEWORK_ID = 'html'
+export const COMPACT_TPM_THRESHOLD = 20000
+
+export const PROMPT_TIERS = { FULL: 'full', COMPACT: 'compact' }
+
+const STACKS = {
+  html: {
+    label: 'HTML/CSS/JS (Vanilla)',
+    full: vanillaPrompt,
+    compact: vanillaCompactPrompt,
+    designSystem: vanillaDesignSystem,
+    compactDesignSystem: vanillaCompactDesignSystem,
+  },
+  react: { label: 'React', full: reactPrompt },
+  next: { label: 'Next.js', full: nextPrompt },
+  vue: { label: 'Vue', full: vuePrompt },
+  nuxt: { label: 'Nuxt', full: nuxtPrompt },
+  angular: { label: 'Angular', full: angularPrompt },
+  express: { label: 'Express/Node', full: expressPrompt },
+  nest: { label: 'NestJS', full: nestPrompt },
+}
+
+const UNKNOWN_STACK_PROMPT =
+  'STACK: choose the tooling that fits the request, state what you chose in the plan, and stay consistent.'
+
+export function isVanillaFramework(framework) {
+  return String(framework ?? '').trim() === VANILLA_FRAMEWORK_ID
+}
+
+export function stackLabel(framework) {
+  return STACKS[String(framework ?? '').trim()]?.label ?? null
+}
+
+export function resolveTier(limits = null, { vanilla = false } = {}) {
+  // The vanilla blueprint is deliberately kept to ONE tight prompt, so it is
+  // compact on every provider — a 500K-tpm Mistral key burning the long prompt
+  // on 30 turns of a build was the single biggest token cost we measured.
+  if (vanilla) return PROMPT_TIERS.COMPACT
+  const tpm = Number(limits?.tpm ?? 0)
+  return tpm > 0 && tpm < COMPACT_TPM_THRESHOLD ? PROMPT_TIERS.COMPACT : PROMPT_TIERS.FULL
+}
+
+export function buildSystemPrompt({
+  framework = null,
+  tier = PROMPT_TIERS.FULL,
+  now = new Date(),
+  projectStructure = null,
+} = {}) {
+  const stack = STACKS[String(framework ?? '').trim()] ?? null
+  const compact = tier === PROMPT_TIERS.COMPACT
+  const sections = [BASE_PROMPT, buildContextBlock(now)]
+
+  if (!stack) {
+    sections.push(UNKNOWN_STACK_PROMPT)
+  } else {
+    sections.push(`SELECTED STACK: ${stack.label}.`)
+    sections.push(compact ? stack.compact ?? stack.full : stack.full)
+    const designSystem = compact ? stack.compactDesignSystem ?? stack.designSystem : stack.designSystem
+    if (designSystem) sections.push(designSystem)
+  }
+
+  if (projectStructure) sections.push(`PROJECT STRUCTURE\n${projectStructure}`)
+
+  return sections.join('\n\n')
+}
+
+export const __testables = { STACKS }

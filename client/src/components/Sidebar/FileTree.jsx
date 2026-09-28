@@ -317,6 +317,7 @@ function FileTree({
   nodes,
   selectedId,
   onSelect,
+  onClearSelection,
   creating,
   onSubmitCreate,
   onCancelCreate,
@@ -372,6 +373,10 @@ function FileTree({
     const tag = target?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
     rootRef.current?.focus()
+    // Clicking the empty area of the tree deselects, like VS Code. The next
+    // New File / New Folder then targets the workspace ROOT instead of whatever
+    // folder happened to be selected before.
+    if (!target?.closest?.('.tree-row')) onClearSelection?.()
   }
 
   /**
@@ -381,6 +386,10 @@ function FileTree({
    * a file — or nothing — is selected).
    */
   function handleKeyDown(event) {
+    if (event.key === 'Escape') {
+      onClearSelection?.()
+      return
+    }
     if (event.altKey || !(event.ctrlKey || event.metaKey)) return
 
     const target = event.target

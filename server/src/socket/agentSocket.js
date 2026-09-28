@@ -13,8 +13,11 @@ import { ensureScratchWorkspace, isScratchProjectId } from '../utils/workspaceMa
 // The agent's real-time channel.
 //
 //   client -> server: agent:run { token, projectId, task, framework, keyId? }
-//                     (ack)     { ok: true } | { ok: false, message }
+//                     (ack)     { ok: true, started: true, runId } | { ok: false, message }
 //   server -> client: agent:action { type, description, details, actionId, at }
+//                     agent:delta  { runId, text }  live assistant text, token by
+//                                  token; { runId, text: '', reset: true } drops
+//                                  text that a non-streamed retry is replacing
 //                     agent:done   { ok, message, toolCalls, durationMs, ... }
 //
 // The JWT is verified here (the socket layer itself is unauthenticated for
@@ -114,10 +117,18 @@ export default function registerAgentSocket(io) {
         }
 
         active = true
-        ack({ ok: true, started: true })
+        // One id per run: every streamed delta carries it, so a client that has
+        // already moved on (or a resumed run) can ignore stale text.
+        const runId = crypto.randomUUID()
+        ack({ ok: true, started: true, runId })
 
         const emit = (event) => {
           if (socket.connected) socket.emit('agent:action', event)
+        }
+
+        const emitDelta = (delta) => {
+          if (!socket.connected || !delta) return
+          socket.emit('agent:delta', { runId, text: delta.text ?? '', reset: Boolean(delta.reset) })
         }
 
         const emitUsage = (usage) => {
@@ -169,6 +180,7 @@ export default function registerAgentSocket(io) {
             apiKeys: keys,
             emit,
             emitUsage,
+            emitDelta,
             userId,
             requestedModel: payload?.model ?? null,
             requestedProvider: payload?.provider ?? null,

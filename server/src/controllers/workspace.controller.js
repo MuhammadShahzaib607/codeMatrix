@@ -9,7 +9,6 @@ import {
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
 import { suppressWatcher, restartWatching } from '../utils/fileWatcher.js'
-import { chooseScratchProjectName } from '../services/scratchProjectService.js'
 import {
   copyPathInWorkspace,
   createFolderInWorkspace,
@@ -20,7 +19,6 @@ import {
   getWorkspacePath,
   getWorkspaceRecord,
   getWorkspaceTree,
-  isScratchFolderName,
   isScratchProjectId,
   nextScratchProjectId,
   readFileFromWorkspace,
@@ -176,15 +174,10 @@ export const getTree = asyncHandler(async (req, res) => {
 export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
   const ownerId = req.user.id
 
-  const task = typeof req.body?.task === 'string' ? req.body.task.trim() : ''
-  // No task -> the classic anonymous scratch. With a task -> the final project
-  // name, decided BEFORE the folder exists. A derived name that still LOOKS
-  // like an anonymous scratch (e.g. a task made only of stop words) is ignored
-  // so the workspace stays genuinely anonymous.
-  const derived = task ? chooseScratchProjectName({ modelSuggestedName: null, task }) : null
-  const requestedName = derived && !isScratchFolderName(derived) ? derived : null
-  const isAnonymous = !requestedName
-  const displayName = requestedName ?? 'Scratch'
+  // The folder is ALWAYS born anonymous and is named later, by the agent flow,
+  // from a dedicated AI naming call (never from words taken out of the prompt).
+  const isAnonymous = true
+  const displayName = 'Scratch'
 
   let projectId = null
   let created = false

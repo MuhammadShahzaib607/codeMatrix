@@ -45,11 +45,11 @@ export default function useAgentEvents() {
     }
 
     socket.on('agent:action', handleAction)
-    socket.on('agent:usage', handleUsage)
+    socket.on('usage:update', handleUsage)
     socket.on('agent:done', handleDone)
     return () => {
       socket.off('agent:action', handleAction)
-      socket.off('agent:usage', handleUsage)
+      socket.off('usage:update', handleUsage)
       socket.off('agent:done', handleDone)
     }
   }, [dispatch])

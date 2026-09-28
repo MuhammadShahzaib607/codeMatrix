@@ -1,9 +1,11 @@
+import crypto from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { isDatabaseConnected } from '../config/db.js'
 import { env } from '../config/env.js'
 import { findProject } from '../models/project.repository.js'
 import { resolveKeysForUser } from '../services/apiKeyService.js'
 import { runAgent } from '../services/agentService.js'
+import { hasResumableSession } from '../services/agentSessionService.js'
 import { adoptScratchProject } from '../services/scratchProjectService.js'
 import { ensureScratchWorkspace, isScratchProjectId } from '../utils/workspaceManager.js'
 
@@ -101,6 +103,16 @@ export default function registerAgentSocket(io) {
           return
         }
 
+        const wantsResume = payload?.resume === true
+        if (wantsResume && !hasResumableSession(projectId)) {
+          ack({
+            ok: false,
+            message: 'There is no paused task to continue in this workspace.',
+            code: 'NO_SESSION',
+          })
+          return
+        }
+
         active = true
         ack({ ok: true, started: true })
 
@@ -108,11 +120,8 @@ export default function registerAgentSocket(io) {
           if (socket.connected) socket.emit('agent:action', event)
         }
 
-        // The rate-limit snapshot captured from the most recent Groq response,
-        // streamed alongside the action feed so the AI panel's usage indicator
-        // updates live without polling.
         const emitUsage = (usage) => {
-          if (socket.connected) socket.emit('agent:usage', usage)
+          if (socket.connected) socket.emit('usage:update', usage)
         }
 
         // Turn an anonymous scratch workspace into a real, NAMED project.
@@ -131,7 +140,7 @@ export default function registerAgentSocket(io) {
         // is ever written into a generic Scratch container.
         const scratchRun = isScratchProjectId(projectId)
         let scratchAdopted = false
-        const adopt = async (modelSuggestedName = null) => {
+        const adopt = async (suggestedName = null) => {
           if (!scratchRun) return
           try {
             const result = await adoptScratchProject({
@@ -139,7 +148,8 @@ export default function registerAgentSocket(io) {
               task,
               userId,
               emit,
-              modelSuggestedName,
+              modelSuggestedName: suggestedName,
+              framework: payload?.framework,
             })
             if (result?.adopted) scratchAdopted = true
           } catch (error) {
@@ -147,8 +157,8 @@ export default function registerAgentSocket(io) {
           }
         }
 
-        // Name the workspace NOW — before the system prompt is even built — so
-        // the folder the tools resolve against is the project itself.
+        // The workspace is named from the plan's project_name (see runAgent's
+        // onProjectName) or, when the plan omits it, from the framework.
         await adopt(null)
 
         try {
@@ -160,6 +170,11 @@ export default function registerAgentSocket(io) {
             emit,
             emitUsage,
             userId,
+            requestedModel: payload?.model ?? null,
+            requestedProvider: payload?.provider ?? null,
+            providerPreference: payload?.providerPreference ?? 'auto',
+            taskId: crypto.randomUUID(),
+            resume: wantsResume,
             onProjectName: (name) => adopt(name),
           })
           if (socket.connected) {
@@ -170,6 +185,7 @@ export default function registerAgentSocket(io) {
               durationMs: result.durationMs,
               limitReached: Boolean(result.limitReached),
               model: result.model,
+              provider: result.provider ?? null,
             })
           }
         } catch (error) {

@@ -1,8 +1,8 @@
 import crypto from 'node:crypto'
 import path from 'node:path'
-import { env } from '../config/env.js'
 import { runWorkspaceCommand } from '../utils/terminalManager.js'
 import {
+  appendFileToWorkspace,
   deleteFromWorkspace,
   existsInWorkspace,
   getWorkspacePath,
@@ -12,212 +12,59 @@ import {
   writeFileToWorkspace,
 } from '../utils/workspaceManager.js'
 import { buildSystemPrompt } from './agentFrameworks.js'
-import { recordUsageFromHeaders } from './usageService.js'
+import { clearAgentSession, getAgentSession, saveAgentSession } from './agentSessionService.js'
+import {
+  clearTaskTotals,
+  getKeyHealth,
+  getTaskTotals,
+  getUsageSummary,
+  markKeyActive,
+  markKeyCooling,
+  markKeyInvalid,
+  recordObservedHeaders,
+  recordUsageEvent,
+  remainingPerMinute,
+} from './usageService.js'
+import {
+  DEFAULT_PROVIDER_ORDER,
+  isAllowedModel,
+  modelCapability,
+  modelLimits,
+  providerLabel,
+} from '../config/providers.js'
+import { estimateTokens, planRequest } from './tokenBudgetService.js'
+import {
+  isToolCallParseError,
+  listProviderModels,
+  normalizeMessagesForProvider,
+  providerChat,
+} from './providerClient.js'
 
-// ---------------------------------------------------------------------------
-// The AI CODING AGENT.
-//
-// One loop against Groq's OpenAI-compatible chat-completions endpoint with
-// tool/function calling: ask -> tool calls -> execute them for REAL on the
-// workspace (files + shell) -> feed the results back -> ask again … until the
-// model answers with plain text (the final summary), or the MAX_TOOL_CALLS cap
-// is hit. Every step is streamed to the UI through emit() as an 'agent:action'
-// event, so the panel shows a live Claude-Code-style feed instead of one final
-// answer.
-//
-// There is NO built-in Groq key: `apiKey` is decrypted by apiKeyService just
-// for this run and dropped when it ends.
-// ---------------------------------------------------------------------------
+export const MAX_TOOL_CALLS = 60
 
-/** Hard cap on tool executions per run (runaway-loop protection). */
-export const MAX_TOOL_CALLS = 25
+const DESIRED_MAX_COMPLETION = 2500
+const MIN_COMPLETION = 800
+const KEEP_RECENT_MESSAGES = 8
+const KEEP_FULL_TURNS = 4
+const OLD_TOOL_RESULT_MAX = 300
+const MAX_READ_CHARS = 8000
+const MAX_LIST_CHARS = 2500
+const MAX_TOOL_RESULT_CHARS = 4000
+const MAX_PARSE_RETRIES = 2
+const MAX_WAIT_MS = 60000
+const MAX_TOTAL_WAIT_MS = 180000
+const COOLING_DEFAULT_MS = 60000
+const TRANSIENT_COOLING_MS = 5000
 
-// ---------------------------------------------------------------------------
-// Model selection — DEFAULT llama-3.1-8b-instant, with a dynamic fallback plan
-// ---------------------------------------------------------------------------
-//
-// The PRIMARY model is now `llama-3.1-8b-instant`. Groq's free tier gives it a
-// dramatically larger daily request budget than the bigger 70b/120b models
-// (~14,400 requests/day vs ~1,000/day), which is what makes extended agent
-// sessions usable across a whole day. The larger, generally more capable models
-// are KEPT in the list BELOW it: whenever 8b-instant is rate-limited the agent
-// falls through to them (and to the user's other saved keys), exactly as before,
-// instead of failing.
-//
-// Selection stays dynamic in one respect: Groq retires models over time, so at
-// the start of each run the agent asks which models THIS user's key can actually
-// use (GET /models) and picks the first id from the allowlist below that is
-// available. Keeping 8b-instant first makes it the default for every task. The
-// allowlist mirrors Groq's "Tool Use" support table.
-const TOOL_CAPABLE_MODELS = [
-  // DEFAULT — highest daily request limit, best choice for long sessions.
-  'llama-3.1-8b-instant',
-  // Fallback chain — larger / more capable models, tried when the default is
-  // rate-limited. Each has a much smaller daily request budget.
-  'openai/gpt-oss-120b',
-  'openai/gpt-oss-20b',
-  'qwen/qwen3.8-27b',
-  'minimaxai/minimax-m2.7',
-  // Still tool-capable, but being retired — kept so keys that still serve
-  // them keep working rather than erroring.
-  'llama-3.3-70b-versatile',
-  'openai/gpt-oss-safeguard-20b',
-  // Older ids, for keys that still have access.
-  'moonshotai/kimi-k2-instruct-0905',
-  'qwen/qwen3-32b',
-  'meta-llama/llama-4-maverick-17b-128e-instruct',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-]
+const TOOL_CALL_CORRECTION_NOTE =
+  'Invalid tool-call JSON. Write the file in smaller parts: create_file for part 1, append_to_file for the rest, under ~120 lines each, and escape quotes/newlines.'
 
-/** Allowlist with an optional GROQ_MODEL override moved to the front. */
-function preferredModelOrder() {
-  const preferred = String(env.groqModel ?? '').trim()
-  if (!preferred) return TOOL_CAPABLE_MODELS
-  return [preferred, ...TOOL_CAPABLE_MODELS.filter((id) => id !== preferred)]
-}
+const CONTINUE_TASK_NOTE =
+  'Continue the previous task. First call list_directory, then create the remaining files from the plan.'
 
-/**
- * The model ids this key can use, straight from Groq's live /models list.
- * `onResponse` (optional) receives every HTTP response so the caller can capture
- * the rate-limit headers even on a non-2xx answer.
- */
-export async function listAvailableModels(apiKey, onResponse = null) {
-  const key = String(apiKey ?? '').trim()
-  if (!key) throw new Error('No Groq API key is available for this run.')
+const PLAN_NAME_PATTERN = /project[_\s-]*name\s*[:=]\s*([a-z0-9][a-z0-9-]*)/i
+const FILES_LINE_PATTERN = /(?:^|\n)\s*(?:files|plan)\s*[:=]\s*([^\n]+)/i
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 20000)
-  try {
-    const response = await fetch(`${env.groqBaseUrl}/models`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
-      signal: controller.signal,
-    })
-
-    if (typeof onResponse === 'function') {
-      try {
-        onResponse(response)
-      } catch {}
-    }
-
-    if (!response.ok) {
-      let detail = ''
-      try {
-        detail = (await response.json())?.error?.message ?? ''
-      } catch {}
-      if (response.status === 401 || response.status === 403) {
-        throw new Error('Groq rejected the saved API key (401). Update it in Settings → AI.')
-      }
-      throw new Error(
-        `Could not list the Groq models available to this key (${response.status})${detail ? `: ${detail}` : '.'}`,
-      )
-    }
-
-    const body = await response.json()
-    return (Array.isArray(body?.data) ? body.data : [])
-      .map((model) => String(model?.id ?? '').trim())
-      .filter(Boolean)
-  } catch (error) {
-    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
-      throw new Error('Groq did not answer the model-list request within 20 seconds.')
-    }
-    throw error
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-/**
- * The model this run will use: the first tool-capable id the key actually has.
- * Throws a clear, actionable error when the key has none.
- */
-export async function resolveGroqModel(apiKey) {
-  const available = new Set(await listAvailableModels(apiKey))
-  const match = preferredModelOrder().find((id) => available.has(id))
-  if (match) return match
-
-  const sample = [...available].slice(0, 8).join(', ')
-  throw new Error(
-    'None of the Groq models available to this key support the tools the agent needs. ' +
-      `Available: ${sample || '(none)'}. Update or replace the key in Settings → AI.`,
-  )
-}
-
-/**
- * The MODEL FALLBACK PLAN: every allowlisted tool-capable id that at least ONE
- * of the user's saved keys can use, in preferred order. The agent walks this
- * list when a model is rate-limited: it retries the SAME model with the next
- * saved key, and only advances to the next model once every key has been tried.
- *
- * A key that cannot answer GET /models (bad/rotated) does not abort the plan —
- * the remaining keys are still consulted. Only when NO key can list models does
- * this throw, with that key's error.
- */
-export async function resolveModelPlan(apiKeys, { userId = null } = {}) {
-  const union = new Set()
-  let firstError = null
-  let anyListed = false
-
-  for (const key of apiKeys) {
-    try {
-      // Capture the rate-limit headers from the /models call too — it gives the
-      // UI real numbers before the first chat completion has happened.
-      const onResponse = key.id
-        ? (response) =>
-            recordUsageFromHeaders({
-              keyId: key.id,
-              userId,
-              label: key.label,
-              headers: response.headers,
-            })
-        : null
-      const available = await listAvailableModels(key.plain, onResponse)
-      anyListed = true
-      for (const id of available) union.add(id)
-    } catch (error) {
-      if (!firstError) firstError = error
-    }
-  }
-
-  if (!anyListed) throw firstError ?? new Error('No Groq API key is available for this run.')
-
-  const models = preferredModelOrder().filter((id) => union.has(id))
-  if (models.length === 0) {
-    const sample = [...union].slice(0, 8).join(', ')
-    throw new Error(
-      'None of the Groq models available to the saved keys support the tools the agent needs. ' +
-        `Available: ${sample || '(none)'}. Update or replace a key in Settings → AI.`,
-    )
-  }
-  return models
-}
-
-// ---------------------------------------------------------------------------
-// Project naming — "Scratch" → a real project name derived from the task.
-// ---------------------------------------------------------------------------
-
-// Filler words that describe the ACT, not the project, so they are dropped
-// before the name is built ("create a todo app" -> "todo-app").
-const PROJECT_NAME_STOPWORDS = new Set([
-  'create', 'build', 'make', 'add', 'write', 'generate', 'implement', 'develop',
-  'design', 'set', 'setup', 'fix', 'update', 'refactor',
-  'a', 'an', 'the', 'for', 'with', 'using', 'use', 'to', 'of', 'and', 'or', 'in',
-  'on', 'my', 'me', 'please', 'new', 'simple', 'basic', 'that', 'this', 'some',
-])
-
-// Names that carry no information. Rejected when a MODEL suggests one (so the
-// task-derived fallback is used instead), but still allowed as the deterministic
-// fallback for a task that has no useful words at all.
-const MEANINGLESS_PROJECT_NAMES = new Set([
-  'scratch', 'untitled', 'untitled-project', 'project', 'new-project', 'my-project',
-  'test', 'testing', 'app', 'sample', 'example', 'demo',
-])
-
-/**
- * Normalizes ANY candidate project name into a safe kebab-case slug. Returns
- * null when the candidate is empty or carries no real meaning, so a model that
- * answers "PROJECT_NAME: project" still falls back to the task-derived name.
- */
 export function slugifyProjectName(value) {
   const slug = String(value ?? '')
     .toLowerCase()
@@ -226,154 +73,86 @@ export function slugifyProjectName(value) {
     .replace(/^-+|-+$/g, '')
     .slice(0, 40)
     .replace(/-+$/g, '')
-
   if (!slug || slug.length < 2) return null
-  const words = slug.split('-').filter(Boolean)
-  if (words.length === 0) return null
-  // A lone meaningless word is not a name; a longer phrase containing one
-  // (e.g. "todo-app") is fine.
-  if (words.length === 1 && MEANINGLESS_PROJECT_NAMES.has(words[0])) return null
   return slug
 }
 
-/**
- * Pulls a project name out of the model's own text. Deliberately tolerant of the
- * phrasings a model realistically uses rather than one brittle literal match:
- *   PROJECT_NAME: todo-app         project name = "todo app"
- *   Project-Name: `todo-app`       {"projectName":"todo-app"}
- * Returns a normalized slug, or null when the model did not name the project.
- */
 export function extractProjectName(text) {
-  const value = String(text ?? '')
-  if (!value) return null
-
-  const patterns = [
-    /project[\s_-]*name\s*[:=]\s*[*_`"'\s]*([A-Za-z0-9][A-Za-z0-9 ._-]{0,60})/i,
-    /["']project[\s_-]*name["']\s*:\s*["']([^"']{1,60})["']/i,
-    /["']projectName["']\s*:\s*["']([^"']{1,60})["']/i,
-  ]
-
-  for (const pattern of patterns) {
-    const match = value.match(pattern)
-    const candidate = match?.[1]
-    if (!candidate) continue
-    const slug = slugifyProjectName(candidate)
-    if (slug) return slug
-  }
-  return null
+  const match = String(text ?? '').match(PLAN_NAME_PATTERN)
+  return match ? slugifyProjectName(match[1]) : null
 }
 
-/** Removes a leading "PROJECT_NAME: …" line so it never shows in a summary. */
+export function extractPlanFiles(text) {
+  const match = String(text ?? '').match(FILES_LINE_PATTERN)
+  if (!match) return []
+  const files = []
+  for (const raw of match[1].split(/[,;|]/)) {
+    let candidate = String(raw ?? '').trim()
+    if (!candidate) continue
+    candidate = candidate.replace(/^\s*[-•*\d.)]+\s*/, '').replace(/[`*"']/g, '').trim()
+    candidate = candidate.split(/\s+/)[0]
+    candidate = candidate.replace(/^\.?\//, '').replace(/[.,;:]+$/, '').replace(/\\/g, '/')
+    if (!candidate || !/[a-z0-9]/i.test(candidate)) continue
+    if (!/\.[a-z0-9]+$/i.test(candidate) && !candidate.includes('/')) continue
+    if (!files.includes(candidate)) files.push(candidate)
+  }
+  return files
+}
+
+export function extractPlan(text) {
+  const projectName = extractProjectName(text)
+  let files = extractPlanFiles(text)
+  if (files.length === 0) {
+    const line = String(text ?? '').match(/PLAN\s*[:=]\s*([^\n]+)/i)
+    if (line) {
+      files = extractPlanFiles(`FILES: ${line[1]}`)
+    }
+  }
+  return { projectName, files }
+}
+
 export function stripProjectNameLine(text) {
   return String(text ?? '')
-    .replace(/^\s*project[\s_-]*name\s*[:=][^\n]*\n?/i, '')
+    .replace(/^\s*project[_\s-]*name\s*[:=][^\n]*\n?/i, '')
     .trim()
 }
 
-/**
- * A short, filesystem-safe project name inferred from the user's ORIGINAL TASK.
- * This is the deterministic fallback used when the model did not suggest a
- * usable name: "Create a todo app with localStorage" -> "todo-app". An
- * empty/meaningless task becomes "my-project".
- */
 export function deriveProjectName(task) {
   const words = String(task ?? '')
     .toLowerCase()
     .replace(/[`'"]/g, '')
     .split(/[^a-z0-9]+/)
     .filter(Boolean)
-    .filter((word) => !PROJECT_NAME_STOPWORDS.has(word))
-
   const picked = words.slice(0, 2).join('-')
-  return slugifyProjectName(picked) || picked || 'my-project'
+  return slugifyProjectName(picked) || 'my-project'
 }
-
-const LLM_TIMEOUT_MS = 120000 // Groq is fast; 2 min per call is already generous
-const MAX_TOOL_RESULT_CHARS = 8000 // what the model gets back per tool
-const MAX_READ_CHARS = 24000 // read_file content cap
-
-// ---------------------------------------------------------------------------
-// Token-lean history trimming
-// ---------------------------------------------------------------------------
-//
-// The agent loop appends EVERY assistant tool-call message and EVERY tool result
-// to `messages`, then resends the whole array on each turn. Left alone, a single
-// read_file/create_file round can push tens of thousands of characters into the
-// prompt, and each subsequent turn pays for all of them again — which is how a
-// simple task races toward the rate limit.
-//
-// `trimMessages` keeps the most recent turns FULLY intact (the model needs them)
-// and slims everything older: large tool results are replaced with a one-line
-// placeholder, and create_file/edit_file file bodies inside older tool-call
-// arguments are dropped (only the path survives). Nothing is mutated on the
-// canonical history — this only affects what is SENT this turn.
-const KEEP_RECENT_MESSAGES = 8
-const OLD_TOOL_RESULT_MAX = 400
-
-function slimToolCallArguments(rawArguments) {
-  const raw = typeof rawArguments === 'string' ? rawArguments : ''
-  if (raw.length <= 200) return rawArguments
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return '{}'
-  }
-  const slim = {}
-  if (parsed.path) slim.path = parsed.path
-  if (parsed.command) slim.command = String(parsed.command).slice(0, 200)
-  if (parsed.timeout_ms) slim.timeout_ms = parsed.timeout_ms
-  return JSON.stringify(slim)
-}
-
-function trimMessages(messages) {
-  const cutoff = messages.length - KEEP_RECENT_MESSAGES
-  if (cutoff <= 2) return messages // only the system+user preamble is old
-
-  return messages.map((message, index) => {
-    if (index >= cutoff) return message
-
-    if (
-      message.role === 'tool' &&
-      typeof message.content === 'string' &&
-      message.content.length > OLD_TOOL_RESULT_MAX
-    ) {
-      return {
-        ...message,
-        content: `[Older tool result omitted to save tokens (${message.content.length} chars). Re-run the tool if you need it again.]`,
-      }
-    }
-
-    if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
-      return {
-        ...message,
-        tool_calls: message.tool_calls.map((call) => ({
-          ...call,
-          function: call.function
-            ? { ...call.function, arguments: slimToolCallArguments(call.function.arguments) }
-            : call.function,
-        })),
-      }
-    }
-
-    return message
-  })
-}
-const MAX_TREE_LINES = 400
-const MAX_TREE_DEPTH = 4
 
 const OPENAI_TOOLS = [
   {
     type: 'function',
     function: {
       name: 'create_file',
-      description:
-        'Create a new file (or overwrite it if it exists) at a path relative to the project root. Parent folders are created automatically.',
+      description: 'Create or overwrite a file. Parent folders are created.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Relative path, e.g. src/App.jsx' },
-          content: { type: 'string', description: 'Full file content' },
+          path: { type: 'string', description: 'Relative path' },
+          content: { type: 'string', description: 'File content' },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'append_to_file',
+      description: 'Append content to the end of a file (creates it if missing).',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative path' },
+          content: { type: 'string', description: 'Content to append' },
         },
         required: ['path', 'content'],
       },
@@ -383,13 +162,12 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'edit_file',
-      description:
-        'Overwrite an EXISTING file with new full content. Use for edits/updates after read_file. Fails if the file does not exist.',
+      description: 'Overwrite an existing file. Fails when it does not exist.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Relative path of the existing file' },
-          content: { type: 'string', description: 'The complete new content of the file' },
+          path: { type: 'string', description: 'Relative path' },
+          content: { type: 'string', description: 'New full content' },
         },
         required: ['path', 'content'],
       },
@@ -399,12 +177,10 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: "Read a file's current content before deciding how to edit it.",
+      description: 'Read a file before editing it.',
       parameters: {
         type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Relative path of the file to read' },
-        },
+        properties: { path: { type: 'string' } },
         required: ['path'],
       },
     },
@@ -413,13 +189,10 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'list_directory',
-      description:
-        'List the files and folders at a path (pass "." for the project root) to explore the project structure.',
+      description: 'List a folder ("." for the root).',
       parameters: {
         type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Relative folder path, "." for the root' },
-        },
+        properties: { path: { type: 'string' } },
         required: [],
       },
     },
@@ -428,12 +201,10 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'delete_file',
-      description: 'Delete a file OR a folder (folders are removed recursively).',
+      description: 'Delete a file or folder.',
       parameters: {
         type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Relative path to delete' },
-        },
+        properties: { path: { type: 'string' } },
         required: ['path'],
       },
     },
@@ -442,17 +213,12 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'run_command',
-      description:
-        'Run a shell command in the project workspace (npm install, npx create-vite…, npm run build, git status, …) and wait for it to finish. Returns its output and exit code. Installs/builds may take minutes; long-running servers are NOT allowed.',
+      description: 'Run a shell command in the project and wait for it.',
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'The shell command to execute' },
-          timeout_ms: {
-            type: 'number',
-            description:
-              'Optional timeout in ms (default 180000, max 300000). Raise it for slow installs.',
-          },
+          command: { type: 'string' },
+          timeout_ms: { type: 'number' },
         },
         required: ['command'],
       },
@@ -462,6 +228,7 @@ const OPENAI_TOOLS = [
 
 const TOOL_LABELS = {
   create_file: 'create_file',
+  append_to_file: 'append_to_file',
   edit_file: 'edit_file',
   read_file: 'read_file',
   list_directory: 'list_directory',
@@ -469,23 +236,34 @@ const TOOL_LABELS = {
   run_command: 'run_command',
 }
 
+const WRITE_TOOLS = new Set(['create_file', 'append_to_file', 'edit_file'])
+
 function truncate(text, limit) {
   const value = String(text ?? '')
   if (value.length <= limit) return value
   return `${value.slice(0, limit)}\n[… ${value.length - limit} more characters truncated …]`
 }
 
-/** Human line for the action feed, e.g. "Create src/App.jsx", "Run: npm install". */
-function describeAction(name, args) {
+function countLines(text) {
+  const value = String(text ?? '')
+  if (!value) return 0
+  return value.split('\n').length
+}
+
+function describeAction(name, args, context = {}) {
   switch (name) {
     case 'create_file':
       return `Create ${args.path ?? 'file'}`
+    case 'append_to_file': {
+      const part = context.appendPart
+      return `Writing ${args.path ?? 'file'}${part ? ` (part ${part})` : ''}`
+    }
     case 'edit_file':
       return `Edit ${args.path ?? 'file'}`
     case 'read_file':
       return `Read ${args.path ?? 'file'}`
     case 'list_directory':
-      return `List ${(args.path && args.path !== '.' ? args.path : 'project root')}`
+      return `List ${args.path && args.path !== '.' ? args.path : 'project root'}`
     case 'delete_file':
       return `Delete ${args.path ?? 'item'}`
     case 'run_command':
@@ -495,33 +273,10 @@ function describeAction(name, args) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// The self-nesting guard
-// ---------------------------------------------------------------------------
-//
-// Tool paths are relative to the workspace ROOT — but a model that has just
-// named its project has a habit of writing that name into the path as well
-// ("todo-app/index.html" while the workspace root is already "todo-app"). That
-// is what used to scatter a brand-new project across a nested copy of itself:
-// the Explorer root and the live preview then disagreed about where index.html
-// lived, so <link rel="stylesheet"> / <script src> could not resolve.
-//
-// Rule: when the FIRST segment of a path equals the workspace folder's own name
-// and no entry of that name exists at the root (i.e. the call would CREATE the
-// project's own name as a nested folder), the segment is dropped and the path
-// is resolved from the root instead. An existing entry with that name is left
-// completely alone — the task may genuinely ask for one (a monorepo with
-// client/server folders, or even a nested folder matching the project name, is
-// fine once it really exists).
-//
-// Normalisation is idempotent, so running it twice (feed label + execution) is
-// harmless. run_command is never touched: a shell command is opaque here.
 function normalizeToolArgs(projectId, name, args) {
   if (name === 'run_command' || !args || typeof args.path !== 'string') return args
-
-  const raw = args.path.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/^\/+/, '')
+  const raw = args.path.replace(/\\/g, '/').replace(/^(\/|\.\/)+/, '')
   if (!raw) return args
-
   let rootName = ''
   try {
     rootName = path.basename(getWorkspacePath(projectId))
@@ -529,57 +284,54 @@ function normalizeToolArgs(projectId, name, args) {
     return args
   }
   if (!rootName) return args
-
   const segments = raw.split('/').filter(Boolean)
   if (segments[0].toLowerCase() !== rootName.toLowerCase()) return args
-
   try {
-    if (existsInWorkspace(projectId, segments[0])) return args // a real nested folder
+    if (existsInWorkspace(projectId, segments[0])) return args
   } catch {
     return args
   }
-
-  // "todo-app/index.html" -> "index.html". A bare "todo-app" only makes sense
-  // as a folder to LIST (the root itself); as a file to create it is left alone.
-  if (segments.length > 1) {
-    return { ...args, path: segments.slice(1).join('/') }
-  }
-  if (name === 'list_directory') {
-    return { ...args, path: '' }
-  }
+  if (segments.length > 1) return { ...args, path: segments.slice(1).join('/') }
+  if (name === 'list_directory') return { ...args, path: '' }
   return args
 }
 
-// ---------------------------------------------------------------------------
-// The six REAL tools
-// ---------------------------------------------------------------------------
-
 async function executeTool(name, rawArgs, projectId) {
   const args = normalizeToolArgs(projectId, name, rawArgs)
-
   switch (name) {
     case 'create_file':
     case 'edit_file': {
-      const path = String(args.path ?? '').trim()
+      const filePath = String(args.path ?? '').trim()
       const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
-      if (!path) return { text: 'Error: a "path" is required.' }
-      if (name === 'edit_file' && !existsInWorkspace(projectId, path)) {
-        return {
-          text: `Error: "${path}" does not exist — use create_file to create it (or read_file first).`,
-        }
+      if (!filePath) return { text: 'Error: a "path" is required.' }
+      if (name === 'edit_file' && !existsInWorkspace(projectId, filePath)) {
+        return { text: `Error: "${filePath}" does not exist (use create_file).` }
       }
-      const saved = writeFileToWorkspace(projectId, path, content)
+      const saved = writeFileToWorkspace(projectId, filePath, content)
       const verb = name === 'create_file' ? 'Created' : 'Updated'
-      return { text: `${verb} ${saved} (${Buffer.byteLength(content, 'utf8')} bytes).` }
+      return {
+        text: `${verb} ${saved}`,
+        modelText: `ok, ${countLines(content)} lines`,
+        lines: countLines(content),
+      }
     }
-
+    case 'append_to_file': {
+      const filePath = String(args.path ?? '').trim()
+      const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
+      if (!filePath) return { text: 'Error: a "path" is required.' }
+      const saved = appendFileToWorkspace(projectId, filePath, content)
+      return {
+        text: `Appended to ${saved}`,
+        modelText: `ok, ${countLines(content)} lines`,
+        lines: countLines(content),
+      }
+    }
     case 'read_file': {
-      const path = String(args.path ?? '').trim()
-      if (!path) return { text: 'Error: a "path" is required.' }
-      const content = readFileFromWorkspace(projectId, path)
+      const filePath = String(args.path ?? '').trim()
+      if (!filePath) return { text: 'Error: a "path" is required.' }
+      const content = readFileFromWorkspace(projectId, filePath)
       return { text: truncate(content, MAX_READ_CHARS) }
     }
-
     case 'list_directory': {
       const rawPath = String(args.path ?? '.').trim()
       const relative = rawPath === '.' || rawPath === './' ? '' : rawPath
@@ -588,25 +340,21 @@ async function executeTool(name, rawArgs, projectId) {
       const text = entries
         .map((entry) => (entry.type === 'folder' ? `${entry.name}/` : entry.name))
         .join('\n')
-      return { text }
+      return { text: truncate(text, MAX_LIST_CHARS) }
     }
-
     case 'delete_file': {
-      const path = String(args.path ?? '').trim()
-      if (!path) return { text: 'Error: a "path" is required.' }
-      const deleted = await deleteFromWorkspace(projectId, path)
-      return { text: `Deleted ${deleted}.` }
+      const filePath = String(args.path ?? '').trim()
+      if (!filePath) return { text: 'Error: a "path" is required.' }
+      const deleted = await deleteFromWorkspace(projectId, filePath)
+      return { text: `Deleted ${deleted}` }
     }
-
     case 'run_command': {
       const command = String(args.command ?? '').trim()
       if (!command) return { text: 'Error: a "command" is required.' }
-      const outcome = await runWorkspaceCommand(projectId, command, {
-        timeoutMs: args.timeout_ms,
-      })
+      const outcome = await runWorkspaceCommand(projectId, command, { timeoutMs: args.timeout_ms })
       const header = outcome.timedOut
-        ? `TIMED OUT after ${Math.round((Number(args.timeout_ms) || 180000) / 1000)}s (command killed). Partial output:`
-        : `Exit code: ${outcome.exitCode ?? 0} (took ${(outcome.durationMs / 1000).toFixed(1)}s)`
+        ? `TIMED OUT. Partial output:`
+        : `Exit code: ${outcome.exitCode ?? 0}`
       const text = `${header}\n${outcome.output}`
       return {
         text: truncate(text, MAX_TOOL_RESULT_CHARS),
@@ -620,39 +368,27 @@ async function executeTool(name, rawArgs, projectId) {
         },
       }
     }
-
     default:
       return { text: `Error: unknown tool "${name}".` }
   }
 }
 
-// ---------------------------------------------------------------------------
-// Project-structure context for the system prompt
-// ---------------------------------------------------------------------------
-
 const COLLAPSE_DIRS = new Set([
-  'node_modules',
-  '.git',
-  'dist',
-  'build',
-  'out',
-  '.next',
-  '.cache',
-  '.turbo',
-  'coverage',
+  'node_modules', '.git', 'dist', 'build', 'out', '.next', '.cache', '.turbo', 'coverage',
 ])
+
+const MAX_TREE_LINES = 200
+const MAX_TREE_DEPTH = 3
 
 async function buildTreeContext(projectId) {
   let tree
   try {
     tree = await getWorkspaceTree(projectId)
   } catch (error) {
-    return `(project structure unavailable: ${error.message})`
+    return `(structure unavailable: ${error.message})`
   }
-
   const lines = []
   let truncated = false
-
   function walk(node, depth) {
     if (lines.length >= MAX_TREE_LINES) {
       truncated = true
@@ -660,152 +396,181 @@ async function buildTreeContext(projectId) {
     }
     if (depth > 0) {
       const indent = '  '.repeat(depth - 1)
-      const isFolder = node.type === 'folder'
-      lines.push(`${indent}${node.name}${isFolder ? '/' : ''}`)
+      lines.push(`${indent}${node.name}${node.type === 'folder' ? '/' : ''}`)
     }
     if (node.type !== 'folder') return
     if (depth > 0 && COLLAPSE_DIRS.has(node.name)) {
-      lines[lines.length - 1] += '  [collapsed — do not explore]'
+      lines[lines.length - 1] += ' [collapsed]'
       return
     }
-    if (depth >= MAX_TREE_DEPTH) {
-      if (depth > 0 && lines.length > 0) lines[lines.length - 1] += '  [deeper…]'
-      return
-    }
+    if (depth >= MAX_TREE_DEPTH) return
     for (const child of node.children ?? []) walk(child, depth + 1)
   }
-
   walk(tree, 0)
-  if (truncated) lines.push('[… structure truncated …]')
-  return lines.length ? lines.join('\n') : '(empty project — no files yet)'
+  if (truncated) lines.push('[… truncated …]')
+  return lines.length ? lines.join('\n') : '(empty project)'
 }
 
-// ---------------------------------------------------------------------------
-// Groq call
-// ---------------------------------------------------------------------------
-
-/**
- * Milliseconds to wait before retrying after a 429, or null when Groq did not
- * tell us. Understands both `Retry-After` (seconds or an HTTP date) and the
- * "Please try again in 15.79s" / "...in 1m30s" phrasing inside the error text.
- */
-function parseRetryAfterMs(response, detail) {
-  const unitsToMs = { ms: 1, s: 1000, m: 60000, h: 3600000 }
-  const fromText = (text) => {
-    const match = /try again in\s*([\d.]+)\s*(ms|s|m|h)?/i.exec(String(text ?? ''))
-    if (!match) return null
-    const value = Number(match[1])
-    if (!Number.isFinite(value)) return null
-    return Math.round(value * (unitsToMs[(match[2] ?? 's').toLowerCase()] ?? 1000))
+function stubWriteArguments(call, lines) {
+  let parsed = {}
+  try {
+    parsed = JSON.parse(call?.function?.arguments ?? '{}')
+  } catch {
+    parsed = {}
   }
-
-  try {
-    const header = response?.headers?.get?.('retry-after')
-    if (header) {
-      const seconds = Number(header)
-      if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000))
-      const date = Date.parse(header)
-      if (!Number.isNaN(date)) return Math.max(0, date - Date.now())
-    }
-  } catch {}
-
-  return fromText(detail)
+  const stub = {}
+  if (parsed.path) stub.path = parsed.path
+  stub.content = `[written: ${lines} lines]`
+  if (call?.function) call.function.arguments = JSON.stringify(stub)
 }
 
-async function callGroq(apiKey, messages, model, onResponse = null) {
-  // Defensive trimming: a key or model string that picked up whitespace from
-  // an .env file or a copy/paste would otherwise become a 401/404 at Groq.
-  const key = String(apiKey ?? '').trim()
-  const modelId = String(model ?? '').trim()
-  if (!modelId) throw new Error('No Groq model was resolved for this run.')
+function condenseHistory(messages, keepRecent) {
+  let cutoff = Math.max(2, messages.length - keepRecent)
+  while (cutoff > 2 && messages[cutoff]?.role === 'tool') cutoff -= 1
+  if (cutoff <= 2) return messages
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS)
-  try {
-    const response = await fetch(`${env.groqBaseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        tools: OPENAI_TOOLS,
-        tool_choice: 'auto',
-        temperature: 0.2,
-      }),
-      signal: controller.signal,
-    })
-
-    // Capture the rate-limit headers BEFORE the status check, so a 429 (the
-    // budget being exhausted) is still recorded and shown in the UI.
-    if (typeof onResponse === 'function') {
-      try {
-        onResponse(response)
-      } catch {}
+  const droppedToolIds = new Set()
+  const result = []
+  messages.forEach((message, index) => {
+    if (index >= cutoff) {
+      result.push(message)
+      return
     }
+    if (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length) {
+      const labels = message.tool_calls.map((call) => {
+        const name = call?.function?.name ?? 'tool'
+        let filePath = ''
+        try {
+          filePath = JSON.parse(call?.function?.arguments ?? '{}')?.path ?? ''
+        } catch {}
+        if (call?.id) droppedToolIds.add(call.id)
+        return filePath ? `${name} ${filePath}` : name
+      })
+      result.push({ role: 'assistant', content: `[did: ${labels.join(', ')}]` })
+      return
+    }
+    if (message.role === 'tool') {
+      if (droppedToolIds.has(message.tool_call_id)) return
+      return
+    }
+    if (message.role === 'assistant') {
+      result.push({ role: 'assistant', content: truncate(message.content ?? '', OLD_TOOL_RESULT_MAX) })
+      return
+    }
+    result.push(message)
+  })
+  return result
+}
 
-    if (!response.ok) {
-      let detail = ''
-      try {
-        const body = await response.json()
-        detail = body?.error?.message ?? ''
-      } catch {}
-      let message = `Groq API error (${response.status})${detail ? `: ${detail}` : ''}`
-      if (response.status === 401 || response.status === 403) {
-        message = 'Groq rejected the saved API key (401). Update it in Settings → AI.'
-      } else if (response.status === 429) {
-        message = `Groq rate limit reached (429)${detail ? `: ${detail}` : '. Wait a moment and retry.'}`
-      } else if (response.status >= 500) {
-        message = 'Groq is unavailable right now (server error). Try again shortly.'
+function replaceTaskWithSpec(messages, spec) {
+  const index = messages.findIndex((message) => message.role === 'user')
+  if (index >= 0) messages[index] = { role: 'user', content: spec }
+}
+
+export async function listAvailableModels(providerId, apiKey, onResponse = null) {
+  return listProviderModels({ providerId, apiKey, onResponse })
+}
+
+function capabilityScore(providerId, model) {
+  const id = String(model).toLowerCase()
+  let score = modelCapability(id)
+  const providerIndex = DEFAULT_PROVIDER_ORDER.indexOf(providerId)
+  score += (DEFAULT_PROVIDER_ORDER.length - providerIndex) * 2
+  return score
+}
+
+export async function resolveModelPlan(keys, { userId = null, requestedProvider = null, requestedModel = null } = {}) {
+  const candidates = []
+  const seen = new Set()
+  let firstError = null
+  let anyListed = false
+
+  for (const key of keys) {
+    const providerId = key.provider || 'groq'
+    try {
+      const available = new Set(await listProviderModels({ providerId, apiKey: key.plain }))
+      anyListed = true
+      for (const model of available) {
+        if (!isAllowedModel(providerId, model)) continue
+        const identity = `${providerId}:${model}:${key.id ?? key.plain}`
+        if (seen.has(identity)) continue
+        seen.add(identity)
+        candidates.push({
+          providerId,
+          model,
+          key,
+          limits: modelLimits(providerId, model),
+        })
       }
-      const error = new Error(message)
-      error.status = response.status
-      // How long Groq says to wait, when it says so — from the standard
-      // `Retry-After` header or the "Please try again in 15.79s" text Groq puts
-      // in the 429 body. The fallback chain uses this to decide whether letting
-      // the clock run a few seconds is worth it before giving up.
-      error.retryAfterMs = parseRetryAfterMs(response, detail)
-      throw error
+    } catch (error) {
+      if (!firstError) firstError = error
     }
+  }
 
-    return await response.json()
-  } catch (error) {
-    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
-      throw new Error('Groq did not answer within 120 seconds. Try again.')
+  if (!anyListed) throw firstError ?? new Error('No API key is available for this run.')
+
+  if (candidates.length === 0) {
+    throw new Error(
+      'None of the saved keys serve an allowlisted coding model. Add a Groq or Mistral key in Settings -> AI.',
+    )
+  }
+
+  const requested = String(requestedModel ?? '').trim()
+  if (requested) {
+    const pinned = candidates.find(
+      (candidate) =>
+        candidate.model === requested &&
+        (!requestedProvider || candidate.providerId === requestedProvider),
+    )
+    if (pinned) {
+      return [pinned, ...candidates.filter((candidate) => candidate !== pinned)]
     }
-    if (error.status) throw error
-    throw new Error(`Could not reach the Groq API: ${error.message}`)
-  } finally {
-    clearTimeout(timer)
+  }
+
+  return candidates
+}
+
+function candidateIdentity(candidate) {
+  return `${candidate.providerId}:${candidate.model}:${candidate.key?.id ?? candidate.key?.label ?? 'org'}`
+}
+
+function budgetKeyFor(candidate) {
+  return {
+    keyId: candidate.key?.id ?? null,
+    orgKey: candidate.key?.id ?? candidate.key?.label ?? 'org',
+    providerId: candidate.providerId,
+    provider: candidate.providerId,
+    model: candidate.model,
   }
 }
 
-// ---------------------------------------------------------------------------
-// The loop
-// ---------------------------------------------------------------------------
+function preferredRank(candidate, preference) {
+  if (preference !== 'mistral' && preference !== 'groq') return 0
+  return candidate.providerId === preference ? 0 : 1
+}
 
-/** Maximum wait the agent will sit through before giving up on rate limits. */
-const MAX_FALLBACK_WAIT_MS = 15000
+function pickAutoCandidate(candidates, estimatedInput, cooling, preference) {
+  const now = Date.now()
+  const healthy = candidates.filter(
+    (candidate) =>
+      (cooling?.get(candidateIdentity(candidate)) ?? 0) <= now &&
+      getKeyHealth(candidate.key?.id).status !== 'invalid',
+  )
+  const pool = healthy.length > 0 ? healthy : candidates
+  const viable = pool.filter(
+    (candidate) => remainingPerMinute(budgetKeyFor(candidate)) >= estimatedInput + MIN_COMPLETION,
+  )
+  const usable = viable.length > 0 ? viable : pool
+  const sorted = [...usable].sort((a, b) => {
+    const prefDiff = preferredRank(a, preference) - preferredRank(b, preference)
+    if (prefDiff !== 0) return prefDiff
+    const budgetDiff = remainingPerMinute(budgetKeyFor(b)) - remainingPerMinute(budgetKeyFor(a))
+    if (budgetDiff !== 0) return budgetDiff
+    return capabilityScore(b.providerId, b.model) - capabilityScore(a.providerId, a.model)
+  })
+  return sorted[0] ?? candidates[0]
+}
 
-const RATE_LIMIT_FINAL_MESSAGE =
-  'All available API keys/models are currently rate-limited. Please wait a moment and try again, or add another API key in Settings.'
-
-/**
- * Runs one task to completion.
- *
- * @param {object}   options
- * @param {string}   options.projectId workspace to operate on
- * @param {string}   options.task       natural-language task from the user
- * @param {string}   options.framework  framework id from the selector
- * @param {string[]} options.apiKeys    DECRYPTED Groq keys, preference order
- * @param {string}   options.apiKey     single-key shorthand (kept for callers/tests)
- * @param {function} options.emit       (event) => void — streams agent:action
- * @returns {Promise<{ message: string, toolCalls: number, durationMs: number, limitReached?: boolean }>}
- *   Resolves with the final summary; rejects on fatal errors (bad key, network),
- *   after already emitting an 'error' action so the UI can show it too.
- */
 export async function runAgent({
   projectId,
   task,
@@ -816,15 +581,18 @@ export async function runAgent({
   emitUsage = () => {},
   onProjectName = null,
   userId = null,
+  requestedModel = null,
+  requestedProvider = null,
+  providerPreference = null,
+  taskId = null,
+  resume = false,
 }) {
   const startedAt = Date.now()
   let toolCalls = 0
-  let firstAssistantSeen = false
-  let suggestedName = null
+  let planReminders = 0
+  let parseRetries = 0
 
   const event = (type, description, details = {}) => {
-    // Re-using an actionId in details makes two events describe ONE logical
-    // action ("running" -> "done"), so the feed can upsert instead of duplicating.
     const { actionId, ...rest } = details
     emit({
       type,
@@ -835,213 +603,456 @@ export async function runAgent({
     })
   }
 
-  // The user's saved keys, in preference order. A single-key caller (or an
-  // older test harness) falls back to the `apiKey` shorthand.
   const keys = (Array.isArray(apiKeys) ? apiKeys : [])
-    .map((key) => ({ id: key?.id ?? null, label: key?.label ?? '', plain: String(key?.plain ?? '') }))
+    .map((key) => ({
+      id: key?.id ?? null,
+      label: key?.label ?? '',
+      provider: key?.provider ?? 'groq',
+      plain: String(key?.plain ?? ''),
+    }))
     .filter((key) => key.plain)
-  if (keys.length === 0 && apiKey) keys.push({ id: null, label: '', plain: String(apiKey) })
+  if (keys.length === 0 && apiKey) {
+    keys.push({ id: null, label: '', provider: requestedProvider ?? 'groq', plain: String(apiKey) })
+  }
 
   if (keys.length === 0) {
-    const error = new Error('No Groq API key is available for this run.')
+    const error = new Error('No API key is available for this run.')
     event('error', error.message, { status: 'done' })
     throw error
   }
 
-  const keyLabel = (key) => key.label || `key ${keys.indexOf(key) + 1}`
-
-  // Resolve the fallback plan FIRST: the union of tool-capable models any saved
-  // key can use, in preferred order. A key with no usable model fails with a
-  // clear message instead of a 404 halfway through the loop.
-  let models
+  let candidates
   try {
-    models = await resolveModelPlan(keys, { userId })
+    candidates = await resolveModelPlan(keys, { userId, requestedProvider, requestedModel })
   } catch (error) {
     event('error', error.message, { status: 'done' })
     throw error
   }
 
-  let activeKey = keys[0]
-  let model = models[0]
+  const event_ = event
+  const keyLabelOf = (key) => key.label || `${key.provider ?? 'key'} key`
+  const cooling = new Map()
+  if (taskId) clearTaskTotals(taskId)
 
-  /**
-   * One chat completion with TRANSPARENT key/model fallback.
-   *
-   * Order: the currently-active combination first, then every other model ×
-   * saved-key pair. A 429 moves to the next key on the SAME model before a new
-   * model is tried; a 404 (model not served by that key) skips just that pair;
-   * a 401/403 skips that key. Every switch is announced in the live feed AND
-   * carries the new model id so the panel header tracks the real combination.
-   * When every pair is rate-limited, a short (<15s) Groq-suggested wait is
-   * honoured once before the run fails with the final rate-limit message.
-   */
-  async function requestCompletion(messagesForRequest) {
-    const combos = []
-    for (const candidateModel of models) {
-      for (const candidateKey of keys) combos.push({ key: candidateKey, model: candidateModel })
-    }
-    // Bring the active combination to the front without duplicating others.
-    const ordered = [
-      { key: activeKey, model },
-      ...combos.filter((combo) => combo.key !== activeKey || combo.model !== model),
+  const coolCandidate = (candidate, ms) => {
+    cooling.set(candidateIdentity(candidate), Date.now() + Math.max(0, ms))
+  }
+  const pruneCooling = () => {
+    const now = Date.now()
+    for (const [identity, until] of cooling) if (until <= now) cooling.delete(identity)
+  }
+  const isCooling = (candidate) =>
+    (cooling.get(candidateIdentity(candidate)) ?? 0) > Date.now() ||
+    getKeyHealth(candidate.key?.id).status === 'invalid'
+
+  const treeContext = await buildTreeContext(projectId)
+  const systemPrompt = buildSystemPrompt(framework, treeContext)
+  const systemMessage = { role: 'system', content: systemPrompt }
+
+  const session = resume ? getAgentSession(projectId) : null
+  let plan = Array.isArray(session?.plan) ? session.plan.slice() : []
+  let condensedSpec = session?.condensedSpec ?? null
+
+  const messages = []
+  if (resume && Array.isArray(session?.messages) && session.messages.length > 0) {
+    const saved = session.messages.filter((message) => message?.role !== 'system')
+    let start = 0
+    while (start < saved.length && saved[start]?.role === 'tool') start += 1
+    messages.push(systemMessage)
+    for (const message of saved.slice(start)) messages.push({ ...message })
+    messages.push({ role: 'user', content: CONTINUE_TASK_NOTE })
+    event_('resume', 'Resuming the previous task…', { status: 'done', model: candidates[0].model, tool: 'resume' })
+  } else {
+    messages.push(systemMessage)
+    messages.push({ role: 'user', content: task })
+  }
+
+  const estimateInput = () => estimateTokens(condenseHistory(messages, KEEP_RECENT_MESSAGES), OPENAI_TOOLS)
+
+  let active = pickAutoCandidate(candidates, estimateInput(), cooling, providerPreference)
+  let model = active.model
+
+  function moveTo(candidate) {
+    if (!candidate || candidate === active) return false
+    active = candidate
+    model = candidate.model
+    return true
+  }
+
+  function orderedCandidates() {
+    const current = active
+    const sameProvider = candidates.filter(
+      (candidate) => candidate !== current && candidate.providerId === current.providerId,
+    )
+    const others = candidates.filter(
+      (candidate) => candidate !== current && candidate.providerId !== current.providerId,
+    )
+    return [
+      current,
+      ...sameProvider.filter((candidate) => !isCooling(candidate)),
+      ...others.filter((candidate) => !isCooling(candidate)),
     ]
+  }
 
-    const failures = []
+  function advanceCandidate() {
+    pruneCooling()
+    const ordered = orderedCandidates()
+    for (let index = 1; index < ordered.length; index += 1) {
+      const candidate = ordered[index]
+      if (!isCooling(candidate)) return moveTo(candidate)
+    }
+    return false
+  }
 
-    // Every Groq response is fed through this: the rate-limit headers are
-    // stored as the LATEST usage for that saved key and streamed to the UI.
-    const captureUsage = (combo) => (response) => {
-      if (!combo.key.id) return
-      const record = recordUsageFromHeaders({
-        keyId: combo.key.id,
-        userId,
-        label: combo.key.label,
-        headers: response.headers,
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  const note = (description, actionId = null, extra = {}) =>
+    event_('note', description, {
+      status: 'done',
+      model,
+      provider: active.providerId,
+      tool: 'note',
+      actionId,
+      ...extra,
+    })
+
+  async function countdownWait(totalMs, actionId = null, extra = {}) {
+    const id = actionId ?? crypto.randomUUID()
+    let remaining = Math.max(0, Math.round(totalMs))
+    while (remaining > 0) {
+      note(`Waiting for reset: ${Math.ceil(remaining / 1000)}s`, id, {
+        waitingMs: remaining,
+        ...extra,
       })
-      if (record) emitUsage(record)
+      const step = Math.min(1000, remaining)
+      await sleep(step)
+      remaining -= step
     }
+    if (totalMs > 0) note(`Waiting for reset: 0s`, id, { waitingMs: 0, ...extra })
+  }
 
-    for (let index = 0; index < ordered.length; index += 1) {
-      const combo = ordered[index]
-      try {
-        const response = await callGroq(
-          combo.key.plain,
-          messagesForRequest,
-          combo.model,
-          captureUsage(combo),
+  async function sendCompletion(wireMessages, maxCompletionTokens, temperature) {
+    const usedProvider = active.providerId
+    const usedModel = active.model
+    const keyId = active.key.id ?? null
+    const response = await providerChat({
+      providerId: usedProvider,
+      apiKey: active.key.plain,
+      model: usedModel,
+      messages: normalizeMessagesForProvider(wireMessages, usedProvider),
+      tools: OPENAI_TOOLS,
+      temperature,
+      maxCompletionTokens,
+      onResponse: keyId
+        ? (res) => {
+            try {
+              recordObservedHeaders({
+                keyId,
+                provider: usedProvider,
+                model: usedModel,
+                headers: res.headers,
+              })
+            } catch {}
+          }
+        : null,
+    })
+    if (keyId) {
+      const summary = recordUsageEvent({
+        ownerId: userId,
+        keyId,
+        provider: usedProvider,
+        model: usedModel,
+        taskId,
+        usage: response?.usage ?? null,
+      })
+      markKeyActive(keyId)
+      emitUsage({
+        keyId,
+        provider: usedProvider,
+        model: usedModel,
+        summary: summary ?? getUsageSummary({ keyId, provider: usedProvider, model: usedModel }),
+        task: getTaskTotals(taskId),
+        at: Date.now(),
+      })
+    }
+    return response
+  }
+
+  async function requestOnce(temperature, { shrinkLevel = 0 } = {}) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const keep = Math.max(2, KEEP_RECENT_MESSAGES - shrinkLevel * 2)
+      const wireMessages = condenseHistory(messages, keep)
+      const estimatedInput = estimateTokens(wireMessages, OPENAI_TOOLS)
+      const decision = planRequest({
+        key: budgetKeyFor(active),
+        limits: active.limits,
+        estimatedInput,
+        desiredMax: DESIRED_MAX_COMPLETION,
+      })
+
+      if (!decision.ok) {
+        if (decision.shrinkHistory && shrinkLevel < 2) {
+          shrinkLevel += 1
+          continue
+        }
+        const error = new Error(
+          `${providerLabel(active.providerId)} has no per-minute token budget left for the next request.`,
         )
-        if (combo.key !== activeKey || combo.model !== model) {
-          activeKey = combo.key
-          model = combo.model
-          event(
-            'fallback',
-            `Recovered — now using ${combo.model} with ${keyLabel(combo.key)}.`,
-            { status: 'done', model: combo.model, tool: 'fallback' },
-          )
-        }
-        return response
+        error.budget = true
+        error.waitMs = decision.waitMs ?? MAX_WAIT_MS
+        throw error
+      }
+
+      const maxCompletionTokens = Math.max(MIN_COMPLETION, decision.maxCompletionTokens)
+
+      try {
+        const response = await sendCompletion(wireMessages, maxCompletionTokens, temperature)
+        return { response, maxCompletionTokens, estimatedInput }
       } catch (error) {
-        const retryable =
-          error.status === 429 ||
-          error.status === 404 ||
-          error.status === 401 ||
-          error.status === 403
-        if (!retryable) throw error
-
-        failures.push({ combo, error })
-
-        const next = ordered[index + 1]
-        if (next && error.status === 429) {
-          const sameModel = next.model === combo.model
-          const description = sameModel
-            ? `Rate limit hit on ${combo.model} with ${keyLabel(combo.key)} — switching to ${keyLabel(next.key)}…`
-            : `Rate limited on ${combo.model} across saved keys — switching to ${next.model}…`
-          event('fallback', description, {
-            status: 'done',
-            model: next.model,
-            tool: 'fallback',
-          })
-        } else if (next && error.status === 404) {
-          event(
-            'fallback',
-            `${combo.model} is not available on ${keyLabel(combo.key)} — trying ${next.model}…`,
-            { status: 'done', model: next.model, tool: 'fallback' },
-          )
-        } else if (next && (error.status === 401 || error.status === 403)) {
-          event(
-            'fallback',
-            `${keyLabel(combo.key)} was rejected — trying ${keyLabel(next.key)}…`,
-            { status: 'done', model: next.model, tool: 'fallback' },
-          )
+        if (error.status === 413) {
+          if (shrinkLevel < 2) {
+            shrinkLevel += 1
+            note('Request too large (413) — trimming history and retrying…')
+            continue
+          }
+          error.tooLarge = true
         }
+        throw error
       }
     }
-
-    // Every combination failed. If Groq told us a SHORT wait would clear it,
-    // honour that once (rather than failing instantly) — but only when there is
-    // genuinely nothing else to try.
-    const waits = failures
-      .map(({ error }) => error.retryAfterMs)
-      .filter((value) => Number.isFinite(value) && value > 0)
-    const shortWait = waits.length ? Math.min(...waits) : null
-
-    if (shortWait !== null && shortWait <= MAX_FALLBACK_WAIT_MS) {
-      event(
-        'thinking',
-        `All keys/models are rate-limited — waiting ${Math.ceil(shortWait / 1000)}s before one retry…`,
-        { status: 'thinking', model },
-      )
-      await new Promise((resolve) => setTimeout(resolve, shortWait))
-      try {
-        const response = await callGroq(
-          activeKey.plain,
-          messagesForRequest,
-          model,
-          captureUsage({ key: activeKey }),
-        )
-        event('fallback', `Recovered after the wait — continuing on ${model}.`, {
-          status: 'done',
-          model,
-          tool: 'fallback',
-        })
-        return response
-      } catch (error) {
-        failures.push({ combo: { key: activeKey, model }, error })
-      }
-    }
-
-    const error = new Error(RATE_LIMIT_FINAL_MESSAGE)
-    error.status = 429
-    error.code = 'RATE_LIMITED'
+    const error = new Error('Could not fit the request within the provider token budget.')
+    error.budget = true
+    error.waitMs = MAX_WAIT_MS
     throw error
   }
 
-  event('thinking', 'Starting the agent…', {
+  async function waitForCoolingPool() {
+    const deadline = Date.now() + MAX_TOTAL_WAIT_MS
+    for (;;) {
+      pruneCooling()
+      const pending = candidates
+        .map((candidate) => cooling.get(candidateIdentity(candidate)) ?? 0)
+        .filter((until) => until > Date.now())
+      if (pending.length === 0) return
+      const earliest = Math.min(...pending)
+      const waitMs = Math.max(0, earliest - Date.now())
+      if (waitMs <= 0) continue
+      const waited = Math.min(waitMs, MAX_WAIT_MS)
+      note(
+        `All candidates are cooling down — waiting for the earliest reset…`,
+        null,
+        { waitingMs: waited },
+      )
+      await countdownWait(waited)
+      if (Date.now() > deadline) {
+        const error = new Error(
+          'All saved keys are cooling down. Try again shortly or add another API key in Settings.',
+        )
+        error.status = 429
+        error.code = 'RATE_LIMITED'
+        throw error
+      }
+    }
+  }
+
+  const switchNote = (previous, reason, extra = {}) =>
+    event_('fallback', `${reason}, switching to ${providerLabel(active.providerId)} (${active.model})`, {
+      status: 'done',
+      model,
+      provider: active.providerId,
+      tool: 'fallback',
+      switchTo: active.providerId,
+      from: previous.providerId,
+      ...extra,
+    })
+
+  async function requestCompletion(temperature) {
+    let lastError = null
+    let transientRetried = false
+    const maxSteps = candidates.length * 3 + 4
+
+    for (let step = 0; step < maxSteps; step += 1) {
+      const previous = active
+      const previousLabel = providerLabel(previous.providerId)
+      try {
+        return await requestOnce(temperature)
+      } catch (error) {
+        lastError = error
+        if (isToolCallParseError(error)) throw error
+
+        if (error.budget) {
+          const next = advanceCandidate()
+          if (next) {
+            switchNote(previous, `${previousLabel} per-minute budget used up`)
+            continue
+          }
+          await waitForCoolingPool()
+          continue
+        }
+
+        if (error.status === 429) {
+          const waitMs =
+            Number.isFinite(error.retryAfterMs) && error.retryAfterMs > 0
+              ? error.retryAfterMs
+              : COOLING_DEFAULT_MS
+          coolCandidate(previous, waitMs)
+          if (previous.key.id) {
+            markKeyCooling(previous.key.id, waitMs, `${previousLabel} rate limit reached.`)
+          }
+          const next = advanceCandidate()
+          if (next) {
+            switchNote(previous, `${previousLabel} per-minute limit reached`)
+            continue
+          }
+          await waitForCoolingPool()
+          continue
+        }
+
+        if (error.status === 401 || error.status === 403) {
+          if (previous.key.id) markKeyInvalid(previous.key.id, error.message)
+          coolCandidate(previous, MAX_TOTAL_WAIT_MS)
+          const next = advanceCandidate()
+          if (next) {
+            switchNote(previous, `${previousLabel} rejected its key`)
+            continue
+          }
+          await waitForCoolingPool()
+          continue
+        }
+
+        if (error.status === 422) {
+          coolCandidate(previous, COOLING_DEFAULT_MS)
+          const next = advanceCandidate()
+          if (next) {
+            switchNote(previous, `${previousLabel} rejected ${previous.model} as invalid (422)`)
+            continue
+          }
+          throw error
+        }
+
+        if (error.status === 413 || error.status === 404 || error.tooLarge) {
+          const next = advanceCandidate()
+          if (next) {
+            switchNote(previous, `The request did not fit on ${previous.model}`)
+            continue
+          }
+          throw error
+        }
+
+        if (error.status >= 500 || error.code === 'TIMEOUT' || error.code === 'NETWORK') {
+          if (!transientRetried) {
+            transientRetried = true
+            note(`${previousLabel} had a transient error — retrying once…`, null, { retrying: true })
+            continue
+          }
+          coolCandidate(previous, TRANSIENT_COOLING_MS)
+          const next = advanceCandidate()
+          if (next) {
+            switchNote(previous, `${previousLabel} is unavailable`)
+            continue
+          }
+          throw error
+        }
+
+        throw error
+      }
+    }
+
+    throw lastError ?? new Error('Could not complete the request.')
+  }
+
+  event_('thinking', 'Starting the agent…', {
     status: 'thinking',
     model,
-    keyLabel: keyLabel(activeKey),
-    keys: keys.length,
+    provider: active.providerId,
+    keyLabel: keyLabelOf(active.key),
   })
-  const treeContext = await buildTreeContext(projectId)
 
-  const messages = [
-    { role: 'system', content: buildSystemPrompt(framework, treeContext) },
-    { role: 'user', content: task },
-  ]
+  const persistSession = (reason) => {
+    try {
+      saveAgentSession(projectId, {
+        messages,
+        plan,
+        framework,
+        model,
+        provider: active.providerId,
+        condensedSpec,
+        reason,
+      })
+    } catch (error) {
+      console.warn(`[agent] could not save session: ${error?.message ?? error}`)
+    }
+  }
+
+  const appendPartCounts = new Map()
 
   for (;;) {
+    const temperature = parseRetries === 0 ? 0.2 : Math.max(0, 0.2 - parseRetries * 0.1)
     let response
     try {
-      // Send a TRIMMED view of the history: recent turns stay complete, older
-      // tool results and file bodies are slimmed so the prompt stays lean.
-      response = await requestCompletion(trimMessages(messages))
+      ;({ response } = await requestCompletion(temperature))
     } catch (error) {
-      event('error', error.message, { status: 'done', model })
+      if (isToolCallParseError(error)) {
+        if (parseRetries < MAX_PARSE_RETRIES) {
+          parseRetries += 1
+          note('Tool call was malformed, retrying with smaller chunks…')
+          messages.push({ role: 'system', content: TOOL_CALL_CORRECTION_NOTE })
+          continue
+        }
+        const next = advanceCandidate()
+        if (next) {
+          parseRetries = 0
+          event_('fallback', `Repeated malformed tool calls — switching to ${model}.`, {
+            status: 'done',
+            model,
+            provider: active.providerId,
+            tool: 'fallback',
+          })
+          messages.push({ role: 'user', content: TOOL_CALL_CORRECTION_NOTE })
+          continue
+        }
+      }
+      event_('error', error.message, { status: 'done', model })
+      persistSession(error.code ?? 'error')
       throw error
     }
+
+    parseRetries = 0
 
     const message = response?.choices?.[0]?.message
     if (!message) {
-      const error = new Error('Groq returned an empty response. Try again.')
-      event('error', error.message, { status: 'done' })
+      const error = new Error('The provider returned an empty response. Try again.')
+      event_('error', error.message, { status: 'done' })
+      persistSession('empty_response')
       throw error
     }
 
-    // The model was asked to open its FIRST message with a PROJECT_NAME line
-    // when it is starting a brand-new project. Parse it once, from that first
-    // message, and let the caller rename the scratch workspace if it applies.
-    if (!firstAssistantSeen) {
-      firstAssistantSeen = true
-      const fromModel = extractProjectName(message.content)
-      if (fromModel) {
-        suggestedName = fromModel
-        if (typeof onProjectName === 'function') {
+    if (plan.length === 0 && message.content) {
+      const parsed = extractPlan(message.content)
+      if (parsed.files.length > 0 || parsed.projectName) {
+        plan = parsed.files
+        const firstUser = messages.find((entry) => entry.role === 'user')
+        const summaryText = stripProjectNameLine(String(message.content ?? ''))
+        condensedSpec = truncate(
+          `SPEC (project ${parsed.projectName ?? 'unnamed'}): ${summaryText}`,
+          1200,
+        )
+        if (firstUser) replaceTaskWithSpec(messages, condensedSpec)
+        if (parsed.projectName && typeof onProjectName === 'function') {
           try {
-            await onProjectName(fromModel)
+            await onProjectName(parsed.projectName)
           } catch (error) {
             console.warn(`[agent] project naming failed: ${error?.message ?? error}`)
           }
         }
+        persistSession('plan')
+        event_('plan', `Planned ${plan.length} file(s): ${plan.join(', ')}`, {
+          status: 'done',
+          model,
+          provider: active.providerId,
+          tool: 'plan',
+          projectName: parsed.projectName ?? null,
+        })
       }
     }
 
@@ -1049,42 +1060,64 @@ export async function runAgent({
 
     const calls = Array.isArray(message.tool_calls) ? message.tool_calls : []
     if (calls.length === 0) {
-      const finalText =
-        stripProjectNameLine(String(message.content ?? '').trim()) || 'Task complete.'
-      event('complete', finalText, {
+      const missing = plan.filter((file) => {
+        try {
+          return !existsInWorkspace(projectId, file)
+        } catch {
+          return false
+        }
+      })
+      if (missing.length > 0 && planReminders < 3 && toolCalls < MAX_TOOL_CALLS) {
+        planReminders += 1
+        messages.push({
+          role: 'user',
+          content: `These planned files are still missing: ${missing.join(', ')}. Continue and create them.`,
+        })
+        note(`Verifying the plan — ${missing.length} file(s) still missing…`)
+        continue
+      }
+      const finalText = stripProjectNameLine(String(message.content ?? '').trim()) || 'Task complete.'
+      event_('complete', finalText, {
         status: 'done',
         durationMs: Date.now() - startedAt,
         toolCalls,
         model,
+        provider: active.providerId,
+        plannedFiles: plan.length,
+        missingFiles: missing.length,
       })
+      clearAgentSession(projectId)
       return {
         message: finalText,
         toolCalls,
         durationMs: Date.now() - startedAt,
         model,
-        suggestedName,
+        provider: active.providerId,
+        suggestedName: extractProjectName(message.content) ?? null,
       }
     }
 
-    event('thinking', 'Working on it…', { status: 'thinking' })
+    event_('thinking', 'Working on it…', { status: 'thinking', provider: active.providerId })
 
     for (const call of calls) {
       if (toolCalls >= MAX_TOOL_CALLS) {
-        const limitMessage = `Stopped after ${MAX_TOOL_CALLS} tool calls — the per-run limit. The files created so far are on disk; review the work or run the task again to continue.`
-        event('complete', limitMessage, {
+        const limitMessage = `Stopped after ${MAX_TOOL_CALLS} tool calls — the per-run limit. Use Continue to finish.`
+        event_('complete', limitMessage, {
           status: 'done',
           limitReached: true,
           toolCalls,
           durationMs: Date.now() - startedAt,
           model,
+          provider: active.providerId,
         })
+        persistSession('limit')
         return {
           message: limitMessage,
           toolCalls,
           durationMs: Date.now() - startedAt,
           limitReached: true,
           model,
-          suggestedName,
+          provider: active.providerId,
         }
       }
       toolCalls += 1
@@ -1096,21 +1129,22 @@ export async function runAgent({
       } catch {
         args = {}
       }
-      // Resolve the path the tool will ACTUALLY use, so the feed line, the
-      // stored details and the disk all agree (see normalizeToolArgs).
       args = normalizeToolArgs(projectId, name, args)
 
       const actionId = crypto.randomUUID()
-      const description = describeAction(name, args)
-      // (a) announce the action BEFORE it runs, so the feed streams live
-      event(TOOL_LABELS[name] ?? 'thinking', description, {
+      let appendPart
+      if (name === 'append_to_file') {
+        appendPart = (appendPartCounts.get(args.path) ?? 1) + 1
+        appendPartCounts.set(args.path, appendPart)
+      }
+      const description = describeAction(name, args, { appendPart })
+      event_(TOOL_LABELS[name] ?? 'thinking', description, {
         tool: name,
         args: { path: args.path, command: args.command },
         status: 'running',
         actionId,
       })
 
-      // (b) execute for REAL on the workspace (files / shell)
       let outcome
       try {
         outcome = await executeTool(name, args, projectId)
@@ -1118,22 +1152,28 @@ export async function runAgent({
         outcome = { text: `Error: ${error.message}` }
       }
 
-      // (c) report the result under the SAME actionId (updates the feed row,
-      //     e.g. "Running npm install" -> its captured output + exit code)
-      event(TOOL_LABELS[name] ?? 'thinking', description, {
+      event_(TOOL_LABELS[name] ?? 'thinking', description, {
         tool: name,
         args: { path: args.path, command: args.command },
         status: 'done',
         actionId,
-        result: truncate(outcome.text, 4000),
+        result: truncate(outcome.text, 2000),
         ...(outcome.details ?? {}),
       })
 
+      const modelResult =
+        outcome.modelText ?? truncate(outcome.text ?? '', MAX_TOOL_RESULT_CHARS)
       messages.push({
         role: 'tool',
         tool_call_id: call.id ?? call.function?.name ?? `call_${toolCalls}`,
-        content: truncate(outcome.text, MAX_TOOL_RESULT_CHARS),
+        content: modelResult,
       })
+
+      if (WRITE_TOOLS.has(name) && !String(outcome.text ?? '').startsWith('Error')) {
+        stubWriteArguments(call, outcome.lines ?? 0)
+      }
     }
   }
 }
+
+export { isToolCallParseError }

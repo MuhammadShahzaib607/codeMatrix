@@ -4,8 +4,12 @@
 
 const FRAMEWORKS_KEY = 'code-matrix:aiFrameworks'
 const KEY_ID_KEY = 'code-matrix:aiKeyId'
+const MODEL_KEY = 'code-matrix:aiModel'
+const PROVIDER_KEY = 'code-matrix:aiProviderPreference'
 
 const DEFAULT_FRAMEWORK = 'react'
+const DEFAULT_MODEL = 'auto'
+const DEFAULT_PROVIDER_PREFERENCE = 'auto'
 
 function readFrameworks() {
   try {
@@ -45,5 +49,50 @@ export function saveSelectedKeyId(keyId) {
   try {
     if (keyId) localStorage.setItem(KEY_ID_KEY, keyId)
     else localStorage.removeItem(KEY_ID_KEY)
+  } catch {}
+}
+
+function readModels() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MODEL_KEY) ?? '{}')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+/** The model choice last made by this user (defaults to Auto). */
+export function loadModelPreference(userId) {
+  const map = readModels()
+  return map[userId || 'guest'] || DEFAULT_MODEL
+}
+
+export function saveModelPreference(userId, modelId) {
+  try {
+    const map = readModels()
+    map[userId || 'guest'] = modelId || DEFAULT_MODEL
+    localStorage.setItem(MODEL_KEY, JSON.stringify(map))
+  } catch {}
+}
+
+function readProviderPreferences() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PROVIDER_KEY) ?? '{}')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+export function loadProviderPreference(userId) {
+  const map = readProviderPreferences()
+  return map[userId || 'guest'] || DEFAULT_PROVIDER_PREFERENCE
+}
+
+export function saveProviderPreference(userId, preference) {
+  try {
+    const map = readProviderPreferences()
+    map[userId || 'guest'] = preference || DEFAULT_PROVIDER_PREFERENCE
+    localStorage.setItem(PROVIDER_KEY, JSON.stringify(map))
   } catch {}
 }

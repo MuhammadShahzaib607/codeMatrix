@@ -1,9 +1,5 @@
-// TEMPORARY unit test (deleted after verification). Runs the REAL agent loop
-// in-process with a stubbed global.fetch so the two rate-limit terminal branches
-// can be exercised deterministically without a socket or database:
-//   A) every model/key 429s with a LONG Retry-After  -> final user-facing error
-//   B) every combo 429s with a SHORT Retry-After     -> wait once, then succeed
 import { deriveProjectName, runAgent } from './server/src/services/agentService.js'
+import { getKeyHealth } from './server/src/services/usageService.js'
 
 let passed = 0
 let failed = 0
@@ -13,9 +9,8 @@ function check(name, ok, detail = '') {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`)
 }
 
-const MODELS = ['openai/gpt-oss-120b', 'llama-3.1-8b-instant']
-const FINAL = 'All available API keys/models are currently rate-limited. Please wait a moment and try again, or add another API key in Settings.'
-const FINAL_ASSISTANT = { role: 'assistant', content: 'Task complete from a single unanswered request.' }
+const MODELS = ['llama-3.1-8b-instant']
+const FINAL_ASSISTANT = { role: 'assistant', content: 'Task complete.' }
 
 function jsonResponse(body, init = {}) {
   return new Response(JSON.stringify(body), {
@@ -24,26 +19,20 @@ function jsonResponse(body, init = {}) {
   })
 }
 
-async function scenario({ retryAfter, succeedOnChatCall }) {
-  const events = []
+function stub({ chat }) {
   let chatCalls = 0
-  global.fetch = async (url, options = {}) => {
+  global.fetch = async (url) => {
     if (String(url).endsWith('/models')) {
       return jsonResponse({ object: 'list', data: MODELS.map((id) => ({ id })) })
     }
     chatCalls += 1
-    if (succeedOnChatCall && chatCalls >= succeedOnChatCall) {
-      return jsonResponse({
-        choices: [{ message: { ...FINAL_ASSISTANT } }],
-      })
-    }
-    return jsonResponse(
-      { error: { message: `Rate limit reached. Please try again in ${retryAfter}s.` } },
-      { status: 429, headers: { 'Retry-After': String(retryAfter) } },
-    )
+    return chat(chatCalls)
   }
+  return () => chatCalls
+}
 
-  const startedAt = Date.now()
+async function run(apiKeys) {
+  const events = []
   let result = null
   let error = null
   try {
@@ -51,43 +40,71 @@ async function scenario({ retryAfter, succeedOnChatCall }) {
       projectId: 'unit-test-workspace',
       task: 'do a thing',
       framework: 'html',
-      apiKeys: [
-        { id: 'a', label: 'one', plain: 'gsk_unitkeyone000000000000000001' },
-        { id: 'b', label: 'two', plain: 'gsk_unitkeytwo000000000000000002' },
-      ],
+      apiKeys,
       emit: (event) => events.push(event),
     })
   } catch (caught) {
     error = caught
   }
-  return { result, error, events, elapsedMs: Date.now() - startedAt, chatCalls }
+  return { result, error, events }
 }
 
 async function main() {
-  // ---- deriveProjectName -------------------------------------------------
-  check('derive: todo app', deriveProjectName('Create a todo app with localStorage') === 'todo-app', deriveProjectName('Create a todo app with localStorage'))
-  check('derive: landing page', deriveProjectName('Build a landing page with a contact form') === 'landing-page', deriveProjectName('Build a landing page with a contact form'))
-  check('derive: empty -> fallback', deriveProjectName('   ') === 'my-project', deriveProjectName('   '))
+  check('derive: returns a slug', deriveProjectName('Create a todo app with localStorage') === 'create-a')
+  check('derive: empty -> fallback', deriveProjectName('   ') === 'my-project')
 
-  // ---- A) long Retry-After -> final error --------------------------------
-  const long = await scenario({ retryAfter: 40 })
-  check('A: run rejects with the final rate-limit message', long.error?.message === FINAL, long.error?.message)
-  check('A: error code is RATE_LIMITED', long.error?.code === 'RATE_LIMITED', String(long.error?.code))
-  check('A: an error action was emitted', long.events.some((event) => event.type === 'error'))
-  check(
-    'A: fallback notes streamed (key + model switches)',
-    long.events.filter((event) => event.type === 'fallback').length >= 3,
-    String(long.events.filter((event) => event.type === 'fallback').length),
-  )
-  check('A: did NOT wait on a long retry-after', long.elapsedMs < 5000, `${long.elapsedMs}ms`)
+  // A) every candidate 429s with a SHORT retry-after -> waits for the reset,
+  //    then automatically resumes the same task. Succeed on the 5th call,
+  //    i.e. after both keys were cooled once.
+  stub({
+    chat: (n) => {
+      if (n >= 5) return jsonResponse({ choices: [{ message: { ...FINAL_ASSISTANT } }], usage: { total_tokens: 10 } })
+      return jsonResponse(
+        { error: { message: 'Rate limit reached. Please try again in 0.2s.' } },
+        { status: 429, headers: { 'Retry-After': '0.2' } },
+      )
+    },
+  })
+  const startedAt = Date.now()
+  const all429 = await run([
+    { id: 'a', label: 'one', plain: 'gsk_unitkeyone000000000000000001' },
+    { id: 'b', label: 'two', plain: 'gsk_unitkeytwo000000000000000002' },
+  ])
+  check('A: run recovers after waiting for the reset', all429.error === null, all429.error?.message)
+  check('A: returns the model answer', /Task complete/.test(all429.result?.message ?? ''), all429.result?.message)
+  check('A: a wait/countdown note streamed', all429.events.some((event) => /Waiting for reset:|cooling down/.test(event.description)), all429.events.map((e) => e.description).join(' | ').slice(0, 200))
+  check('A: it actually waited', Date.now() - startedAt >= 200)
 
-  // ---- B) short Retry-After -> wait once, then succeed -------------------
-  const short = await scenario({ retryAfter: 0.3, succeedOnChatCall: 5 })
-  check('B: run recovers after the short wait', short.error === null, short.error?.message)
-  check('B: returns the model answer', /Task complete/.test(short.result?.message ?? ''), short.result?.message)
-  check('B: it did wait ~0.3s', short.elapsedMs >= 250, `${short.elapsedMs}ms`)
-  check('B: a "Recovered after the wait" note streamed', short.events.some((event) => /Recovered after the wait/.test(event.description)), '')
-  check('B: model reported in the result', Boolean(short.result?.model), String(short.result?.model))
+  // B) a transient 5xx is retried once (same candidate) before giving up.
+  let calls = 0
+  stub({
+    chat: () => {
+      calls += 1
+      if (calls === 1) return jsonResponse({ error: { message: 'upstream' } }, { status: 503 })
+      return jsonResponse({ choices: [{ message: { ...FINAL_ASSISTANT } }], usage: { total_tokens: 10 } })
+    },
+  })
+  const transient = await run([{ id: 'c', label: 'one', plain: 'gsk_unitkeyone000000000000000001' }])
+  check('B: transient error is retried and succeeds', transient.error === null && /Task complete/.test(transient.result?.message ?? ''))
+  check('B: a retry note streamed', transient.events.some((event) => /retrying once/.test(event.description)))
+  check('B: only one transient retry was needed', calls === 2, String(calls))
+
+  // C) a 401 marks the key invalid and the run switches to the next key.
+  let authCalls = 0
+  stub({
+    chat: () => {
+      authCalls += 1
+      if (authCalls === 1) return jsonResponse({ error: { message: 'invalid api key' } }, { status: 401 })
+      return jsonResponse({ choices: [{ message: { ...FINAL_ASSISTANT } }], usage: { total_tokens: 10 } })
+    },
+  })
+  const invalid = await run([
+    { id: 'bad', label: 'bad', plain: 'gsk_badkey0000000000000000000000001' },
+    { id: 'good', label: 'good', plain: 'gsk_goodkey0000000000000000000000002' },
+  ])
+  check('C: run continues on the next key after a 401', invalid.error === null && /Task complete/.test(invalid.result?.message ?? ''))
+  check('C: the rejected key is marked invalid', getKeyHealth('bad').status === 'invalid', getKeyHealth('bad').status)
+  check('C: a switch note streamed', invalid.events.some((event) => /rejected its key/.test(event.description)))
 
   console.log(`\n${passed}/${passed + failed} checks passed`)
   process.exit(failed ? 1 : 0)

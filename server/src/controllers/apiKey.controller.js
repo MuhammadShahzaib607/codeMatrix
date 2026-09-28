@@ -1,7 +1,7 @@
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
 import {
-  MAX_KEYS_PER_USER,
+  MAX_KEYS_PER_PROVIDER,
   deleteKeyForUser,
   listKeysForUser,
   revealKeyForUser,
@@ -9,7 +9,8 @@ import {
   updateKeyForUser,
   verifyAccountPassword,
 } from '../services/apiKeyService.js'
-import { getUsageForKeys } from '../services/usageService.js'
+import { getKeyHealth, getUsageForKey, hydrateUsage } from '../services/usageService.js'
+import { providerPublicConfig } from '../config/providers.js'
 
 /**
  * GET /api/keys -> the user's saved keys, MASKED only ("gsk_...a1b2").
@@ -18,37 +19,42 @@ import { getUsageForKeys } from '../services/usageService.js'
  */
 export const listKeys = asyncHandler(async (req, res) => {
   const keys = await listKeysForUser(req.user.id)
-  res.json({ keys, max: MAX_KEYS_PER_USER })
+  res.json({ keys, max: MAX_KEYS_PER_PROVIDER, providers: providerPublicConfig() })
 })
 
-/**
- * GET /api/keys/usage -> the LATEST captured Groq rate-limit numbers for each
- * of the user's saved keys (masks + remaining/limit + reset times).
- *
- * This never calls Groq itself: the values were captured from the response
- * headers of real agent requests (see services/usageService.js), so they may be
- * slightly stale until the next agent request refreshes them. A key that has
- * not been used yet comes back with usage: null and the UI shows "Not used yet".
- */
+/** GET /api/keys/providers -> public provider metadata (no secrets). */
+export const listProviders = asyncHandler(async (req, res) => {
+  res.json({ providers: providerPublicConfig() })
+})
+
 export const listKeyUsage = asyncHandler(async (req, res) => {
   const keys = await listKeysForUser(req.user.id)
-  const usage = await getUsageForKeys(keys.map((key) => key.id))
+  await hydrateUsage(keys)
 
   res.json({
-    keys: keys.map((key) => ({
-      id: key.id,
-      label: key.label,
-      masked: key.masked,
-      usage: usage.get(key.id) ?? null,
-    })),
+    keys: keys.map((key) => {
+      const { models, summary, preferredModel, lastUpdated } = getUsageForKey(key)
+      return {
+        id: key.id,
+        provider: key.provider,
+        providerLabel: key.providerLabel,
+        label: key.label,
+        masked: key.masked,
+        status: getKeyHealth(key.id),
+        model: preferredModel,
+        models,
+        summary,
+        lastUpdated,
+      }
+    }),
     capturedAt: new Date().toISOString(),
   })
 })
 
-/** POST /api/keys { key, label } -> encrypts + saves (max 3 per user). */
+/** POST /api/keys { provider, key, label } -> validates, encrypts and saves. */
 export const createKey = asyncHandler(async (req, res) => {
-  const { key, label } = req.body ?? {}
-  const saved = await saveKeyForUser(req.user.id, key, label)
+  const { provider, key, label } = req.body ?? {}
+  const saved = await saveKeyForUser(req.user.id, { provider, key, label })
   res.status(201).json({ key: saved })
 })
 

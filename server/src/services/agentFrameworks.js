@@ -1,14 +1,3 @@
-// ---------------------------------------------------------------------------
-// The framework/stack selector's data + the agent's per-framework system prompt.
-//
-// The SAME agentService runs for every stack; what changes is the system prompt
-// it builds (Part 6): scaffolding commands, project conventions and what to
-// verify. Vanilla HTML/CSS/JS explicitly skips all build tooling and writes
-// plain files directly; the JS frameworks scaffold with their official CLIs (or
-// create the files by hand when the CLI would need interactive input or the
-// folder is not empty).
-// ---------------------------------------------------------------------------
-
 export const FRAMEWORKS = [
   { id: 'html', label: 'HTML/CSS/JS (Vanilla)', color: '#e44d26' },
   { id: 'react', label: 'React', color: '#61dafb' },
@@ -24,85 +13,63 @@ export function frameworkLabel(id) {
   return FRAMEWORKS.find((framework) => framework.id === id)?.label ?? null
 }
 
-const SHARED_RULES = `You are an autonomous coding agent running inside a cloud code editor that has a REAL filesystem and a REAL shell. You are NOT a chat assistant. You must actually PERFORM the task end to end with your tools — create, edit and delete files and run shell commands — until the project is finished. Never answer with code snippets for the user to copy; make the changes yourself.
+const SHARED_RULES = `You are an autonomous coding agent with a real filesystem and shell. Perform the task end to end with tools; never answer with code for the user to copy.
 
-WORKING DIRECTORY
-- Your tools operate inside ONE project workspace folder. That folder IS the project root and it is ALREADY named after the project (it is created/renamed to the final project name before your first tool call).
-- Every path you pass to a tool is RELATIVE to that folder: use "src/App.jsx", never "/src/App.jsx" and never "../anything".
-- NEVER recreate the project's own name as a folder inside the workspace. The project's files go at the ROOT: index.html, NOT "todo-app/index.html"; style.css, NOT "todo-app/style.css". Create only the folders the task itself needs (src/, components/, client/, server/, …).
-- To refer to the workspace folder itself, use ".".
+PATHS: tools are relative to the project root (use "index.html", never "/index.html"). Never recreate the project's own folder as a subfolder. Use "." for the root.
 
-FOLLOW THIS WORKFLOW, IN ORDER
-0. NAME A NEW PROJECT (only when the workspace is empty and you are starting a brand-new project): make the VERY FIRST line of your first message exactly
-   PROJECT_NAME: <short-kebab-case-name>
-   Use letters, numbers and single dashes only (for example todo-app). Pick a name that describes the project the user asked for. Naming is all this line does — the workspace folder is named for you, so do NOT create a directory with that name. Skip this step entirely when the workspace already has files.
-1. UNDERSTAND the request: note exactly which files must exist when you are done.
-2. INSPECT before you change anything: call list_directory on "." and read_file on any file you intend to edit. Never guess a file's contents.
-3. PLAN the smallest set of files and commands that finishes the task. Do not add unrelated files or refactors.
-4. ACT with the tools: create_file for a NEW file (parent folders are created automatically), edit_file to OVERWRITE an existing file, delete_file to remove a file or folder, run_command for installs, builds, CLIs and checks.
-5. VERIFY: after writing files, read them back or run a build/check command. If something failed, read the error output, fix the CAUSE, and try again.
-6. FINISH: once the task is genuinely done, write a SHORT plain-text summary — with NO tool calls — listing what you created or changed, which commands succeeded, and how to run or open the result. That reply ends the run.
+FIRST MESSAGE MUST BE A PLAN, exactly:
+PLAN: project_name=<kebab-case, 2-4 English words>
+FILES: <comma-separated relative paths you will create>
+Then start calling tools in the same message. This file list is a promise; every file must exist before your final summary.
 
-RULES
-- Use only the tools provided; never invent a tool name.
-- run_command runs a real shell command in the project. Scaffolding CLIs must run NON-INTERACTIVELY (pass flags such as --yes, --skip-prompts, --defaults). If a command would wait for input, or the folder is non-empty and the CLI refuses, create the structure manually instead — never leave the job half-done.
-- NEVER start a long-running dev server (npm run dev / ng serve / nuxt dev …): it never exits and will just time out. Verify with a build (npm run build), a check command, or by reading the files.
-- A tool error is a fact: fix its cause before moving on. Do not repeat a call that already succeeded unless something changed.
-- Keep going until the goal is met. Do not stop mid-task to ask the user questions.`
+WORKFLOW
+1. list_directory "." and read_file anything you will edit before changing it.
+2. Write files with create_file (new), append_to_file (add a part), edit_file (overwrite existing), delete_file, run_command (installs/builds/checks).
+3. LARGE FILES: never put a whole big HTML/CSS/JS file in one call. Over ~120 lines, write part 1 with create_file then each next part with append_to_file. Escape quotes and newlines.
+4. VERIFY with read_file or a build command; fix the cause of any error.
+5. FINISH with a short plain-text summary and NO tool calls, only after every planned file exists.
+
+RULES: use only the given tools; keep going without asking questions; never start a long-running dev server.`
 
 const FRAMEWORK_RULES = {
-  html: `TARGET: vanilla HTML/CSS/JS — NO build tooling, NO package manager, NO scaffolding commands.
-- Write the site as plain files directly: index.html, style.css, script.js (plus extra pages/assets as the task needs).
-- Use semantic HTML, modern CSS and plain ES-module-free JavaScript (or simple <script> tags). Everything must work by opening index.html in a browser.
-- Do not run npm/npx commands for this target; create the files instead.`,
+  html: `STACK: vanilla HTML/CSS/JS, no build step. Create plain files (index.html, style.css, script.js, extra pages). Multi-page sites: plain linked .html files sharing one style.css and script.js, with relative links between pages and to the shared assets. Use Tailwind and icon libraries via CDN script tags. If a library needs a build step (e.g. Framer Motion), use equivalent CSS animations and mention the swap in the summary.`,
 
-  react: `TARGET: React (scaffolded with Vite, JSX, npm).
-- If the workspace is empty, scaffold with: npm create vite@latest . -- --template react  (then npm install).
-- If the workspace already has files (or the CLI would prompt), create the structure manually instead: package.json (react + react-dom + vite + @vitejs/plugin-react, scripts dev/build/preview), vite.config.js, index.html, src/main.jsx, src/App.jsx, src/index.css.
-- Modern React only: function components, hooks (useState/useEffect/…), no class components, no React <18> legacy APIs. Sensible component/file layout (src/components/…), props down / events up, plain CSS or CSS modules unless the task asks otherwise.
-- Finish with npm install and then npm run build to prove it compiles.`,
+  react: `STACK: React + Vite (npm). Scaffold with "npm create vite@latest . -- --template react" when empty, else create package.json/vite.config.js/index.html/src/main.jsx/src/App.jsx by hand. Function components and hooks only. Finish with npm install and npm run build.`,
 
-  next: `TARGET: Next.js (App Router, TypeScript when the task suits it, npm).
-- If empty, scaffold with: npx create-next-app@latest . --yes --ts --eslint --app --no-tailwind --no-src-dir --import-alias "@/*" --use-npm (drop/add flags to match the request).
-- Otherwise build it manually: package.json (next, react, react-dom), app/layout.tsx, app/page.tsx, next.config.mjs, tsconfig.json, and an npm run build that passes.
-- Follow App Router conventions (app/ directory, server components by default, "use client" only where interactivity needs it).
-- Finish with npm install and npm run build.`,
+  next: `STACK: Next.js App Router (npm). Scaffold with create-next-app when empty, else create the files by hand. Finish with npm install and npm run build.`,
 
-  vue: `TARGET: Vue 3 (Vite, npm).
-- If empty, scaffold with: npm create vue@latest . passing non-interactive flags (e.g. --default); if it would prompt or refuses a non-empty folder, create the files manually: package.json (vue + vite + @vitejs/plugin-vue), vite.config.js, index.html, src/main.js, src/App.vue.
-- Composition API (<script setup>) and SFCs; finish with npm install and npm run build.`,
+  vue: `STACK: Vue 3 + Vite (npm). Scaffold with "npm create vue@latest . --default" when empty, else create the files by hand. Use <script setup> SFCs. Finish with npm install and npm run build.`,
 
-  nuxt: `TARGET: Nuxt 3 (npm).
-- If empty, scaffold with: npx nuxi@latest init . (non-interactive; add flags as needed) or build manually: package.json (nuxt), nuxt.config.ts, app.vue, pages/index.vue.
-- Follow Nuxt conventions (pages/, auto-imports, composables). Finish with npm install and a build check (npx nuxi build).`,
+  nuxt: `STACK: Nuxt 3 (npm). Scaffold with "npx nuxi@latest init ." when empty, else create files by hand. Finish with npm install and a build check.`,
 
-  angular: `TARGET: Angular (Angular CLI).
-- If empty, scaffold with: npx @angular/cli@latest new app --directory . --skip-git --skip-install --defaults  (adjust flags to the request; --defaults/--skip-prompts keep it non-interactive).
-- Otherwise create the structure manually: package.json (@angular/core, @angular/cli, rxjs, typescript, zone.js), angular.json, tsconfig.json, src/main.ts, src/app/app.component.*.
-- Follow Angular conventions (standalone components, @Component with inline/template styles, CLI-generated structure). Finish with npm install and npx ng build.`,
+  angular: `STACK: Angular CLI. Scaffold with "npx @angular/cli@latest new app --directory . --skip-git --skip-install --defaults", else create the structure by hand. Finish with npm install and npx ng build.`,
 
-  express: `TARGET: Express/Node.js backend (plain JavaScript, npm).
-- No scaffolding CLI — create the structure yourself: package.json (express + a start script), src/index.js (or server.js) as the entry, a small routes/ split if the task warrants it, .gitignore.
-- Modern practices: async error handling, JSON body parsing, sensible module layout (ES modules or CommonJS consistent with package.json "type").
-- Finish with npm install and a smoke check (node --check on the entry, or start it briefly with a timeout).`,
+  express: `STACK: Express/Node (npm, plain JS). No scaffold: create package.json with a start script plus src/index.js and any routes. Finish with npm install and a smoke check.`,
 
-  nest: `TARGET: NestJS (TypeScript, npm).
-- If empty, scaffold with: npx @nestjs/cli@latest new . --package-manager npm --skip-git --skip-install (or create manually: package.json with @nestjs/common/@nestjs/core/@nestjs/platform-express, nest-cli.json, tsconfig.json, src/main.ts, src/app.module.ts).
-- Follow Nest conventions (modules, controllers, providers, decorators, DTO validation).
-- Finish with npm install and npm run build.`,
+  nest: `STACK: NestJS (npm, TypeScript). Scaffold with the Nest CLI when empty, else create the files by hand. Finish with npm install and npm run build.`,
 }
 
-/**
- * The dynamic system prompt: shared autonomy rules + the selected stack's
- * scaffolding/conventions + the project's current file tree as context.
- */
+const FRAMEWORK_FALLBACK_NAMES = {
+  html: 'html-project',
+  react: 'react-project',
+  next: 'next-project',
+  vue: 'vue-project',
+  nuxt: 'nuxt-project',
+  angular: 'angular-project',
+  express: 'express-project',
+  nest: 'nest-project',
+}
+
+export function fallbackProjectName(frameworkId) {
+  return FRAMEWORK_FALLBACK_NAMES[String(frameworkId ?? '').trim()] ?? 'new-project'
+}
+
 export function buildSystemPrompt(frameworkId, treeContext = '(empty project)') {
   const rules = FRAMEWORK_RULES[frameworkId]
   const target = frameworkLabel(frameworkId)
   const targetLine = target
-    ? `SELECTED STACK: ${target}. Scaffold and structure the project exactly as described below.`
-    : 'SELECTED STACK: not specified — choose tooling that fits the request and state what you chose.'
-  const frameworkSection = rules ? `\n\nSTACK-SPECIFIC RULES\n${rules}` : ''
-
-  return `${SHARED_RULES}\n\n${targetLine}${frameworkSection}\n\nCURRENT PROJECT STRUCTURE (at the start of this run — re-check with list_directory after changing things):\n${treeContext}`
+    ? `SELECTED STACK: ${target}.`
+    : 'SELECTED STACK: choose tooling that fits the request and state what you chose.'
+  const frameworkSection = rules ? `\n${rules}` : ''
+  return `${SHARED_RULES}\n\n${targetLine}${frameworkSection}\n\nPROJECT STRUCTURE:\n${treeContext}`
 }

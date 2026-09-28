@@ -1,13 +1,14 @@
 import mongoose from 'mongoose'
 import { isDatabaseConnected } from '../config/db.js'
-import { env } from '../config/env.js'
-import { GroqApiKey } from '../models/GroqApiKey.model.js'
+import { DEFAULT_PROVIDER_ORDER, getProvider, isKnownProvider, providerLabel } from '../config/providers.js'
+import { ApiKey } from '../models/ApiKey.model.js'
 import User from '../models/User.model.js'
 import ApiError from '../utils/ApiError.js'
 import { decryptSecret, encryptSecret, maskSecret } from '../utils/keyVault.js'
+import { listProviderModels } from './providerClient.js'
 
-/** Hard cap per user (enforced here so every entry point shares the rule). */
-export const MAX_KEYS_PER_USER = 3
+export const MAX_KEYS_PER_PROVIDER = 3
+export const MAX_KEYS_PER_USER = MAX_KEYS_PER_PROVIDER * DEFAULT_PROVIDER_ORDER.length
 
 function requireDatabase() {
   if (!isDatabaseConnected()) {
@@ -19,88 +20,91 @@ function requireDatabase() {
   }
 }
 
-/** Masked, client-safe view. The plaintext key is never included, by design. */
 function toPublic(doc) {
   let masked = '••••'
   try {
     masked = maskSecret(decryptSecret(doc.encryptedKey))
   } catch {
-    // A key encrypted with an old/rotated secret still lists, just unreadable.
-    masked = 'gsk_...????'
+    masked = '????'
   }
   return {
     id: String(doc._id),
+    provider: doc.provider || 'groq',
+    providerLabel: providerLabel(doc.provider),
     label: doc.label || '',
     masked,
     createdAt: doc.createdAt ?? null,
   }
 }
 
-/** The user's saved keys, masked (never the full key). */
 export async function listKeysForUser(ownerId) {
   requireDatabase()
-  const docs = await GroqApiKey.find({ owner: ownerId }).sort({ createdAt: -1 }).lean()
+  const docs = await ApiKey.find({ owner: ownerId }).sort({ createdAt: -1 }).lean()
   return docs.map(toPublic)
 }
 
-/**
- * Encrypts and stores a new key, enforcing the 3-key maximum.
- * Returns the masked, client-safe view of what was saved.
- */
-export async function saveKeyForUser(ownerId, rawKey, label = '') {
+export async function saveKeyForUser(ownerId, { provider = 'groq', key, label = '' } = {}) {
   requireDatabase()
-  const key = String(rawKey ?? '').trim()
-  if (!key) {
-    throw new ApiError(400, 'A Groq API key is required.', 'KEY_REQUIRED')
-  }
-  if (/\s/.test(key) || key.length < 12) {
-    throw new ApiError(
-      400,
-      'That does not look like a valid Groq API key (expected something like gsk_…).',
-      'KEY_INVALID',
-    )
+  const providerId = String(provider || 'groq').trim()
+  if (!isKnownProvider(providerId)) {
+    throw new ApiError(400, `Unsupported provider "${providerId}".`, 'PROVIDER_INVALID')
   }
 
-  const existing = await GroqApiKey.countDocuments({ owner: ownerId })
-  if (existing >= MAX_KEYS_PER_USER) {
+  const raw = String(key ?? '').trim()
+  if (!raw) {
+    throw new ApiError(400, `An ${providerLabel(providerId)} API key is required.`, 'KEY_REQUIRED')
+  }
+  if (/\s/.test(raw) || raw.length < 12) {
+    throw new ApiError(400, 'That does not look like a valid API key.', 'KEY_INVALID')
+  }
+
+  const existing = await ApiKey.countDocuments({ owner: ownerId, provider: providerId })
+  if (existing >= MAX_KEYS_PER_PROVIDER) {
     throw new ApiError(
       400,
-      `Maximum ${MAX_KEYS_PER_USER} API keys allowed. Delete one before adding another.`,
+      `Maximum ${MAX_KEYS_PER_PROVIDER} ${providerLabel(providerId)} keys allowed. Delete one before adding another.`,
       'KEY_LIMIT_REACHED',
     )
   }
 
-  const doc = await GroqApiKey.create({
+  let verified = true
+  try {
+    await listProviderModels({ providerId, apiKey: raw })
+  } catch (error) {
+    verified = false
+    if (error.status === 401 || error.status === 403) {
+      throw new ApiError(
+        400,
+        `${providerLabel(providerId)} rejected that key (${error.status}). Check it and try again.`,
+        'KEY_REJECTED',
+      )
+    }
+    if (error.status && error.status >= 400 && error.status < 500) {
+      throw new ApiError(400, error.message, 'KEY_REJECTED')
+    }
+  }
+
+  const doc = await ApiKey.create({
     owner: ownerId,
+    provider: providerId,
     label: String(label ?? '').trim().slice(0, 60),
-    encryptedKey: encryptSecret(key),
+    encryptedKey: encryptSecret(raw),
     createdAt: new Date(),
   })
-  return toPublic(doc)
+  return { ...toPublic(doc), verified }
 }
 
-/** Deletes one of the user's OWN keys. Returns false when nothing matched. */
 export async function deleteKeyForUser(ownerId, keyId) {
   requireDatabase()
-  const result = await GroqApiKey.deleteOne({ _id: keyId, owner: ownerId })
+  const result = await ApiKey.deleteOne({ _id: keyId, owner: ownerId })
   return result.deletedCount > 0
 }
 
-/**
- * Re-checks the caller's ACCOUNT password (the CodeMatrix login password, not
- * the API key) against the stored bcrypt hash using the User model's own
- * comparePassword. Used to gate revealing and editing a saved key. Throws 401
- * with a clear message when it does not match, so no key data can leak.
- */
 export async function verifyAccountPassword(userId, password) {
   requireDatabase()
   const candidate = typeof password === 'string' ? password : ''
   if (!candidate) {
-    throw new ApiError(
-      401,
-      'Enter your account password to continue.',
-      'PASSWORD_REQUIRED',
-    )
+    throw new ApiError(401, 'Enter your account password to continue.', 'PASSWORD_REQUIRED')
   }
   const user = await User.findById(userId)
   if (!user) {
@@ -108,30 +112,23 @@ export async function verifyAccountPassword(userId, password) {
   }
   const isValid = await user.comparePassword(candidate)
   if (!isValid) {
-    throw new ApiError(
-      401,
-      'Incorrect password. Your API key was not revealed.',
-      'INVALID_PASSWORD',
-    )
+    throw new ApiError(401, 'Incorrect password. Your API key was not revealed.', 'INVALID_PASSWORD')
   }
 }
 
-/**
- * FULL, decrypted key for its owner ONLY. Never exposed on a plain list call —
- * callers must verify the account password first (verifyAccountPassword).
- */
 export async function revealKeyForUser(ownerId, keyId) {
   requireDatabase()
   if (!mongoose.isValidObjectId(keyId)) {
     throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
   }
-  const doc = await GroqApiKey.findOne({ _id: keyId, owner: ownerId })
+  const doc = await ApiKey.findOne({ _id: keyId, owner: ownerId })
   if (!doc) {
     throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
   }
   try {
     return {
       id: String(doc._id),
+      provider: doc.provider || 'groq',
       label: doc.label || '',
       value: decryptSecret(doc.encryptedKey),
     }
@@ -144,17 +141,12 @@ export async function revealKeyForUser(ownerId, keyId) {
   }
 }
 
-/**
- * Updates the label and/or replaces the key value of one of the user's OWN
- * keys. Re-encrypts the new value before it is stored; ownership is enforced by
- * filtering every query on owner. Returns the masked, client-safe view.
- */
 export async function updateKeyForUser(ownerId, keyId, { label, key } = {}) {
   requireDatabase()
   if (!mongoose.isValidObjectId(keyId)) {
     throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
   }
-  const doc = await GroqApiKey.findOne({ _id: keyId, owner: ownerId })
+  const doc = await ApiKey.findOne({ _id: keyId, owner: ownerId })
   if (!doc) {
     throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
   }
@@ -166,11 +158,14 @@ export async function updateKeyForUser(ownerId, keyId, { label, key } = {}) {
   if (typeof key === 'string' && key.trim()) {
     const raw = key.trim()
     if (/\s/.test(raw) || raw.length < 12) {
-      throw new ApiError(
-        400,
-        'That does not look like a valid Groq API key (expected something like gsk_…).',
-        'KEY_INVALID',
-      )
+      throw new ApiError(400, 'That does not look like a valid API key.', 'KEY_INVALID')
+    }
+    try {
+      await listProviderModels({ providerId: doc.provider || 'groq', apiKey: raw })
+    } catch (error) {
+      if (error.status === 401 || error.status === 403) {
+        throw new ApiError(400, 'The provider rejected that key.', 'KEY_REJECTED')
+      }
     }
     doc.encryptedKey = encryptSecret(raw)
   }
@@ -179,25 +174,17 @@ export async function updateKeyForUser(ownerId, keyId, { label, key } = {}) {
   return toPublic(doc)
 }
 
-/**
- * ALL of the user's saved keys, decrypted in memory for ONE agent run, in the
- * order the fallback chain should try them: the caller-specified key first (when
- * given), then every other key newest-first. This is what lets the agent cycle
- * through the user's 2-3 keys when one is rate-limited instead of failing.
- *
- * The plaintext values are handed to agentService and dropped when the run ends.
- */
 export async function resolveKeysForUser(ownerId, preferredKeyId = null) {
   requireDatabase()
   if (preferredKeyId && !mongoose.isValidObjectId(preferredKeyId)) {
     throw new ApiError(404, 'API key not found.', 'KEY_NOT_FOUND')
   }
 
-  const docs = await GroqApiKey.find({ owner: ownerId }).sort({ createdAt: -1 }).lean()
+  const docs = await ApiKey.find({ owner: ownerId }).sort({ createdAt: -1 }).lean()
   if (docs.length === 0) {
     throw new ApiError(
       404,
-      'No Groq API key saved yet. Add one in Settings -> AI to use the assistant.',
+      'No API key saved yet. Add one in Settings -> AI to use the assistant.',
       'NO_KEYS',
     )
   }
@@ -212,11 +199,23 @@ export async function resolveKeysForUser(ownerId, preferredKeyId = null) {
     ordered = [preferred, ...docs.filter((doc) => String(doc._id) !== preferredId)]
   }
 
+  const providerRank = (doc) => {
+    const index = DEFAULT_PROVIDER_ORDER.indexOf(doc.provider || 'groq')
+    return index === -1 ? DEFAULT_PROVIDER_ORDER.length : index
+  }
+  ordered = [...ordered].sort((a, b) => {
+    const aPreferred = preferredKeyId && String(a._id) === String(preferredKeyId) ? 0 : 1
+    const bPreferred = preferredKeyId && String(b._id) === String(preferredKeyId) ? 0 : 1
+    if (aPreferred !== bPreferred) return aPreferred - bPreferred
+    return providerRank(a) - providerRank(b)
+  })
+
   return ordered.map((doc) => {
     try {
       return {
         id: String(doc._id),
         label: doc.label || '',
+        provider: doc.provider || 'groq',
         plain: decryptSecret(doc.encryptedKey),
       }
     } catch {
@@ -229,18 +228,11 @@ export async function resolveKeysForUser(ownerId, preferredKeyId = null) {
   })
 }
 
-/**
- * The ONE key to use for an agent run: the caller-specified one, or (default)
- * the most recently added. Kept for callers that only need a single key; the
- * agent's fallback chain uses resolveKeysForUser. Decrypts in memory JUST for
- * this call — the plaintext is dropped when the run ends.
- */
 export async function resolveKeyForUser(ownerId, keyId = null) {
   const [first] = await resolveKeysForUser(ownerId, keyId)
   return first
 }
 
-/** True when the model/endpoints are configured (always true; kept for clarity). */
 export function agentConfig() {
-  return { model: env.groqModel, baseUrl: env.groqBaseUrl }
+  return { providers: DEFAULT_PROVIDER_ORDER, provider: getProvider('groq') }
 }

@@ -466,7 +466,53 @@
   color: var(--text-muted);
 }
 
-/* Live Groq rate-limit bars per saved key (daily requests + per-minute tokens). */
+.settings-key-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-provider-badge {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-key-status {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+}
+
+.settings-key-status.is-ok {
+  color: var(--accent);
+}
+
+.settings-key-status.is-warn {
+  color: var(--warning);
+}
+
+.settings-key-status.is-danger {
+  color: var(--danger);
+}
+
+.settings-key-notice {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warning-border);
+  border-radius: 6px;
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  font-size: 11px;
+}
+
+/* Live rate-limit bars per saved key (per-minute tokens + daily requests or
+   monthly tokens for Mistral). */
 .settings-key-usage {
   display: flex;
   flex-direction: column;
@@ -572,6 +618,23 @@
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.settings-key-provider-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-key-getlink {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.settings-key-getlink:hover {
+  text-decoration: underline;
 }
 
 .settings-key-input {

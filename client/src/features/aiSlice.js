@@ -1,6 +1,12 @@
 import { createAsyncThunk, createSlice, nanoid } from '@reduxjs/toolkit'
 import { agentKeysApi, getAuthToken } from '../services/api'
-import { loadSelectedKeyId, saveSelectedKeyId } from '../services/aiStorage'
+import {
+  loadModelPreference,
+  loadProviderPreference,
+  loadSelectedKeyId,
+  saveSelectedKeyId,
+} from '../services/aiStorage'
+import { AUTO_MODEL, modelParts } from '../utils/agentModels'
 import { getSocket } from '../services/socket'
 import { showToast } from './uiSlice'
 import { openScratchWorkspace } from './workspaceThunks'
@@ -21,19 +27,34 @@ import { openScratchWorkspace } from './workspaceThunks'
 
 const initialState = {
   keys: [],
+  providers: [],
   keysStatus: 'idle', // idle | loading | ready | error
   keysError: null,
   selectedKeyId: loadSelectedKeyId(),
   framework: 'react',
-  // The Groq model the LAST run actually used (resolved server-side from the
-  // user's key). Shown in the panel so it is never a mystery which model ran.
+  // The model preference chosen in the panel. AUTO_MODEL lets the server pick
+  // the allowlisted model with the most remaining per-minute budget.
+  modelChoice: loadModelPreference(null),
+  // Auto (default) / Mistral first / Groq first.
+  providerPreference: loadProviderPreference(null),
+  // The provider + model the CURRENT run resolved (streamed from the server).
+  // The header always reflects what the last request actually used.
+  provider: null,
   model: null,
-  // Latest Groq rate-limit usage per saved key id, captured server-side from
-  // real response headers. Fed by GET /api/keys/usage and by the live
-  // 'agent:usage' socket event. A key with no entry has never been used.
+  // True when the last run ended in an error or hit the tool cap, so the panel
+  // can offer a Continue button that resumes from the saved session.
+  canContinue: false,
+  // Per-key usage envelope: { id, provider, providerLabel, label, masked,
+  // model, models, summary, status, lastUpdated }. summary is the server's
+  // usage ledger for the key's active model; status is active/cooling/invalid.
   usageByKeyId: {},
   usageStatus: 'idle', // idle | loading | ready | error
   usageError: null,
+  // Totals for the task currently running: { totalTokens, requests }.
+  usageTask: null,
+  // Live header state while a run waits for a reset or switches provider.
+  waitingMs: 0,
+  switchingTo: null,
   running: false,
   thinking: false,
   thinkingText: '',
@@ -54,7 +75,7 @@ export const fetchApiKeys = createAsyncThunk('ai/fetchKeys', async (_, { rejectW
 
 /**
  * The latest CAPTURED Groq usage for every saved key (no fresh Groq call). Used
- * when Settings opens and after a run finishes; during a run the 'agent:usage'
+ * when Settings opens and after a run finishes; during a run the 'usage:update'
  * socket event updates the same state live.
  */
 export const fetchKeyUsage = createAsyncThunk(
@@ -70,10 +91,10 @@ export const fetchKeyUsage = createAsyncThunk(
 
 export const addApiKey = createAsyncThunk(
   'ai/addKey',
-  async ({ key, label }, { dispatch, rejectWithValue }) => {
+  async ({ provider, key, label }, { dispatch, rejectWithValue }) => {
     try {
-      const data = await agentKeysApi.create(key, label)
-      dispatch(showToast({ message: 'Groq API key saved.', type: 'success' }))
+      const data = await agentKeysApi.create(provider, key, label)
+      dispatch(showToast({ message: 'API key saved and verified.', type: 'success' }))
       await dispatch(fetchApiKeys())
       return data
     } catch (error) {
@@ -149,7 +170,7 @@ export const updateApiKey = createAsyncThunk(
  */
 export const startAgentTask = createAsyncThunk(
   'ai/startTask',
-  async ({ projectId, task }, { dispatch, getState, rejectWithValue }) => {
+  async ({ projectId, task, resume = false }, { dispatch, getState, rejectWithValue }) => {
     const { ai } = getState()
 
     // Optimistic user row + running state, so the request shows immediately.
@@ -191,7 +212,11 @@ export const startAgentTask = createAsyncThunk(
             projectId: activeProjectId,
             task,
             framework: ai.framework,
+            model: modelParts(ai.modelChoice).model,
+            provider: modelParts(ai.modelChoice).provider,
+            providerPreference: ai.providerPreference,
             keyId: ai.selectedKeyId,
+            resume: resume && Boolean(activeProjectId),
           },
           (response) => {
             clearTimeout(timeout)
@@ -227,6 +252,14 @@ const aiSlice = createSlice({
       state.framework = action.payload
     },
 
+    setModelChoice(state, action) {
+      state.modelChoice = action.payload || AUTO_MODEL
+    },
+
+    setProviderPreference(state, action) {
+      state.providerPreference = action.payload || 'auto'
+    },
+
     selectKeyId(state, action) {
       state.selectedKeyId = action.payload
     },
@@ -237,17 +270,36 @@ const aiSlice = createSlice({
       state.keysError = null
     },
 
-    /** One live usage snapshot streamed over the socket ('agent:usage'). */
+    /** One live usage snapshot streamed over the socket ('usage:update'). */
     usageUpdated(state, action) {
-      const record = action.payload
-      if (!record?.keyId) return
-      state.usageByKeyId = { ...state.usageByKeyId, [record.keyId]: record }
+      const payload = action.payload
+      if (!payload?.keyId) return
+      const existing = state.usageByKeyId[payload.keyId] ?? {}
+      state.usageByKeyId = {
+        ...state.usageByKeyId,
+        [payload.keyId]: {
+          ...existing,
+          id: payload.keyId,
+          provider: payload.provider ?? existing.provider ?? null,
+          model: payload.model ?? existing.model ?? null,
+          summary: payload.summary ?? existing.summary ?? null,
+          status: { status: 'active', until: null, reason: null },
+          lastUpdated: payload.summary?.lastUpdated ?? existing.lastUpdated ?? null,
+        },
+      }
+      if (payload.task) state.usageTask = payload.task
     },
 
     agentStarted(state, action) {
       state.running = true
       state.thinking = true
       state.thinkingText = 'Sending the task to the agent…'
+      state.canContinue = false
+      state.model = null
+      state.provider = null
+      state.usageTask = null
+      state.waitingMs = 0
+      state.switchingTo = null
       state.timeline.push({ id: nanoid(), kind: 'user', text: action.payload.task })
     },
 
@@ -258,8 +310,22 @@ const aiSlice = createSlice({
      */
     agentAction(state, action) {
       const event = action.payload ?? {}
-      // Any event that carries the resolved model updates the panel label.
+      // Any event that carries the resolved provider/model updates the header.
       if (event.details?.model) state.model = String(event.details.model)
+      if (event.details?.provider) state.provider = String(event.details.provider)
+
+      const details = event.details ?? {}
+      if (details.waitingMs != null) {
+        state.waitingMs = details.waitingMs
+      } else if (event.type !== 'note') {
+        state.waitingMs = 0
+      }
+      if (details.switchTo) {
+        state.switchingTo = details.switchTo
+      } else if (event.type !== 'fallback' && event.type !== 'note') {
+        state.switchingTo = null
+      }
+
       if (event.type === 'thinking') {
         state.thinking = true
         state.thinkingText = event.description || 'Working…'
@@ -271,6 +337,8 @@ const aiSlice = createSlice({
       if (event.type === 'complete' || event.type === 'error') {
         state.thinking = false
         state.thinkingText = ''
+        state.waitingMs = 0
+        state.switchingTo = null
         return
       }
 
@@ -299,11 +367,16 @@ const aiSlice = createSlice({
     },
 
     agentDone(state, action) {
-      const { ok = true, message = '', toolCalls, durationMs, limitReached, model } = action.payload ?? {}
+      const { ok = true, message = '', toolCalls, durationMs, limitReached, model, provider } =
+        action.payload ?? {}
       if (model) state.model = String(model)
+      if (provider) state.provider = String(provider)
       state.running = false
       state.thinking = false
       state.thinkingText = ''
+      state.waitingMs = 0
+      state.switchingTo = null
+      state.canContinue = !ok || Boolean(limitReached)
       state.timeline.push({
         id: nanoid(),
         kind: 'agent',
@@ -328,6 +401,7 @@ const aiSlice = createSlice({
       })
       .addCase(fetchApiKeys.fulfilled, (state, action) => {
         state.keys = action.payload?.keys ?? []
+        if (Array.isArray(action.payload?.providers)) state.providers = action.payload.providers
         state.keysStatus = 'ready'
         state.keysError = null
         // Drop a stale selection whose key was deleted elsewhere.
@@ -347,7 +421,8 @@ const aiSlice = createSlice({
         state.usageError = null
         const next = { ...state.usageByKeyId }
         for (const entry of action.payload?.keys ?? []) {
-          if (entry?.id && entry.usage) next[entry.id] = entry.usage
+          if (!entry?.id) continue
+          next[entry.id] = { ...(next[entry.id] ?? {}), ...entry }
         }
         state.usageByKeyId = next
       })
@@ -360,6 +435,8 @@ const aiSlice = createSlice({
 
 export const {
   setFramework,
+  setModelChoice,
+  setProviderPreference,
   selectKeyId,
   setKeys,
   usageUpdated,

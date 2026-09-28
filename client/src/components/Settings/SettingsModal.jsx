@@ -36,7 +36,7 @@ import {
 } from '../../features/settingsSlice'
 import { openDeleteProjectModal, showToast } from '../../features/uiSlice'
 import { saveSelectedKeyId } from '../../services/aiStorage'
-import { resetHint, usageStats, usageTone } from '../../utils/rateLimit'
+import { formatCompact, keyStatusLabel, resetHint, usageMeters } from '../../utils/rateLimit'
 import { THEMES } from '../../utils/themes'
 import { isCloudWorkspace } from '../../utils/workspace'
 import UsageBar from '../Common/UsageBar'
@@ -57,6 +57,13 @@ const SECTIONS = [
 
 // The order categories are shown in. Anything not listed falls to the end.
 const CATEGORY_ORDER = ['dark', 'light', 'colorful', 'high-contrast']
+
+const FALLBACK_PROVIDERS = [
+  { id: 'mistral', label: 'Mistral', keyHint: 'your Mistral API key', keyUrl: 'https://console.mistral.ai/api-keys' },
+  { id: 'groq', label: 'Groq', keyHint: 'gsk_…', keyUrl: 'https://console.groq.com/keys' },
+]
+
+const MAX_KEYS_PER_PROVIDER = 3
 
 const FONT_OPTIONS = [
   { value: '', label: 'System Default (monospace)' },
@@ -117,42 +124,41 @@ function Stepper({ value, min, max, onChange, suffix = 'px' }) {
  * daily request budget and one for the per-minute token budget. A key that has
  * never been used (no captured headers yet) shows a neutral "Not used yet".
  */
-function KeyUsage({ usage }) {
-  const requests = usageStats(usage, 'requests')
-  const tokens = usageStats(usage, 'tokens')
-  if (!requests && !tokens) {
-    return <span className="settings-key-usage-empty">Not used yet</span>
+function meterTitle(label, meter) {
+  return [
+    `${label}: ${formatCompact(meter.used)} / ${formatCompact(meter.limit)} used`,
+    resetHint(meter.resetAt),
+    meter.countedLocally ? 'counted by CodeMatrix' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function KeyUsage({ entry, providerId }) {
+  const meters = usageMeters(entry?.summary ?? null, providerId ?? entry?.provider)
+  if (!meters) {
+    return <span className="settings-key-usage-empty">No usage yet</span>
   }
   return (
     <div className="settings-key-usage">
-      {requests && (
+      {meters.minute && (
         <UsageBar
-          label="Requests today"
-          used={requests.used}
-          limit={requests.limit}
-          usedPercent={requests.usedPercent}
-          tone={usageTone(requests.usedPercent)}
-          title={[
-            `${requests.remaining} of ${requests.limit} requests left today`,
-            resetHint(requests.resetAt),
-          ]
-            .filter(Boolean)
-            .join(' · ')}
+          label="Tokens/min"
+          used={meters.minute.used}
+          limit={meters.minute.limit}
+          usedPercent={meters.minute.usedPercent}
+          tone={meters.minute.tone}
+          title={meterTitle('Tokens/min', meters.minute)}
         />
       )}
-      {tokens && (
+      {meters.secondary && (
         <UsageBar
-          label="Tokens this minute"
-          used={tokens.used}
-          limit={tokens.limit}
-          usedPercent={tokens.usedPercent}
-          tone={usageTone(tokens.usedPercent)}
-          title={[
-            `${tokens.remaining} of ${tokens.limit} tokens left this minute`,
-            resetHint(tokens.resetAt),
-          ]
-            .filter(Boolean)
-            .join(' · ')}
+          label={meters.secondaryLabel}
+          used={meters.secondary.used}
+          limit={meters.secondary.limit}
+          usedPercent={meters.secondary.usedPercent}
+          tone={meters.secondary.tone}
+          title={meterTitle(meters.secondaryLabel, meters.secondary)}
         />
       )}
     </div>
@@ -184,6 +190,7 @@ export default function SettingsModal() {
   const [themeQuery, setThemeQuery] = useState('')
   const [newKey, setNewKey] = useState('')
   const [newKeyLabel, setNewKeyLabel] = useState('')
+  const [newKeyProvider, setNewKeyProvider] = useState('groq')
   const [isSavingKey, setIsSavingKey] = useState(false)
   // { mode: 'reveal' | 'edit', key } for the password-gated dialog.
   const [keyAccess, setKeyAccess] = useState(null)
@@ -257,13 +264,21 @@ export default function SettingsModal() {
   const selectedShell = terminal.preferredShell ?? defaultShell ?? ''
   const activeTheme = THEMES.find((option) => option.id === theme)
   const canDeleteProject = isCloudWorkspace(workspace)
+  const providerList = ai.providers.length ? ai.providers : FALLBACK_PROVIDERS
+  const activeProvider = providerList.find((item) => item.id === newKeyProvider) ?? providerList[0]
+  const providerKeyCount = ai.keys.filter(
+    (saved) => (saved.provider ?? 'groq') === newKeyProvider,
+  ).length
+  const providerLimitReached = providerKeyCount >= MAX_KEYS_PER_PROVIDER
 
   async function handleAddKey(event) {
     event.preventDefault()
     const key = newKey.trim()
     if (!key || isSavingKey) return
     setIsSavingKey(true)
-    const result = await dispatch(addApiKey({ key, label: newKeyLabel.trim() }))
+    const result = await dispatch(
+      addApiKey({ provider: newKeyProvider, key, label: newKeyLabel.trim() }),
+    )
     setIsSavingKey(false)
     if (addApiKey.fulfilled.match(result)) {
       setNewKey('')
@@ -505,12 +520,12 @@ export default function SettingsModal() {
 
             {activeSection === 'ai' && (
               <section className="settings-section">
-                <h3 className="settings-section-title">Groq API keys</h3>
+                <h3 className="settings-section-title">AI provider keys</h3>
                 <p className="settings-section-desc">
-                  The AI agent runs on a Groq API key that <strong>you</strong> provide — this app
-                  ships with no built-in key. Keys are encrypted at rest with AES-256-GCM and
-                  never leave the server; only masked copies are ever shown. Get one free at{' '}
-                  console.groq.com → API Keys. Maximum 3 keys.
+                  The agent runs on an API key that <strong>you</strong> provide — either Mistral or
+                  Groq. Keys are encrypted at rest with AES-256-GCM, never leave the server and are
+                  validated against the provider before saving. Maximum {MAX_KEYS_PER_PROVIDER} keys
+                  per provider.
                 </p>
 
                 {!isAuthenticated ? (
@@ -525,31 +540,48 @@ export default function SettingsModal() {
                     )}
                     {ai.keysStatus === 'ready' && ai.keys.length === 0 && (
                       <p className="settings-section-desc">
-                        No keys saved yet — paste your Groq key below to activate the assistant.
+                        No keys saved yet — paste a Mistral or Groq key below to activate the
+                        assistant.
                       </p>
                     )}
 
                     {ai.keys.length > 0 && (
                       <div className="settings-key-list">
                         {ai.keys.map((key, index) => {
+                          const providerName = key.providerLabel ?? key.provider ?? 'Groq'
                           const inUse =
                             ai.selectedKeyId === key.id ||
                             (ai.selectedKeyId === null && index === 0)
                           const isRevealed = revealedKey?.id === key.id
+                          const entry = ai.usageByKeyId[key.id] ?? null
+                          const status = keyStatusLabel(entry?.status)
+                          const lastUsed = entry?.lastUpdated
+                            ? new Date(entry.lastUpdated).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })
+                            : null
                           return (
                             <div key={key.id} className="settings-key-row">
                               <KeyRound size={14} className="settings-key-icon" />
                               <div className="settings-key-info">
-                                <span
-                                  className={`settings-key-masked ${isRevealed ? 'is-revealed' : ''}`}
-                                >
-                                  {isRevealed ? revealedKey.value : key.masked}
-                                </span>
+                                <div className="settings-key-head">
+                                  <span className="settings-provider-badge">{providerName}</span>
+                                  <span
+                                    className={`settings-key-masked ${isRevealed ? 'is-revealed' : ''}`}
+                                  >
+                                    {isRevealed ? revealedKey.value : key.masked}
+                                  </span>
+                                  <span className={`settings-key-status is-${status.tone}`}>
+                                    {status.label}
+                                  </span>
+                                </div>
                                 <span className="settings-key-label">
-                                  {key.label || 'No label'}
+                                  {key.label ? key.label : 'No label'}
                                   {inUse ? ' · used by the agent' : ''}
+                                  {lastUsed ? ` · last used ${lastUsed}` : ' · not used yet'}
                                 </span>
-                                <KeyUsage usage={ai.usageByKeyId[key.id]} />
+                                <KeyUsage entry={entry} providerId={key.provider} />
                               </div>
                               {isRevealed && (
                                 <button
@@ -615,12 +647,36 @@ export default function SettingsModal() {
                       </div>
                     )}
 
-                    {ai.keys.length < 3 ? (
+                    {!providerLimitReached ? (
                       <form className="settings-key-form" onSubmit={handleAddKey}>
+                        <div className="settings-key-provider-row">
+                          <select
+                            className="settings-select settings-key-provider"
+                            value={newKeyProvider}
+                            disabled={isSavingKey}
+                            onChange={(event) => setNewKeyProvider(event.target.value)}
+                          >
+                            {providerList.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                          {activeProvider?.keyUrl && (
+                            <a
+                              className="settings-key-getlink"
+                              href={activeProvider.keyUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Get a free key
+                            </a>
+                          )}
+                        </div>
                         <input
                           type="password"
                           className="settings-key-input"
-                          placeholder="gsk_… (your Groq API key)"
+                          placeholder={activeProvider?.keyHint ?? 'Paste your API key'}
                           value={newKey}
                           spellCheck={false}
                           autoComplete="off"
@@ -645,9 +701,15 @@ export default function SettingsModal() {
                       </form>
                     ) : (
                       <p className="settings-section-desc">
-                        <strong>Maximum 3 API keys allowed.</strong> Delete one before adding
-                        another.
+                        <strong>
+                          Maximum {MAX_KEYS_PER_PROVIDER} {activeProvider?.label} keys allowed.
+                        </strong>{' '}
+                        Delete one before adding another.
                       </p>
+                    )}
+
+                    {activeProvider?.notice && (
+                      <p className="settings-key-notice">{activeProvider.notice}</p>
                     )}
                   </>
                 )}

@@ -518,6 +518,20 @@ export function resolveWorkspaceFile(projectId, relativePath = '') {
   return resolveInsideWorkspace(projectId, relativePath)
 }
 
+export function appendFileToWorkspace(projectId, relativeFilePath, content = '') {
+  assertWorkspaceExists(projectId)
+  const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFilePath)
+  if (!relative) throw new ApiError(400, 'A file path is required.', 'INVALID_PATH')
+
+  fs.mkdirSync(path.dirname(absolute), { recursive: true })
+  fs.appendFileSync(
+    absolute,
+    typeof content === 'string' ? content : String(content ?? ''),
+    'utf8',
+  )
+  return relative
+}
+
 export function readFileFromWorkspace(projectId, relativeFilePath) {
   assertWorkspaceExists(projectId)
   const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFilePath)

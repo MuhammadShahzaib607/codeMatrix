@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import http from 'node:http'
 import { Server } from 'socket.io'
 import app from './src/app.js'
-import { connectDatabase } from './src/config/db.js'
+import { connectDatabase, isDatabaseConnected } from './src/config/db.js'
+import { migrateLegacyGroqKeys } from './src/models/ApiKey.model.js'
 import { env, resolveCorsOrigin } from './src/config/env.js'
 import registerAgentSocket from './src/socket/agentSocket.js'
 import registerTerminalSocket from './src/socket/terminalSocket.js'
@@ -37,6 +38,16 @@ registerAgentSocket(io)
 
 async function start() {
   await connectDatabase()
+
+  if (isDatabaseConnected()) {
+    try {
+      const { migrated, normalised } = await migrateLegacyGroqKeys()
+      if (migrated > 0) console.log(`[keys] migrated ${migrated} legacy Groq key(s) to provider "groq"`)
+      if (normalised > 0) console.log(`[keys] normalised ${normalised} key(s) to a supported provider`)
+    } catch (error) {
+      console.warn(`[keys] legacy key migration failed: ${error.message}`)
+    }
+  }
 
   // Rename any legacy UUID-named project folders to their display-name names so
   // every existing project matches its Explorer root (and `cd <name>` works).

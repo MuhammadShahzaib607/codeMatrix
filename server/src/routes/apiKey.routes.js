@@ -4,7 +4,9 @@ import protect from '../middlewares/authMiddleware.js'
 
 const router = Router()
 
-// Everything here is per-user and JWT-protected; ownership is enforced in the
+router.get('/providers', apiKeyController.listProviders)
+
+// Everything below is per-user and JWT-protected; ownership is enforced in the
 // service layer (every query is filtered by req.user.id).
 router.use(protect)
 router.get('/', apiKeyController.listKeys)

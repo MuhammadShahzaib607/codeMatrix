@@ -2,7 +2,8 @@ import crypto from 'node:crypto'
 import { isDatabaseConnected } from '../config/db.js'
 import { findProject, upsertProject } from '../models/project.repository.js'
 import { restartWatching } from '../utils/fileWatcher.js'
-import { deriveProjectName, slugifyProjectName } from './agentService.js'
+import { slugifyProjectName } from './agentService.js'
+import { fallbackProjectName } from './agentFrameworks.js'
 import {
   ensureScratchWorkspace,
   getWorkspaceRecord,
@@ -28,9 +29,13 @@ import {
  * nothing is copied into a nested subfolder and no path becomes stale.
  */
 
-/** The name to give an adopted workspace: model suggestion first, task first. */
-export function chooseScratchProjectName({ modelSuggestedName, task }) {
-  return slugifyProjectName(modelSuggestedName) || deriveProjectName(task)
+/**
+ * The name to give an adopted workspace: an AI-generated suggestion when there
+ * is one, otherwise a safe name based on the selected framework. Prompt words
+ * are NEVER used as a project name.
+ */
+export function chooseScratchProjectName({ modelSuggestedName, framework = null }) {
+  return slugifyProjectName(modelSuggestedName) || fallbackProjectName(framework)
 }
 
 /**
@@ -52,6 +57,7 @@ export async function adoptScratchProject({
   userId,
   emit = null,
   modelSuggestedName = null,
+  framework = null,
 }) {
   if (!isScratchProjectId(projectId)) return null
 
@@ -66,9 +72,10 @@ export async function adoptScratchProject({
   const suggested = slugifyProjectName(modelSuggestedName)
 
   // Target name: the model's suggestion when usable, else the name already on
-  // disk, else a slug derived from the task.
+  // disk, else a safe framework-based name.
   const name =
-    suggested ?? (anonymous ? chooseScratchProjectName({ modelSuggestedName: null, task }) : record.folderName)
+    suggested ??
+    (anonymous ? chooseScratchProjectName({ modelSuggestedName: null, framework }) : record.folderName)
 
   // A real rename happens only when the folder is still anonymous, or when the
   // model explicitly proposed a name that differs from the one on disk.

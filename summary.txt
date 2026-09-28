@@ -4655,3 +4655,177 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
   - The AI panel's bar is Common/UsageBar in compact mode — extend THAT rather
     than adding another private bar; Settings and the panel share its numbers.
 
+
+================================================================================
+AI Code Editor — Phase 8: Long Multi-File Tasks Complete Reliably
+================================================================================
+
+STATUS: complete. Long (5+ file) agent tasks no longer stop halfway on a
+        malformed tool call, a rate limit, or an early "done" — the agent
+        recovers, keeps a plan, verifies it and can be resumed.
+
+--------------------------------------------------------------------------------
+1. THE 400 "Failed to parse tool call arguments as JSON" BUG
+--------------------------------------------------------------------------------
+ROOT CAUSE: when a model tried to emit a whole large file in ONE tool call, the
+completion hit its (default) token ceiling and was cut off mid-JSON. Groq then
+rejected the request with HTTP 400 (code tool_use_failed) BEFORE returning a
+message, so the agent loop saw a non-retryable error and aborted the whole task.
+
+FIX (server/src/services/agentService.js):
+  - callGroq now sends an EXPLICIT max_completion_tokens (8192) so a long file
+    write is not truncated mid-JSON in the first place.
+  - A 400 whose message mentions tool-call parsing (tool_use_failed /
+    failed_generation / "failed to parse tool call arguments") is classified by
+    isToolCallParseError() as RECOVERABLE, not fatal.
+  - On such an error the loop retries the SAME turn up to MAX_PARSE_RETRIES (2)
+    times with the temperature LOWERED (0.2 -> 0.1 -> 0.0) and appends the
+    corrective note: "Your last tool call had invalid JSON … create_file for the
+    first part and append_to_file for the rest, keep each call under about 120
+    lines, and properly escape quotes and newlines."
+  - If it still fails, escalateAfterParseFailure() moves to the NEXT model in
+    the fallback chain (and then the next key) with the SAME message history and
+    keeps the task going instead of ending it.
+  - Both recoveries stream to the live feed as a soft note ("Tool call was
+    malformed, retrying with smaller chunks…") and a normal fallback row — no
+    red fatal error.
+
+CHUNKED WRITING (part 2): a NEW tool append_to_file(path, content) appends to an
+EXISTING file (creating it when missing), backed by appendFileToWorkspace() in
+utils/workspaceManager.js. The system prompt now REQUIRES files longer than about
+120 lines to be written as create_file (part 1) + append_to_file (parts 2..n).
+The streamed feed labels each append "Writing index.html (part 2)" (FilePlus2
+icon). A whole large HTML/CSS/JS file must never go into one call.
+
+--------------------------------------------------------------------------------
+2. PLAN + CHECKLIST + VERIFY (the agent FINISHES the task)
+--------------------------------------------------------------------------------
+  - The system prompt makes the agent's FIRST message start with a
+    "PLAN: file1, file2, …" line. extractPlanFiles() parses it and the plan is
+    stored in the per-project backend session (agentSessionService).
+  - Before accepting a final, tool-call-free "done" message, runAgent checks the
+    PLAN against the real filesystem (existsInWorkspace). If any planned file is
+    missing it sends the model "These planned files are still missing: […].
+    Continue and create them." and continues the loop (up to 3 reminders).
+  - The per-run tool-call cap was raised from 25 to 60 (MAX_TOOL_CALLS) so a
+    multi-page site can finish; a safety cap still exists.
+  - Vanilla HTML/CSS/JS prompt rules now require multi-page sites to be plain
+    linked .html files sharing one style.css/script.js, Tailwind + icon
+    libraries via CDN script tags (no build step), a plain-CSS replacement for
+    any build-only library (e.g. Framer Motion) reported in the summary, and
+    correct relative links between pages.
+
+--------------------------------------------------------------------------------
+3. CONTINUE / RESUME (part 4)
+--------------------------------------------------------------------------------
+  - NEW server/src/services/agentSessionService.js keeps each project's message
+    history (trimmed), its plan and framework in memory.
+  - A run that ends in an error or hits the cap persists its session.
+  - The AI panel shows a "Continue task" button when the last run ended that way;
+    typing "continue" does the same. It re-runs with the saved history plus
+    "Continue the previous task. First call list_directory … then finish the
+    remaining files from the plan." The socket rejects a resume with no session
+    (NO_SESSION).
+
+--------------------------------------------------------------------------------
+4. RATE LIMITS: WAIT, DON'T ABANDON (part 5)
+--------------------------------------------------------------------------------
+  - On 429 the Retry-After / "try again in Xs" value is read. When every key and
+    model is rate-limited and the wait is <= 60s (MAX_FALLBACK_WAIT_MS), the
+    agent waits it out with a LIVE 1-second countdown note ("Waiting 12s for
+    rate limit to reset…") and retries the SAME request automatically. Only a
+    longer wait, or exhausted retries, falls through to failure.
+  - After each response the remaining-token headers are inspected; when less than
+    ~10% of the per-minute token budget is left, the next request is paced a few
+    seconds (a note is streamed) so large file writes do not burn out the budget.
+
+--------------------------------------------------------------------------------
+5. AI-BASED PROJECT NAMING (part 6, fixes "aapko-ek")
+--------------------------------------------------------------------------------
+  - The "first words of the prompt" fallback is GONE. At the start of a fresh
+    scratch task the backend makes ONE small Groq call (temperature 0, tiny max
+    tokens) that reads the request in any language (English / Urdu / Roman Urdu /
+    Hinglish) and replies with a kebab-case name such as
+    "three-page-static-website". The result is sanitized (lowercase a-z 0-9
+    hyphen, max 40 chars) and collision-handled by the existing rename logic.
+  - If that call fails, the name falls back to the SELECTED FRAMEWORK
+    (html-project, react-project, next-project, …) — still never a prompt word.
+  - openScratchWorkspace now always creates an anonymous Scratch; the socket
+    renames it with the AI name (or the framework fallback) BEFORE the first
+    file is written.
+
+--------------------------------------------------------------------------------
+6. MODEL SELECTION AUDIT (part 7)
+--------------------------------------------------------------------------------
+  - preferedModelOrder() already put llama-3.1-8b-instant first and nothing
+    overrode it (GROQ_MODEL is unset; the old stale test expectation of
+    openai/gpt-oss-120b was the only place claiming otherwise). This is now
+    proven: resolveModelPlan([key]) returns llama-3.1-8b-instant first, and the
+    first agent request uses it.
+  - The AI panel gained a MODEL selector next to the framework selector: Auto
+    (recommended), Fast: llama-3.1-8b-instant, Balanced: llama-3.3-70b-versatile,
+    Smart: openai/gpt-oss-120b. The choice is persisted per user
+    (services/aiStorage.js) and sent with each run; the server honors it when the
+    key can serve it. Auto escalates to a larger model automatically after
+    repeated tool-call failures.
+  - The panel header always shows the model the CURRENT run resolved (reset on
+    each new run, then updated by every streamed event / agent:done).
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/services/agentService.js        parse recovery, append_to_file,
+                                              plan+verify, resume, pacing,
+                                              max_completion_tokens, 8b order,
+                                              AI naming (suggestProjectName)
+  server/src/services/agentSessionService.js  NEW per-project session store
+  server/src/services/agentFrameworks.js      plan/chunked-writing/static-site
+                                              rules + framework fallback names
+  server/src/services/scratchProjectService.js framework fallback, no prompt name
+  server/src/socket/agentSocket.js            AI naming before first write, resume
+  server/src/controllers/workspace.controller.js always-anonymous scratch
+  server/src/utils/workspaceManager.js        appendFileToWorkspace
+  client/src/features/aiSlice.js              modelChoice, canContinue, resume
+  client/src/components/AIPanel/AIPanel.jsx   model menu, Continue button, icons
+  client/src/components/AIPanel/AIPanel.css   model menu + Continue styles
+  client/src/services/aiStorage.js            per-user model preference
+  client/src/utils/agentModels.js             NEW model options
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings / 0 errors (client). vite build: succeeds.
+    node --check: passes on every changed server file.
+  - tmp-agent-recovery-test.mjs — 22/22, driving the REAL runAgent against a
+    scripted Groq stand-in (no MongoDB, no socket):
+      A  AI naming returns three-page-static-website; framework fallback is
+         html-project; model suggestion wins; parse-error detector matches the
+         400 shape.
+      A2 Auto puts llama-3.1-8b-instant first; an explicit choice is honored
+         first.
+      B  3 malformed-tool-call 400s -> two lowered-temperature retries announced
+         as "retrying with smaller chunks", then a switch to openai/gpt-oss-120b,
+         and the task COMPLETES (never aborts).
+      C  PLAN captured (5 files), append_to_file streams "Writing index.html
+         (part 2)", a premature "done" is rejected (2 files still missing), and
+         all 5 planned files end up on disk with index.html = part1 + part2.
+      D  A <=60s 429 shows a live countdown and the SAME request is retried
+         automatically after the wait.
+      E  An unrecoverable run errors out (no hang), saves its session, then a
+         resume run streams the resume note and finishes using the saved history
+         plus the continue note.
+  - Run it with:  node tmp-agent-recovery-test.mjs
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - deriveProjectName() still exists but is NO LONGER used for naming; do not
+    wire it back into the naming path.
+  - MAX_COMPLETION_TOKENS / MAX_PARSE_RETRIES / MAX_FALLBACK_WAIT_MS / the
+    corrective note live at the top of agentService.js — tune them there.
+  - The session store is in-memory (per server process); scratch workspaces are
+    ephemeral too, so a server restart clears both. Move it to Mongo if resume
+    must survive a restart.
+  - Add new streaming action types to ACTION_ICONS in AIPanel.jsx so they get an
+    icon instead of the generic sparkles fallback.
+

@@ -148,10 +148,14 @@ export const agentKeysApi = {
     return request('/api/keys/usage')
   },
 
-  create(key, label) {
+  providers() {
+    return request('/api/keys/providers')
+  },
+
+  create(provider, key, label) {
     return request('/api/keys', {
       method: 'POST',
-      body: JSON.stringify({ key, label }),
+      body: JSON.stringify({ provider, key, label }),
     })
   },
 

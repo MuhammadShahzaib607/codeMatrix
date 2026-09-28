@@ -10,11 +10,17 @@ import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
 import { suppressWatcher } from '../utils/fileWatcher.js'
 import {
+  copyFileIntoContainer,
   copyPathInWorkspace,
+  createContainerFile,
+  createContainerProject,
   createFolderInWorkspace,
   createWorkspaceFolder,
   deleteFromWorkspace,
   ensureScratchWorkspace,
+  findProjectIdForFolder,
+  listContainerEntries,
+  statWorkspaceEntry,
   findScratchWorkspaceId,
   getWorkspacePath,
   getWorkspaceRecord,
@@ -229,6 +235,77 @@ export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
   res.json({ projectId, name, isScratch: isAnonymous, created, tree })
 })
 
+// ---------------------------------------------------------------------------
+// The Explorer's TOP LEVEL: the per-user container.
+//
+// Every project folder of a user lives inside ONE container folder
+// (server/workspaces/u-<owner>), which is also the directory the terminal starts
+// in. These routes expose that folder as the Explorer's root level:
+//   GET  /api/workspace/container        -> the top-level entries beside projects
+//   POST /api/workspace/container/entry  -> new top-level file, or a new PROJECT
+//   POST /api/workspace/container/paste  -> copy a project file next to the project
+// A top-level FOLDER is a real project (registry + MongoDB metadata, never file
+// contents), so opening it makes it the active workspace for the terminal,
+// preview, export, search and the agent.
+// ---------------------------------------------------------------------------
+export const listContainer = asyncHandler(async (req, res) => {
+  const { container, entries } = await listContainerEntries(req.user.id)
+  res.json({ container, entries })
+})
+
+export const createContainerEntry = asyncHandler(async (req, res) => {
+  const type = req.body?.type
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : ''
+
+  if (type === 'folder') {
+    const created = await createContainerProject(req.user.id, name)
+    await upsertProject({
+      projectId: created.projectId,
+      name: created.name,
+      owner: req.user.id,
+      diskPath: created.path,
+      diskFolderName: created.name,
+      isScratch: false,
+    })
+    return res.status(201).json({ type: 'folder', name: created.name, projectId: created.projectId })
+  }
+
+  if (type === 'file') {
+    const created = await createContainerFile(req.user.id, name)
+    return res.status(201).json({ type: 'file', name: created.name, projectId: null })
+  }
+
+  throw new ApiError(400, '"type" must be either "file" or "folder".', 'INVALID_TYPE')
+})
+
+export const pasteToContainer = asyncHandler(async (req, res) => {
+  const sourceProjectId = requirePath(req.body?.projectId, 'projectId')
+  const sourcePath = requirePath(req.body?.sourcePath, 'sourcePath')
+
+  if (!isScratchProjectId(sourceProjectId)) {
+    const project = isDatabaseConnected() ? await findProject(sourceProjectId) : null
+    if (project && String(project.owner) !== String(req.user.id)) {
+      throw new ApiError(403, 'You do not have access to this project.', 'FORBIDDEN')
+    }
+  }
+
+  const { absolute, relative, stats } = await statWorkspaceEntry(sourceProjectId, sourcePath)
+  if (!stats) {
+    throw new ApiError(404, `"${relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+  if (stats.isDirectory()) {
+    throw new ApiError(
+      400,
+      'Only FILES can be pasted at the top level (a top-level folder is a project). Open the target folder instead.',
+      'NOT_A_FILE',
+    )
+  }
+
+  const base = relative.split('/').pop() || relative
+  const { name } = await copyFileIntoContainer(req.user.id, absolute, base)
+  res.status(201).json({ type: 'file', name, projectId: null })
+})
+
 export const getFile = asyncHandler(async (req, res) => {
   const { projectId } = req.params
   const filePath = requirePath(req.query.path)
@@ -351,4 +428,9 @@ export const exportWorkspace = asyncHandler(async (req, res, next) => {
   await archive.finalize()
 })
 
-export const __testables = { normalizeImportBody, sanitizeFileName }
+export const __testables = {
+  normalizeImportBody,
+  sanitizeFileName,
+  findProjectIdForFolder,
+  listContainerEntries,
+}

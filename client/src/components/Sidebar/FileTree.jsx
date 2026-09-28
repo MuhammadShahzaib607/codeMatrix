@@ -6,6 +6,7 @@ import {
   Copy,
   FileCode,
   FilePlus,
+  FileText,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -19,7 +20,7 @@ import {
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { addTab, toggleFolder } from '../../features/fileSystemSlice'
-import { ROOT_ID } from '../../services/fileSystemAccess'
+import { CONTAINER_ID, ROOT_ID, containerEntryId } from '../../services/fileSystemAccess'
 import { isHtmlPath } from '../../utils/preview'
 import { findNode } from '../../utils/tree'
 import TreeContextMenu from './TreeContextMenu'
@@ -315,6 +316,51 @@ const TreeNode = memo(function TreeNode({
   )
 })
 
+/**
+ * One entry of the user's CONTAINER (the Explorer's top level): a sibling
+ * project folder, or a plain file that lives beside the projects. Clicking a
+ * project folder opens it as the active workspace; a container file is not part
+ * of any project, so it explains itself instead of pretending to open.
+ */
+function ContainerRow({ entry, onOpenProject, onInspectFile, isActive }) {
+  const isFolder = entry.type === 'folder'
+  const clickable = isFolder && Boolean(entry.projectId)
+
+  return (
+    <div
+      data-container-entry={entry.name}
+      className={`tree-row is-container ${isActive ? 'is-active-project' : ''}`}
+      role="button"
+      tabIndex={0}
+      title={
+        clickable
+          ? `Open project “${entry.name}” (terminal, preview, export and the agent follow it)`
+          : `${entry.name} — at the top level, outside every project`
+      }
+      onClick={() => (clickable ? onOpenProject?.(entry) : onInspectFile?.(entry))}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        if (clickable) onOpenProject?.(entry)
+        else onInspectFile?.(entry)
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (clickable) onOpenProject?.(entry)
+        else onInspectFile?.(entry)
+      }}
+    >
+      <span className="tree-chevron" />
+      <span className={`tree-icon ${isFolder ? 'is-folder' : 'is-file'}`}>
+        {isFolder ? <Folder size={16} /> : <FileText size={16} />}
+      </span>
+      <span className="tree-label">{entry.name}</span>
+      <span className="tree-badge">{isActive ? 'active project' : isFolder ? 'project' : 'top level'}</span>
+    </div>
+  )
+}
+
 function FileTree({
   nodes,
   selectedId,
@@ -336,6 +382,11 @@ function FileTree({
   onCollapseAll,
   canDeleteProject = false,
   onDeleteProject,
+  containerEntries = [],
+  activeProjectId = null,
+  showContainer = false,
+  onOpenContainerProject,
+  onInspectContainerFile,
 }) {
   const revealedNode = useSelector((state) => state.ui.revealedNode)
   const clipboard = useSelector((state) => state.clipboard)
@@ -421,18 +472,22 @@ function FileTree({
   function buildMenuItems(node) {
     if (!node) {
       const canPaste = Boolean(clipboard.path)
+      // Nothing is selected: the target is the TOP LEVEL — a sibling of the
+      // project folder inside the user's container. When no workspace exists at
+      // all the same call bootstraps one, exactly like the toolbar button.
+      const target = showContainer ? CONTAINER_ID : ROOT_ID
       return [
         {
           id: 'new-file',
           label: 'New File',
           icon: FilePlus,
-          onSelect: () => onRequestCreate(ROOT_ID, 'file'),
+          onSelect: () => onRequestCreate(target, 'file'),
         },
         {
           id: 'new-folder',
           label: 'New Folder',
           icon: FolderPlus,
-          onSelect: () => onRequestCreate(ROOT_ID, 'folder'),
+          onSelect: () => onRequestCreate(target, 'folder'),
         },
         canPaste ? { separator: true } : null,
         canPaste
@@ -440,7 +495,7 @@ function FileTree({
               id: 'paste',
               label: 'Paste',
               icon: Clipboard,
-              onSelect: () => onPaste({ id: ROOT_ID, type: 'folder' }),
+              onSelect: () => onPaste({ id: target, type: 'folder' }),
             }
           : null,
         { separator: true },
@@ -581,15 +636,42 @@ function FileTree({
       onKeyDown={handleKeyDown}
       onContextMenu={(event) => {
         if (event.target?.closest?.('[data-node-id]')) return
+        if (event.target?.closest?.('[data-container-entry]')) return
         event.preventDefault()
+        // Right-clicking the empty area clears the selection too, so the menu's
+        // New File / New Folder / Paste target the top level (rule A).
         onClearSelection?.()
         setMenu({ x: event.clientX, y: event.clientY, node: null })
       }}
     >
+      {/* TOP LEVEL: the user's container. The active project's own folder is NOT
+          listed here (it is the project tree rendered below, or its children when
+          the workspace is still an anonymous scratch); every OTHER entry is a
+          sibling — another project, or a plain top-level file. */}
+      {showContainer &&
+        containerEntries.map((entry) => (
+          <ContainerRow
+            key={containerEntryId(entry.name)}
+            entry={entry}
+            isActive={Boolean(activeProjectId) && entry.projectId === activeProjectId}
+            onOpenProject={onOpenContainerProject}
+            onInspectFile={onInspectContainerFile}
+          />
+        ))}
+
+      {creating && creating.parentId === CONTAINER_ID && (
+        <NewNodeInput
+          depth={0}
+          type={creating.type}
+          onSubmit={onSubmitCreate}
+          onCancel={onCancelCreate}
+        />
+      )}
+
       {/* Root-level inline create row. It renders here (top level, NO indentation)
           whenever the target parent has no row of its own yet — which is exactly
-          the case before the first scratch workspace is bootstrapped. Once a
-          workspace exists its root row renders the row instead (see TreeNode). */}
+          the case before the first scratch workspace is bootstrapped, and for the
+          promoted children of an anonymous scratch. */}
       {creating &&
         (creating.parentId === null || creating.parentId === ROOT_ID) &&
         !nodes.some((node) => node.id === creating.parentId) && (

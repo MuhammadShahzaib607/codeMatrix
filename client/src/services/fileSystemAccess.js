@@ -1,5 +1,19 @@
 export const ROOT_ID = 'root'
 
+// The Explorer's TOP LEVEL: the user's container folder (server/workspaces/
+// u-<owner>/), which holds the project folder as one entry among siblings. It
+// is the same directory the terminal starts in. Selecting nothing means
+// "create here", at the top level, outside the project root.
+export const CONTAINER_ID = 'container'
+
+export function containerEntryId(name) {
+  return `container:${name}`
+}
+
+export function isContainerId(id) {
+  return typeof id === 'string' && id.startsWith('container:')
+}
+
 // IMPORT-TIME EXCLUSION ONLY — this filter applies solely while reading a
 // folder from the user's LOCAL LAPTOP for upload (readAllFilesFromDirectory).
 // Dependencies, VCS metadata and build output are huge, regenerable, and would

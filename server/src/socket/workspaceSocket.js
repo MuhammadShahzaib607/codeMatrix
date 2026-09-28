@@ -1,7 +1,7 @@
 import { startWatchingProject, stopWatchingProject } from '../utils/fileWatcher.js'
 import { isValidProjectId } from '../utils/workspaceManager.js'
 
-function roomFor(projectId) {
+export function roomFor(projectId) {
   return `workspace:${projectId}`
 }
 
@@ -13,6 +13,9 @@ function roomFor(projectId) {
  *                     workspace:unwatch { projectId }   (project changed/closed)
  *   server -> client: workspace:treeChanged { projectId } (debounced, to that
  *                     project's room — the client re-fetches the tree)
+ *                     workspace:fsChanged { projectId, changes: [{path,type}] }
+ *                     (batched by the agent tool executor, ~150ms — the client
+ *                     applies the change to the tree incrementally)
  *                     preview:reload      { projectId } (debounced, to that
  *                     project's room — an open preview tab calls location.reload())
  *

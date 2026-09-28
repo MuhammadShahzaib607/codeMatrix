@@ -1,5 +1,6 @@
 import { BASE_PROMPT } from './base.js'
 import { buildContextBlock } from './context.js'
+import { UPDATE_WORKFLOW_SECTION } from './projectSnapshot.js'
 import { buildStrictRulesBlock } from '../../services/strictRules.js'
 import { angularPrompt } from './stacks/angular.js'
 import { expressPrompt } from './stacks/express.js'
@@ -62,6 +63,8 @@ export function buildSystemPrompt({
   tier = PROMPT_TIERS.FULL,
   now = new Date(),
   projectStructure = null,
+  projectSnapshot = null,
+  updateWorkflow = false,
   strictRules = [],
 } = {}) {
   const stack = STACKS[String(framework ?? '').trim()] ?? null
@@ -80,7 +83,12 @@ export function buildSystemPrompt({
     if (designSystem) sections.push(designSystem)
   }
 
-  if (projectStructure) sections.push(`PROJECT STRUCTURE\n${projectStructure}`)
+  if (projectSnapshot) {
+    if (updateWorkflow) sections.push(UPDATE_WORKFLOW_SECTION)
+    sections.push(projectSnapshot)
+  } else if (projectStructure) {
+    sections.push(`PROJECT STRUCTURE\n${projectStructure}`)
+  }
 
   return sections.join('\n\n')
 }

@@ -14,7 +14,8 @@ import {
   REPEATED_SECTION_IDS,
   REQUIRED_JS_SNIPPETS,
   REQUIRED_SCRIPT,
-  REQUIRED_STYLESHEET,
+  BASE_STYLESHEET,
+  SHARED_STYLESHEETS,
   SECTION_MIN_CHARS,
   minLinesFor,
 } from './thresholds.js'
@@ -28,6 +29,11 @@ const BANNED_TEXT = [
 ]
 const ID_PATTERN = /^[A-Za-z][\w-]*$/
 const HTTP_URL = /url\(\s*['"]?https?:\/\//i
+
+function pageStylesheetFor(pageFile) {
+  const name = path.posix.basename(String(pageFile ?? '')).replace(/\.[^.]+$/, '')
+  return `css/${name}.css`
+}
 
 function normalizeText(value) {
   return String(value ?? '')
@@ -227,15 +233,23 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       .get()
       .filter(Boolean)
     const stylesheetRef = (href) => String(href).split('?')[0].split('#')[0]
-    const linksStylesheet = stylesheets.some(
-      (href) =>
-        !stylesheetRef(href).startsWith('/') &&
-        posixJoin(file, cleanRelative(stylesheetRef(href))) === REQUIRED_STYLESHEET,
-    )
-    if (!linksStylesheet)
+    const resolvedSheets = stylesheets
+      .filter((href) => !stylesheetRef(href).startsWith('/'))
+      .map((href) => posixJoin(file, cleanRelative(stylesheetRef(href))))
+    const sharedSheet = resolvedSheets.find((sheet) => SHARED_STYLESHEETS.includes(sheet))
+    if (!sharedSheet)
       failures.push(
-        `${file}: link the shared stylesheet with <link rel="stylesheet" href="css/style.css"> — a valid, RELATIVE path with no leading "/".`,
+        `${file}: link the shared stylesheet with <link rel="stylesheet" href="css/base.css"> (or css/style.css for a single-stylesheet project) — a valid, RELATIVE path with no leading "/".`,
       )
+    else if (sharedSheet === BASE_STYLESHEET) {
+      const pageSheet = pageStylesheetFor(file)
+      if (!resolvedSheets.includes(pageSheet))
+        failures.push(
+          `${file}: link its own page stylesheet after base.css — <link rel="stylesheet" href="${pageSheet}">.`,
+        )
+      if (!hasFile(pageSheet))
+        failures.push(`"${pageSheet}" is missing — every page gets its own page stylesheet with only that page's sections.`)
+    }
 
     const scripts = $('script[src]')
       .map((_, element) => $(element).attr('src'))
@@ -400,13 +414,28 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
     }
   }
 
+  // The FAQ accordion belongs to the HOME page. A follow-up that only adds
+  // other pages must not be asked to invent one, so the requirement applies
+  // only when the run actually builds (or rebuilds) the home page.
+  const declaredHome = normalizedPlan.pages.some((entry) => /(^|\/)(index|home)\.html?$/i.test(entry.file))
   const faqButtons = pages.reduce((total, page) => total + page.$('#faq button[aria-expanded]').length, 0)
-  if (faqButtons < MIN_FAQ_ITEMS) {
+  if (declaredHome && faqButtons < MIN_FAQ_ITEMS) {
     failures.push(`The #faq section needs at least ${MIN_FAQ_ITEMS} accordion buttons carrying aria-expanded (found ${faqButtons}).`)
     sectionProblems += 1
   }
 
-  const contactPage = pages.find((page) => /contact/i.test(page.file)) ?? pages[0]
+  // Only a page that IS the contact page (by name) or that DECLARES a contact
+  // form section is held to the contact-form requirements. A follow-up run that
+  // adds unrelated pages must not be told to put a form on the first page it
+  // happened to create.
+  const contactPage =
+    pages.find((page) => /contact/i.test(page.file)) ??
+    pages.find((page) =>
+      normalizedPlan.pages.some(
+        (entry) => entry.file === page.file && (entry.sections ?? []).includes('contact-form'),
+      ),
+    ) ??
+    null
   if (contactPage) {
     const $form = contactPage.$('form').first()
     if (!$form.length) {
@@ -443,11 +472,30 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   }
   record('sections', normalizedPlan.pages.length, sectionProblems)
 
+  const cssDirFiles = (() => {
+    try {
+      return fs
+        .readdirSync(path.join(workspaceRoot, 'css'))
+        .filter((name) => /\.css$/i.test(name))
+        .sort()
+        .slice(0, 24)
+        .map((name) => `css/${name}`)
+    } catch {
+      return []
+    }
+  })()
+  const sharedCssPath =
+    SHARED_STYLESHEETS.find((sheet) => hasFile(sheet)) ??
+    plannedPaths.find((file) => SHARED_STYLESHEETS.includes(cleanRelative(file))) ??
+    cssDirFiles[0] ??
+    BASE_STYLESHEET
+  const cssPaths = [...new Set([sharedCssPath, ...cssDirFiles])]
+
   let contentProblems = 0
   const year = now.getFullYear()
   for (const content of [
     ...pages.map((page) => [page.file, page.html]),
-    ...[REQUIRED_STYLESHEET, REQUIRED_SCRIPT].map((file) => [file, readFile(file) ?? '']),
+    ...[...cssPaths, REQUIRED_SCRIPT].map((file) => [file, readFile(file) ?? '']),
   ]) {
     const [file, text] = content
     for (const [label, pattern] of BANNED_TEXT) {
@@ -471,7 +519,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   record('content-year', pages.length, contentProblems)
 
   const jsPath = plannedPaths.find((file) => /(^|\/)js\/main\.js$/i.test(file)) ?? REQUIRED_SCRIPT
-  const cssPath = plannedPaths.find((file) => /(^|\/)css\/style\.css$/i.test(file)) ?? REQUIRED_STYLESHEET
+  const cssPath = sharedCssPath
   let assetProblems = 0
 
   const js = readFile(jsPath)
@@ -494,11 +542,16 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   }
 
   const css = readFile(cssPath)
+  const allCssText = cssPaths
+    .map((file) => readFile(file))
+    .filter((text) => text !== null)
+    .join('\n')
   if (css === null) {
     failures.push(`"${cssPath}" is missing — create it.`)
     assetProblems += 1
   } else {
     const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    const strippedAll = allCssText.replace(/\/\*[\s\S]*?\*\//g, '')
     const open = (stripped.match(/\{/g) ?? []).length
     const close = (stripped.match(/\}/g) ?? []).length
     if (open !== close) {
@@ -518,8 +571,8 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       failures.push(`${cssPath}: add a prefers-reduced-motion block that disables motion.`)
       assetProblems += 1
     }
-    if (HTTP_URL.test(stripped)) {
-      failures.push(`${cssPath}: remote image URLs are not allowed — use gradients, shapes or inline SVG.`)
+    if (HTTP_URL.test(strippedAll)) {
+      failures.push(`${cssPaths.join(', ')}: remote image URLs are not allowed — use gradients, shapes or inline SVG.`)
       assetProblems += 1
     }
 
@@ -531,7 +584,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       })
     }
     const cssClasses = new Set()
-    for (const match of stripped.matchAll(/\.([A-Za-z_][\w-]*)/g)) cssClasses.add(match[1])
+    for (const match of strippedAll.matchAll(/\.([A-Za-z_][\w-]*)/g)) cssClasses.add(match[1])
     const missingClasses = [...htmlClasses].filter((name) => !cssClasses.has(name))
     if (
       htmlClasses.size > 0 &&
@@ -539,7 +592,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       missingClasses.length / htmlClasses.size > MAX_MISSING_CLASS_RATIO
     ) {
       failures.push(
-        `${cssPath}: styles almost none of the classes used in the HTML (missing: ${missingClasses
+        `${cssPaths.join(', ')}: style almost none of the classes used in the HTML (missing: ${missingClasses
           .slice(0, 12)
           .join(', ')}${missingClasses.length > 12 ? ', …' : ''}). Style the classes the HTML uses.`,
       )

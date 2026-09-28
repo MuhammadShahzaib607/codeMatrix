@@ -203,6 +203,33 @@
   background: var(--bg-hover);
 }
 
+/* Top-level (container) rows: the project folder plus its siblings. They are the
+   folder the terminal starts in, so they read as one level above the project. */
+.tree-row.is-container {
+  border-bottom: 1px dashed var(--border);
+}
+
+.tree-row.is-container.is-active-project {
+  color: var(--accent);
+}
+
+.tree-badge {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tree-row.is-container:hover .tree-badge {
+  color: var(--text-strong);
+  border-color: var(--accent);
+}
+
 /* Soft flash used when search/quick-open jumps to a row. */
 .tree-row.is-revealed {
   animation: tree-reveal 1.5s ease-out;

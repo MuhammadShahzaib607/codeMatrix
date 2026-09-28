@@ -1,6 +1,7 @@
 import { createSlice } from '@reduxjs/toolkit'
-import { remapTreeIds } from '../utils/cloudTree'
-import { mapTree, removeNode as dropNodeFrom, updateNode } from '../utils/tree'
+import { baseNameOf, parentPathOf, remapTreeIds } from '../utils/cloudTree'
+import { ROOT_ID } from '../services/fileSystemAccess'
+import { findNode, insertNode, mapTree, removeNode as dropNodeFrom, updateNode } from '../utils/tree'
 
 export const EMPTY_WORKSPACE = { name: null, source: 'none', projectId: null }
 
@@ -10,6 +11,10 @@ const initialState = {
   tree: [],
   activeFileId: null,
   openTabs: [],
+  // The Explorer's top level: every entry of the user's container folder, with
+  // the project each top-level folder belongs to. The active project is one of
+  // these entries (rendered as the project tree); the rest are siblings.
+  container: { name: '', entries: [] },
 }
 
 function remapPath(oldPath, newPath, id) {
@@ -33,10 +38,47 @@ function collectPaths(node, set) {
   for (const child of node.children ?? []) collectPaths(child, set)
 }
 
+function ancestorPathsOf(path) {
+  const ancestors = []
+  let cursor = parentPathOf(path)
+  while (cursor) {
+    ancestors.push(cursor)
+    cursor = parentPathOf(cursor)
+  }
+  return ancestors
+}
+
+/**
+ * One node out of an agent fs-change record. Folder paths are created OPEN, so
+ * a folder the agent just made shows its files as they arrive.
+ */
+function nodeForChange(path, type) {
+  const isFolder = type === 'addDir'
+  const node = {
+    id: path,
+    name: baseNameOf(path),
+    type: isFolder ? 'folder' : 'file',
+    path,
+  }
+  if (isFolder) {
+    node.isOpen = true
+    node.children = []
+  }
+  return node
+}
+
 const fileSystemSlice = createSlice({
   name: 'fileSystem',
   initialState,
   reducers: {
+    setContainer(state, action) {
+      const { name, entries } = action.payload ?? {}
+      state.container = {
+        name: typeof name === 'string' ? name : '',
+        entries: Array.isArray(entries) ? entries : [],
+      }
+    },
+
     setCloudWorkspace(state, action) {
       const { projectId, name, tree } = action.payload
       state.workspace = { name, source: 'cloud', projectId }
@@ -102,9 +144,49 @@ const fileSystemSlice = createSlice({
       state.workspaceMissing = false
     },
 
+    /**
+     * INCREMENTAL tree update driven by the agent's own file operations
+     * (workspace:fsChanged). Each file appears in the right folder the moment
+     * the tool call that wrote it returns, with no full-tree walk; the throttled
+     * background refetch started by the same socket event reconciles ordering
+     * and anything this missed.
+     */
+    applyFsChanges(state, action) {
+      const changes = Array.isArray(action.payload?.changes) ? action.payload.changes : []
+      if (changes.length === 0) return
+      const ordered = [...changes]
+        .map((change) => ({ path: String(change?.path ?? '').replace(/^\/+/, ''), type: change?.type }))
+        .filter((change) => change.path && change.type)
+        .sort((a, b) => Number(b.type === 'addDir') - Number(a.type === 'addDir'))
+
+      for (const change of ordered) {
+        if (change.type === 'unlink' || change.type === 'unlinkDir') {
+          state.tree = dropNodeFrom(state.tree, change.path)
+          continue
+        }
+        if (change.type !== 'add' && change.type !== 'addDir') continue
+        if (findNode(state.tree, change.path)) continue
+
+        // Attach to the closest ancestor that is already in the tree, so a file
+        // whose folder has not been rendered yet still lands inside the project
+        // instead of at the top level.
+        const chain = ancestorPathsOf(change.path)
+        const folderParent = chain.find((id) => findNode(state.tree, id))
+        const parentId = folderParent ?? (findNode(state.tree, ROOT_ID) ? ROOT_ID : null)
+        state.tree = insertNode(state.tree, parentId, nodeForChange(change.path, change.type))
+
+        for (const ancestor of chain) {
+          if (ancestor) state.tree = updateNode(state.tree, ancestor, (node) => ({ ...node, isOpen: true }))
+        }
+      }
+
+      pruneTabs(state)
+    },
+
     clearWorkspace(state) {
       state.workspace = EMPTY_WORKSPACE
       state.workspaceMissing = false
+      state.container = { name: '', entries: [] }
       state.tree = []
       state.activeFileId = null
       state.openTabs = []
@@ -156,9 +238,11 @@ const fileSystemSlice = createSlice({
 })
 
 export const {
+  setContainer,
   setCloudWorkspace,
   setScratchWorkspace,
   refreshTree,
+  applyFsChanges,
   applyAgentProject,
   removeNode,
   markWorkspaceMissing,

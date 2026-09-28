@@ -5,17 +5,20 @@ import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
 import { recordExplorerAction } from '../../features/explorerHistorySlice'
 import { deleteExplorerEntry } from '../../features/explorerHistoryThunks'
 import { collapseAll, setFolderOpen } from '../../features/fileSystemSlice'
-import { fetchRecentProjects } from '../../features/projectsSlice'
+import { fetchRecentProjects, openRecentProject } from '../../features/projectsSlice'
 import {
   closeDeleteProjectModal,
   openDeleteProjectModal,
   showToast,
 } from '../../features/uiSlice'
 import {
+  createContainerEntry,
   createWorkspaceEntry,
   deleteWorkspaceProject,
   duplicateWorkspaceEntry,
+  loadContainer,
   openScratchWorkspace,
+  pasteIntoContainer,
   refreshWorkspaceTree,
   renameWorkspaceEntry,
 } from '../../features/workspaceThunks'
@@ -23,11 +26,11 @@ import useAuthGuard from '../../hooks/useAuthGuard'
 import ConfirmModal from '../Common/ConfirmModal'
 import RecentProjects from '../Projects/RecentProjects'
 import Tooltip from '../Common/Tooltip'
-import { ROOT_ID } from '../../services/fileSystemAccess'
+import { CONTAINER_ID, ROOT_ID } from '../../services/fileSystemAccess'
 import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
+import { containerSiblings, resolveCreateTargetId } from '../../utils/explorerTarget'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { openPreviewTab } from '../../utils/preview'
-import { findNode, findParentId } from '../../utils/tree'
 import { hasActiveWorkspace, isAnonymousScratchWorkspace } from '../../utils/workspace'
 import FileTree from './FileTree'
 import './Sidebar.css'
@@ -37,6 +40,7 @@ export default function Sidebar() {
   const guard = useAuthGuard()
   const tree = useSelector((state) => state.fileSystem.tree)
   const workspace = useSelector((state) => state.fileSystem.workspace)
+  const containerRawEntries = useSelector((state) => state.fileSystem.container.entries)
   const clipboard = useSelector((state) => state.clipboard)
   const isDeleteProjectOpen = useSelector((state) => state.ui.isDeleteProjectModalOpen)
   // A scratch workspace counts as an active workspace: everything below treats
@@ -61,6 +65,16 @@ export default function Sidebar() {
   const rootNode = tree.find((node) => node.id === ROOT_ID) ?? tree[0] ?? null
   const hideRootRow = isAnonymousScratchWorkspace(workspace)
   const treeNodes = hideRootRow ? (rootNode?.children ?? []) : tree
+
+  /**
+   * The Explorer's TOP LEVEL: every entry of the user's container except the
+   * active project itself, which is the tree rendered below (its children are
+   * promoted while the workspace is still an anonymous scratch). That is what
+   * makes "nothing selected -> create outside the project root" possible: the
+   * top level is a real folder, not a virtual one.
+   */
+  const containerEntries = containerSiblings(containerRawEntries, workspace.projectId)
+  const showContainer = hasProject
   const [isPreparing, setIsPreparing] = useState(false)
   // Node awaiting confirmation from the delete modal (file or folder).
   const [pendingDelete, setPendingDelete] = useState(null)
@@ -84,6 +98,14 @@ export default function Sidebar() {
   )
 
   const handleCancelCreate = useCallback(() => setCreating(null), [])
+
+  // Keep the top level in step with the active workspace — including the moment
+  // the agent adopts a scratch workspace (source flips scratch -> cloud), when
+  // the project folder's real name may have changed.
+  useEffect(() => {
+    if (!hasProject) return
+    dispatch(loadContainer())
+  }, [dispatch, hasProject, workspace.source, workspace.projectId, workspace.name])
 
   // Clicking the tree's empty area (or pressing Escape) drops the selection, so
   // the next New File / New Folder goes to the workspace ROOT again.
@@ -129,13 +151,16 @@ export default function Sidebar() {
     }
   }, [dispatch, reportError])
 
+  /**
+   * Rule A — where a new item goes:
+   *   - a FOLDER row is selected  -> inside it (the project ROOT row counts);
+   *   - a FILE row is selected    -> in that file's parent folder;
+   *   - NOTHING is selected       -> the TOP LEVEL, beside the project folder
+   *     (CONTAINER_ID). With no workspace at all we keep ROOT_ID so the existing
+   *     "first write bootstraps a scratch workspace" flow is untouched.
+   */
   function resolveTargetParentId() {
-    if (!selectedId) return ROOT_ID
-    const selected = findNode(tree, selectedId)
-    if (!selected) return ROOT_ID
-    if (selected.type === 'folder') return selected.id
-    const parentId = findParentId(tree, selectedId)
-    return parentId === undefined ? ROOT_ID : parentId
+    return resolveCreateTargetId({ selectedId, tree, hasProject })
   }
 
   /**
@@ -148,7 +173,7 @@ export default function Sidebar() {
    */
   function beginCreatingIn(parentId, type) {
     setCreating({ parentId, type })
-    if (parentId) {
+    if (parentId && parentId !== CONTAINER_ID && parentId !== ROOT_ID) {
       dispatch(setFolderOpen({ id: parentId, isOpen: true }))
     }
   }
@@ -194,6 +219,31 @@ export default function Sidebar() {
     const activeProjectId = projectIdRef.current
     const sourcePath = clipboard.path
     if (!activeProjectId || !sourcePath) return
+
+    // Pasting onto the TOP LEVEL copies the file beside the project folders. A
+    // top-level folder would BE a project, so that case is refused with an
+    // explanation instead of silently doing something else.
+    if (folderNode?.id === CONTAINER_ID) {
+      if (clipboard.type === 'folder') {
+        dispatch(
+          showToast({
+            message: 'A top-level folder is a project — use New Folder to create one.',
+            type: 'info',
+          }),
+        )
+        return
+      }
+      try {
+        const result = await dispatch(
+          pasteIntoContainer({ projectId: activeProjectId, sourcePath }),
+        ).unwrap()
+        dispatch(clearClipboard())
+        dispatch(showToast({ message: `Copied ${result.name} to the top level`, type: 'success' }))
+      } catch (error) {
+        reportError(`Could not copy ${baseNameOf(sourcePath)}: ${error.message}`)
+      }
+      return
+    }
 
     const targetFolderPath = folderNode?.id === ROOT_ID ? '' : (folderNode?.id ?? '')
     const name = baseNameOf(sourcePath)
@@ -257,6 +307,43 @@ export default function Sidebar() {
     [guard],
   )
 
+  /**
+   * A top-level FOLDER is another project: opening it makes it the active
+   * workspace, so the terminal, preview, export, search and the agent all follow
+   * it. The current project stays on disk untouched as a sibling.
+   */
+  const handleOpenContainerProject = useCallback(
+    (entry) => {
+      if (!entry?.projectId) return
+      if (entry.projectId === projectIdRef.current) return
+      guard(async () => {
+        try {
+          await dispatch(
+            openRecentProject({ projectId: entry.projectId, name: entry.name }),
+          ).unwrap()
+          setSelectedId(null)
+          dispatch(showToast({ message: `Opened project ${entry.name}`, type: 'success' }))
+        } catch (error) {
+          reportError(`Could not open ${entry.name}: ${error.message}`)
+        }
+      }, 'Please sign in to open a project')
+    },
+    [dispatch, guard, reportError],
+  )
+
+  /** A top-level FILE belongs to no project — say so instead of faking an open. */
+  const handleInspectContainerFile = useCallback(
+    (entry) => {
+      dispatch(
+        showToast({
+          message: `${entry.name} is at the top level, beside your projects — open it from the terminal.`,
+          type: 'info',
+        }),
+      )
+    },
+    [dispatch],
+  )
+
   const handleCopyPath = useCallback(async (node) => {
     const relativePath = node.id === ROOT_ID ? '' : node.id
     const copied = await copyTextToClipboard(relativePath)
@@ -301,6 +388,26 @@ export default function Sidebar() {
       // must both leave the workspace untouched (never a default-named folder).
       const name = String(rawName ?? '').trim()
       if (!name) return
+
+      // TOP LEVEL: the item is created beside the project folder. A folder here
+      // is a NEW PROJECT (registry + MongoDB metadata, no file contents).
+      if (parentId === CONTAINER_ID) {
+        try {
+          const result = await dispatch(createContainerEntry({ name, type })).unwrap()
+          dispatch(
+            showToast({
+              message:
+                type === 'folder'
+                  ? `Created project “${result.name}” at the top level`
+                  : `Created ${result.name} at the top level`,
+              type: 'success',
+            }),
+          )
+        } catch (error) {
+          reportError(`Could not create ${name}: ${error.message}`)
+        }
+        return
+      }
 
       // First real write: bootstrap the workspace NOW (scratch if nothing is
       // imported). ensureWorkspaceReady returns the id directly, because the
@@ -456,6 +563,11 @@ export default function Sidebar() {
           onCollapseAll={handleCollapseAll}
           canDeleteProject={canDeleteProject}
           onDeleteProject={requestDeleteProject}
+          containerEntries={containerEntries}
+          activeProjectId={workspace.projectId}
+          showContainer={showContainer}
+          onOpenContainerProject={handleOpenContainerProject}
+          onInspectContainerFile={handleInspectContainerFile}
         />
       </div>
 

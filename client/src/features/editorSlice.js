@@ -5,6 +5,10 @@ import { remapPaths, setCloudWorkspace } from './fileSystemSlice'
 const initialState = {
   contentByFileId: {},
   unsavedFileIds: [],
+  // Files the agent (or the terminal) changed on disk while the buffer had
+  // unsaved user edits: the buffer is kept and the tab shows a marker instead of
+  // silently discarding what the user typed.
+  changedOnDiskFileIds: [],
   // Files with an in-flight write (manual Ctrl+S or the auto-save debounce).
   // Drives the small spinner on the tab and is cleared by markSaved / a failed
   // save, never persisted.
@@ -18,6 +22,13 @@ const editorSlice = createSlice({
     setContent(state, action) {
       const { fileId, content } = action.payload
       state.contentByFileId[fileId] = content
+      state.changedOnDiskFileIds = state.changedOnDiskFileIds.filter((id) => id !== fileId)
+    },
+
+    markChangedOnDisk(state, action) {
+      if (!state.changedOnDiskFileIds.includes(action.payload)) {
+        state.changedOnDiskFileIds.push(action.payload)
+      }
     },
 
     updateContent(state, action) {
@@ -39,6 +50,9 @@ const editorSlice = createSlice({
     markSaved(state, action) {
       state.unsavedFileIds = state.unsavedFileIds.filter((fileId) => fileId !== action.payload)
       state.savingFileIds = state.savingFileIds.filter((fileId) => fileId !== action.payload)
+      state.changedOnDiskFileIds = state.changedOnDiskFileIds.filter(
+        (fileId) => fileId !== action.payload,
+      )
     },
 
     removeContent(state, action) {
@@ -46,6 +60,7 @@ const editorSlice = createSlice({
         delete state.contentByFileId[fileId]
         state.unsavedFileIds = state.unsavedFileIds.filter((id) => id !== fileId)
         state.savingFileIds = state.savingFileIds.filter((id) => id !== fileId)
+        state.changedOnDiskFileIds = state.changedOnDiskFileIds.filter((id) => id !== fileId)
       }
     },
   },
@@ -55,6 +70,7 @@ const editorSlice = createSlice({
         state.contentByFileId = {}
         state.unsavedFileIds = []
         state.savingFileIds = []
+        state.changedOnDiskFileIds = []
       })
       .addCase(remapPaths, (state, action) => {
         const { oldPath, newPath } = action.payload
@@ -72,6 +88,7 @@ const editorSlice = createSlice({
 export const {
   setContent,
   updateContent,
+  markChangedOnDisk,
   markSaving,
   clearSaving,
   markSaved,

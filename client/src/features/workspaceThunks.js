@@ -18,6 +18,7 @@ import {
   refreshTree,
   remapPaths,
   removeNode,
+  setContainer,
   setScratchWorkspace,
 } from './fileSystemSlice'
 
@@ -97,6 +98,51 @@ export const openScratchWorkspace = createAsyncThunk(
     } catch (error) {
       throw handleFailure(error, dispatch)
     }
+  },
+)
+
+/**
+ * The Explorer's TOP LEVEL: the per-user container folder that holds every
+ * project as a sibling entry. Loaded whenever the active workspace changes, and
+ * after any top-level create/paste. A signed-out call simply returns null (the
+ * Explorer keeps its project-only view).
+ */
+export const loadContainer = createAsyncThunk(
+  'workspace/loadContainer',
+  async (_, { dispatch }) => {
+    try {
+      const data = await workspaceApi.listContainer()
+      dispatch(
+        setContainer({ name: data?.container ?? '', entries: data?.entries ?? [] }),
+      )
+      return data
+    } catch {
+      return null
+    }
+  },
+)
+
+/**
+ * Creates an item at the TOP LEVEL, beside the project folder:
+ *   - a folder becomes a NEW PROJECT (registry record + MongoDB metadata);
+ *   - a file is stored in the container next to the projects.
+ */
+export const createContainerEntry = createAsyncThunk(
+  'workspace/createContainerEntry',
+  async ({ name, type }, { dispatch }) => {
+    const data = await workspaceApi.createContainerEntry(name, type)
+    await dispatch(loadContainer())
+    return data
+  },
+)
+
+/** Copies a project FILE next to the project folders (top level). */
+export const pasteIntoContainer = createAsyncThunk(
+  'workspace/pasteIntoContainer',
+  async ({ projectId, sourcePath }, { dispatch }) => {
+    const data = await workspaceApi.pasteToContainer(projectId, sourcePath)
+    await dispatch(loadContainer())
+    return data
   },
 )
 

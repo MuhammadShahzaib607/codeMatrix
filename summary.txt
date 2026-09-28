@@ -1869,6 +1869,12 @@ components/Sidebar/FileTree.jsx
 components/Sidebar/Sidebar.jsx — the handlers
   - handleRequestCreate(parentId, type): signs in first, then opens the inline
     New File / New Folder input INSIDE that specific folder.
+    [UPDATED 2026-09-28] A row's menu still targets that row, but the TARGET of
+    the toolbar buttons and of the empty-area menu is now resolved by
+    utils/explorerTarget.js: folder row -> inside it, file row -> its parent,
+    NOTHING selected -> the TOP LEVEL (a sibling of the project folder inside the
+    user's container). The old "nothing selected -> the project root" rule is
+    gone — see the multi-level create-target entry at the end of this file.
   - handleCut(node)     -> setClipboard({ path: node.id, type, mode: 'cut' })
   - handleCopy(node)    -> setClipboard({ path: node.id, type, mode: 'copy' })
   - handlePaste(folder) -> CUT = a real server-side MOVE via the existing rename
@@ -4937,6 +4943,10 @@ stacks/vanilla.js holds the blueprint: pure HTML5/CSS3/vanilla JS, no library of
 any kind (no Tailwind, no build step), inline-SVG icons, never a remote image,
 Google Fonts via link with a system fallback; index/about/contact at root plus
 css/style.css and js/main.js; identical header and footer on every page with
+[UPDATED 2026-09-28] files are now css/base.css (tokens + shared components)
+PLUS one css/<page>.css per page, and js/main.js; a follow-up on an existing
+css/style.css project keeps the single-stylesheet convention. See the per-page
+CSS entry at the end of this file.
 class="active" + aria-current="page"; the NAV RULE (an item with no page of its
 own becomes a section on the home page and is linked as index.html#services from
 every page — no dead links, no href="#"); the exact section ids per page
@@ -5244,6 +5254,10 @@ TASK 2 — HTML-FIRST WORKFLOW (prompts/stacks/vanilla.js)
 --------------------------------------------------------------------------------
 The write order was reversed (it used to be css/style.css FIRST). The prompt now
 mandates this EXACT order, one file at a time:
+[UPDATED 2026-09-28] the order is now PLAN -> css/base.css -> pages -> one
+css/<page>.css per page -> js/main.js -> VERIFY, so that every page's classes
+already have a shared home when the page is written. This HTML-FIRST description
+only still applies to a follow-up on a project that links a single stylesheet.
   1. PLAN — the plan JSON only: every requested page, every requirement as a
      plan.requirements line, and the design decisions (brand, palette hexes,
      fonts, spacing scale, per-page section list).
@@ -5927,3 +5941,375 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
     disk: the nav links to a page come from the PLAN, so a completed-looking site
     can still reference a page that was never written.
 
+
+================================================================================
+AI Code Editor — Project Snapshot for Follow-ups + Real-time Agent Files +
+        Multi-level Create Target + Per-page CSS Professional Sites
+        (2026-09-28)
+================================================================================
+
+STATUS: complete and verified with mock-provider runs, real socket.io transport,
+        real files on disk and real headless Chrome. NOT verified: a live model
+        run against a paid provider (no key in the sandbox) and the DB-backed
+        ownership checks (no MongoDB) — see the verification section.
+
+--------------------------------------------------------------------------------
+TASK 1 — FOLLOW-UP TASKS MUST RESPECT THE EXISTING PROJECT
+--------------------------------------------------------------------------------
+
+1a. ROOT CAUSE (measured, not guessed).
+
+   A follow-up task ran with `messages = [system, { user: task }]`. The only
+   project context in the system prompt was `PROJECT STRUCTURE` built by
+   buildTreeContext(), i.e. the file NAMES (depth 3, dirs like node_modules
+   collapsed). The previous run's message history is loaded ONLY when
+   `resume === true` (agentService: `const session = resume ? getAgentSession(...)`),
+   so a plain follow-up — "add 4 more pages" — never saw the existing pages.
+
+   Real output from the probe (server/tmp-t1-snapshot-test.mjs):
+
+     pre-fix prompt (tree only): contains "site-header" = false,
+       contains "nav-link" = false, contains "--bg: #0d1117" = false
+     same run with the new snapshot: site-header = true, nav-link = true,
+       --bg tokens = true, "NAV LINKS: index.html" = true (+3792 chars total,
+       snapshot block itself 2951 chars)
+
+   The old vanilla prompt did say "read the pages that already exist first" —
+   that costs model turns and the model routinely skipped it or read one page.
+   Everything else about the run was already correct: no rename was attempted on
+   the named project, no EPERM, no adoption warning.
+
+1b. FIX.
+
+   - server/src/agent/prompts/projectSnapshot.js (NEW): buildProjectSnapshot()
+     walks the workspace with fs.promises (no sync calls) and produces a compact,
+     capped (~11k chars) block WITHOUT spending a model token: FILES list, PAGES
+     (each .html with its <title> and the css/js it links), NAV LINKS, FOOTER
+     LINKS, the :root custom properties of the base stylesheet, its class names,
+     and the EXACT <header>…</header> and <footer>…</footer> markup of the main
+     page (index.html preferred). Returns null for an empty/asset-less workspace,
+     so a fresh build pays nothing.
+   - prompts/index.js: buildSystemPrompt() takes { projectSnapshot, updateWorkflow }.
+     With a snapshot the tree-only PROJECT STRUCTURE section is REPLACED by the
+     snapshot, and for vanilla stacks UPDATE_WORKFLOW_SECTION is added
+     (snapshot is the source of truth; copy header/footer byte-identically; add new
+     links to the nav of ALL pages; same shared stylesheet + own page css; reuse
+     class names and tokens; finish with the connection check).
+   - agentService: the snapshot is built once per run, before the first model
+     call, for EVERY non-empty workspace (fresh builds included) — a failure to
+     build it is logged and ignored, never fatal.
+
+1c. SERVER CHECKS (connectionCheck.js, no model tokens on the happy path).
+
+   - navItemsOf()/footerLinksOf()/normalizeNavHref(): the header nav of every page
+     must list the SAME links (reported as "missing X, extra Y" against
+     index.html), every page must be reachable from the nav of every other page,
+     and the footer must have the same link set and column headings.
+   - The stylesheet consistency rule was rewritten for per-page CSS: instead of
+     "every page links the same SET", it now compares the INTERSECTION (the shared
+     sheet every page must link), so base.css + css/<page>.css is legal while a
+     page that skips the shared sheet is still an error.
+   - autofixConnections({ navLinks: true }) inserts a TRIVIALLY missing nav link by
+     cloning the page's own last nav item (right href/label, correct active state,
+     other pages untouched) and reports it in one line — the model spends no turn
+     on it. All three vanilla call sites pass navLinks (the repair precheck and
+     both in-run paths).
+   - vanillaGate: the FAQ-accordion requirement now applies only when the run
+     builds the HOME page, and the contact-form requirement only to a page that IS
+     the contact page or declares a contact-form section — a follow-up that adds
+     unrelated pages is no longer told to invent a form.
+
+ACCEPTANCE (real output, 28/28 checks): on a 3-page project with the watcher and a
+terminal open, the mock agent added 4 pages by copying the header/footer it read
+out of the snapshot: folder name unchanged (modern-static-website ->
+modern-static-website), 0 project/rename feed events, 0 rename warnings, 0 EPERM,
+4 files created, all 7 pages list all 7 nav links and all 7 footer links, ONE
+header/nav markup variant and ONE footer variant across the 7 pages, 4 feed
+autofix events, connection check ok (7 checked, 0 problems). The same test then
+planted a different navbar on team.html in a scratch copy of the finished project
+and the check reported exactly: "The header nav of team.html does not match
+index.html: missing link(s) about.html, contact.html, services.html, pricing.html,
+blog.html, team.html" plus the reachability line.
+
+--------------------------------------------------------------------------------
+TASK 2 — FILES APPEAR IN THE EXPLORER WHILE THE AGENT WORKS
+--------------------------------------------------------------------------------
+
+2a. ROOT CAUSE (measured).
+
+   Nothing in the agent path notified the Explorer. `suppressWatcher` appears in
+   agentService.js ZERO times, and the only bridge was the chokidar watcher:
+   agent write -> fs event -> 750ms server debounce -> workspace:treeChanged ->
+   400ms client debounce -> full GET /tree. Measured on a real watcher with 19 fs
+   events from 10 written files:
+
+     [watcher] proj-t2-0001: 19 fs event(s) -> 1 treeChanged (1ms)
+     socket fsChanged events: 6, chokidar treeChanged events: 1
+     first file: 1857ms after its tool result; last file: 781ms
+   i.e. ONE bulk refresh arriving ~2s after the first file, and files inside a
+   folder created seconds earlier only appeared once that whole burst went quiet.
+
+2b. FIX.
+
+   - server/src/services/agentFsNotifier.js (NEW): a per-project emitter registry
+     plus a 150ms batcher (types merged add/addDir/change/unlink, 200 changes per
+     batch, unref'd timer, flush-before-unregister so the LAST file of a run still
+     arrives). queueAgentFsChange() is a no-op when nobody registered an emitter.
+   - agentService.executeTool() now returns `fsChanges` for every mutating tool
+     (create_file/edit_file -> add or change, append_to_file -> change, delete_file
+     -> unlink, plus addDir for each parent folder the write created), and the run
+     loop queues them right after a successful tool result.
+   - socket/agentSocket.js registers the emitter for the run and pushes
+     workspace:fsChanged { projectId, changes:[{path,type}], batchId, at } to the
+     project's room (roomFor(projectId) exported from workspaceSocket.js);
+     agentSocket's finally unregisters it.
+   - Client: fileSystemSlice.applyFsChanges patches the tree IN PLACE — new
+     folders are inserted OPEN (so files show up as they arrive), a file whose
+     parent folder is not in the tree yet is attached to the nearest existing
+     ancestor (or the project root), unlink removes the node, and untouched nodes
+     keep their identity (structural sharing). useWorkspaceWatcher applies it,
+     then runs one throttled leading+trailing background refetch (500ms) as
+     reconciliation; it also re-emits workspace:watch on socket `connect`, so the
+     room subscription survives a reconnect/adoption. An open file with no unsaved
+     edits is re-read from disk; an open file WITH unsaved edits keeps the user's
+     buffer and is marked `changedOnDiskFileIds` (amber icon + hint text on the
+     tab, cleared by the next read/save).
+
+ACCEPTANCE (real socket.io server + real chokidar watcher + real socket.io-client):
+
+     file                    type    tool->client   (chokidar treeChanged)
+     index.html              add     161ms          (1857ms)
+     about.html              add      57ms          (1753ms)
+     css/style.css           add     157ms          (1655ms)
+     js/main.js              add      62ms          (1560ms)
+     pages/services.html     add     154ms          (1464ms)
+     pages/pricing.html      add      39ms          (1349ms)
+     pages/blog.html         add     150ms          (1198ms)
+     pages/team.html         add      40ms          (1088ms)
+     pages/faq.html          add     178ms           (959ms)
+     pages/contact.html      add     150ms           (781ms)
+     addDir changes (new folders): css, js, pages
+   worst case 178ms (limit 500ms), all 10 files reported, every file on disk, and
+   the chokidar path still fires once as the background safety net. The client
+   reducer test (10/10) proves a file created before its folder still lands inside
+   that folder, deleted files disappear even when open, and a plain "change" never
+   duplicates a row.
+
+--------------------------------------------------------------------------------
+TASK 3 — EXPLORER CREATE TARGET (IMPLEMENTED, NOT FALLBACK)
+--------------------------------------------------------------------------------
+
+DESIGN DECISION: the Explorer's top level is now the REAL per-user container
+folder (server/workspaces/u-<owner>/) — the same directory a terminal for the
+project starts in. The active project is ONE entry among its siblings instead of
+the invisible root of everything:
+
+   - The active project's own folder is rendered as the project tree (its children
+     are promoted while the workspace is still an anonymous scratch, so "Scratch"
+     is still never shown), and is excluded from the sibling rows.
+   - Another top-level FOLDER row is a project: clicking it opens it as the active
+     workspace (terminal, preview, export, agent and search follow it).
+   - A top-level FILE row is a plain file beside the projects with a "top level"
+     badge; it explains itself on click instead of pretending to open.
+   - Rows carry a badge (active project / project / top level) and the top level is
+     separated from the project tree by a dashed rule.
+
+SERVER (workspaceManager + workspace.controller + workspace.routes):
+   GET  /api/workspace/container        -> { container, entries:[{name,type,projectId}] }
+   POST /api/workspace/container/entry  -> { name, type:'file'|'folder' }
+        folder => a NEW PROJECT: crypto.randomUUID id, registry record,
+        folder created in the container and a Project document (metadata only,
+        never file contents); file => written beside the projects.
+   POST /api/workspace/container/paste  -> copies a project FILE next to the
+        projects (name clashes get " (2)"), refuses folders with a clear message.
+   A folder that appeared outside the app (terminal) is REGISTERED as a project
+   the first time the container is listed, so it is openable instead of being a
+   stray row. Every path still goes through resolveInsideWorkspace/ownership
+   checks; the container is always derived from the JWT, never from the body.
+
+CLIENT: services/fileSystemAccess.js (CONTAINER_ID, containerEntryId,
+isContainerId), workspaceApi.listContainer/createContainerEntry/pasteToContainer,
+fileSystemSlice.container state + setContainer, workspaceThunks
+loadContainer/createContainerEntry/pasteIntoContainer, and a testable rule module
+utils/explorerTarget.js:
+   resolveCreateTargetId({ selectedId, tree, hasProject }):
+     folder row (root row included) -> inside it
+     file row                      -> its parent folder
+     nothing selected              -> the TOP LEVEL (container), or the project
+                                      root when no workspace exists yet, so the
+                                      existing "first create bootstraps a scratch"
+                                      flow is untouched
+     a stale selection (row gone)  -> the top level, never a random folder
+   Empty-area click and Escape both clear the selection, so both mean "top level".
+   Right-click on the empty area opens the SAME styled menu (New File, New Folder,
+   Paste when the clipboard has an item, Refresh, Collapse All) targeting the top
+   level; right-clicking a row is unchanged, and the menu no longer opens on the
+   inline create row (rows are matched by [data-node-id]).
+
+ACCEPTANCE: the pure rule module is unit-tested 14/14 (root selected -> inside,
+nothing selected -> container, file selected -> parent, stale selection -> top
+level, active project never listed twice, files listed as siblings). The container
+API is unit-tested 15/15 against real directories (a top-level folder becomes a
+usable project with a working tree walk; duplicate/bad names refused; a folder made
+outside the app becomes a project; paste copies with a (2) suffix; "../../etc"
+refused; the active project folder is untouched). The UI wiring (FileTree rows,
+Sidebar handlers, watcher/terminal isolation) is NOT verified in a browser — see
+the verification section.
+
+--------------------------------------------------------------------------------
+TASK 4 — PROFESSIONAL SITES + PER-PAGE CSS (vanilla stack)
+--------------------------------------------------------------------------------
+
+NEW FILE CONVENTION (prompts/stacks/vanilla.js + strings + thresholds.js):
+   css/base.css  — tokens (:root), reset, typography, utilities, header/nav,
+                   footer, buttons, cards, forms, shared components, responsive
+   css/<page>.css — for EVERY page (index.html -> css/index.css, about.html ->
+                   css/about.css), only that page's own sections
+   js/main.js     — shared behaviour, features guarded by element existence
+   every page links base.css FIRST, then its own page css, always relative
+An existing project that links a single css/style.css KEEPS that convention — the
+per-page rules only apply when a css/base.css exists (both the connection check and
+the gate branch on that), so old projects keep working.
+
+WRITE ORDER: PLAN + design system -> css/base.css -> pages -> page css -> js/main.js
+-> connection check. The DESIGN QUALITY checklist was added to the prompt (sticky
+translucent header with a working hamburger, strong hero with two CTAs and a
+proof strip, card grids, testimonials, pricing/process, CTA banner, multi-column
+footer with inline-SVG social icons, 8px rhythm, clamp() type scale, hover/focus
+states, prefers-reduced-motion, real copy, one h1 per page, alt/aria, skip link,
+no over-engineering) plus the per-page CSS split and "keep base.css as it is;
+never create a second shared stylesheet for an existing project".
+
+CHECKS: the missing-page-stylesheet case is reported precisely ("about.html does
+not link its own page stylesheet css/about.css"); the gate accepts base.css OR
+style.css, requires the page stylesheet link and the file itself, reads
+:root/@media/prefers-reduced-motion from the shared sheet, aggregates ALL css files
+for remote-URL and class-coverage checks, and minLinesFor() now expects base.css
+(350) and a lighter 80-line floor for page stylesheets.
+
+ACCEPTANCE (mock provider, real files, 10/10): the 8 planned files were created
+(css/base.css, 3 pages, 3 page stylesheets, js/main.js), every page links base.css
+and then its own sheet and loads js/main.js, connection check ok (3 pages, 0
+problems), vanilla gate ok (planned-files, page-structure, shared-header-footer,
+links, sections, content-year, assets all ok), and removing about.html's own
+stylesheet link makes the check report it.
+
+REAL HEADLESS CHROME (49/49 assertions, screenshots at 1280px and 390px in
+C:\\Users\\WIN\\AppData\\Local\\Temp\\cm-t4-shots): all three pages load 2
+stylesheets, body rgb(20,16,13) on rgb(246,239,230) (theme applied), header
+position sticky with blur(12px), h1 57.6px at 1280 and 35.2px/30.4px at 390 (clamp
+working), 4-column footer and 4-column card grids at 1280 collapsing to 1 column at
+390, contact form input themed and the map block 180px, scrollWidth == viewport at
+both widths (no horizontal overflow), and the hamburger really opens the mobile
+menu (display none -> flex, aria-expanded=true) and closes it again on all three
+pages.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/agent/prompts/projectSnapshot.js   NEW — snapshot builder +
+     UPDATE_WORKFLOW_SECTION. No comments (repo JS rule).
+  server/src/agent/prompts/index.js             snapshot replaces PROJECT
+     STRUCTURE; updateWorkflow flag.
+  server/src/agent/prompts/stacks/vanilla.js    per-page CSS structure, new write
+     order, design-quality checklist, follow-up section rewritten.
+  server/src/services/agentFsNotifier.js        NEW — batched workspace:fsChanged.
+  server/src/services/agentService.js           snapshot build + system prompt,
+     fsChanges per tool, queueAgentFsChange, navLinks autofix flag.
+  server/src/agent/quality/connectionCheck.js   nav/footer consistency,
+     reachability, intersection-based stylesheet rule, per-page css check, nav
+     autofix, fixed stylesheet/script consistency messages.
+  server/src/agent/quality/vanillaGate.js       base.css OR style.css, page
+     stylesheet link + existence, aggregated css class/URL checks, contact/FAQ
+     requirements scoped to the pages actually built.
+  server/src/agent/quality/thresholds.js        BASE_STYLESHEET,
+     SHARED_STYLESHEETS, base.css line floor, css floor 80.
+  server/src/socket/agentSocket.js              emitter registration.
+  server/src/socket/workspaceSocket.js          roomFor() exported (+ event docs).
+  server/src/utils/workspaceManager.js          ensureOwnerContainer,
+     findProjectIdForFolder, listContainerEntries, createContainerFile,
+     createContainerProject, statWorkspaceEntry, copyFileIntoContainer.
+  server/src/controllers/workspace.controller.js  listContainer,
+     createContainerEntry, pasteToContainer.
+  server/src/routes/workspace.routes.js         the three container routes
+     (registered before '/:projectId').
+  client/src/hooks/useWorkspaceWatcher.js       fsChanged handling, incremental
+     apply, throttled reconcile, watch on reconnect.
+  client/src/features/fileSystemSlice.js        container state, applyFsChanges.
+  client/src/features/editorSlice.js            changedOnDiskFileIds.
+  client/src/features/workspaceThunks.js        loadContainer,
+     createContainerEntry, pasteIntoContainer.
+  client/src/utils/explorerTarget.js            NEW — testable create-target rule.
+  client/src/services/fileSystemAccess.js       CONTAINER_ID + helpers.
+  client/src/services/api.js                    three container calls.
+  client/src/components/Sidebar/FileTree.jsx    ContainerRow, container inline
+     create row, empty-area menu targets the top level.
+  client/src/components/Sidebar/Sidebar.jsx     container loading, sibling rows,
+     open-project handler, top-level create/paste, rule module.
+  client/src/components/Sidebar/Sidebar.css     container row + badge styles.
+  client/src/components/Editor/TabBar.jsx + Editor.css  "changed on disk" marker.
+  summary.txt                                   this entry + three [UPDATED] notes.
+  server/tmp-t1-snapshot-test.mjs, tmp-t2-fs-events-test.mjs,
+  tmp-t3-container-test.mjs, tmp-t4-vanilla-site-test.mjs,
+  tmp-t4-chrome-check.mjs, client/tmp-t2-reducer-test.mjs,
+  client/tmp-t3-target-test.mjs, client/tmp-ext-loader.mjs,
+  client/tmp-register-loader.mjs                NEW (deleted after the run).
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output, not claims)
+--------------------------------------------------------------------------------
+  - Task 1: 28/28 (mock provider, real files, real 7-page project on disk).
+  - Task 2: 7/7 timings test (real socket.io server + watcher + client) and 10/10
+    client reducer test. Worst tool-result -> client latency 178ms vs 1857ms for
+    the old chokidar-only path.
+  - Task 3: 15/15 server container test, 14/14 create-target test.
+  - Task 4: 10/10 mock run (gate ok, check ok) and 49/49 headless-Chrome
+    assertions with screenshots at two widths.
+  - oxlint (client): 0 errors, 2 pre-existing warnings in settingsSlice.js
+    (control-char regex, intentional); nothing from the new files.
+  - vite build: OK (1.37s, 2028 modules).
+  - node --check: OK on all 15 changed/new server files.
+  - All temporary test files deleted afterwards (34 tmp-*.mjs removed).
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED
+--------------------------------------------------------------------------------
+  - A LIVE model run: no provider key in the sandbox, so every agent run above
+    used a scripted mock that drives the REAL runAgent loop, real tools and real
+    files. Whether a real model obeys the snapshot/update workflow is a prompt
+    behaviour claim, not a measured one.
+  - MONGODB-BACKED paths: no DB, so upsertProject/findProject returned null. The
+    registry (on-disk) side of the container, project creation, listing and paste
+    were exercised for real; the Project documents themselves were not.
+  - The Task 3 UI wiring: the create-target rule, the container API and the
+    sibling filtering are unit-tested, but no browser session was run against the
+    live app (login + DB + the Explorer), so "New Folder at the top level appears
+    as an openable sibling project" is verified at the API/rule level only. Also
+    NOT implemented: renaming, deleting or dragging a top-level container FILE
+    from the Explorer (only creation and paste exist), and pasting a FOLDER at the
+    top level is refused by design (a top-level folder IS a project).
+  - Multi-page styling comparison for Task 1 ("headless Chrome shows all pages
+    styled the same") was done for Task 4's generated site (real Chrome, both
+    widths); the Task 1 fixture was verified by markup/CSS identity checks instead.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - A FOLLOW-UP IS NOT A FRESH BUILD. The agent's context comes from the snapshot,
+    built on the server from disk. If a follow-up produces a different navbar
+    again, check that the page really was non-empty (the snapshot returns null for
+    an empty workspace) before touching the prompt.
+  - The 150ms fsChanged batch is the Explorer's PRIMARY source of truth during an
+    agent run; chokidar (750ms debounce, one bulk refresh) is the safety net for
+    terminal/external changes. Do not "simplify" either one away.
+  - workspace:fsChanged carries project-relative paths, the same ids the tree uses
+    (ROOT_ID for the project root). The container rows use a `container:<name>`
+    prefix and are deliberately NOT selectable, so a create target can never be a
+    path outside the active project.
+  - Per-page CSS is chosen by PRESENCE: a css/base.css switches the project (and
+    the checks) to the per-page convention; css/style.css keeps the old one. If
+    you add another convention, branch the same way instead of relaxing the check.
+  - When measuring generated pages in headless Chrome, wait for
+    readyState === 'complete': js/main.js is deferred and waits for the Google
+    Fonts stylesheet, so a fixed sleep reads a page whose listeners are not
+    attached yet (this cost a debugging cycle).

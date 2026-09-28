@@ -196,6 +196,28 @@ export const workspaceApi = {
     })
   },
 
+  // The Explorer's top level: the per-user container folder, which holds every
+  // project folder as a sibling entry (and may hold plain top-level files).
+  listContainer() {
+    return request('/api/workspace/container')
+  },
+
+  // A top-level FOLDER is a new project; a top-level FILE lives beside the
+  // projects in the container.
+  createContainerEntry(name, type) {
+    return request('/api/workspace/container/entry', {
+      method: 'POST',
+      body: JSON.stringify({ name, type }),
+    })
+  },
+
+  pasteToContainer(sourceProjectId, sourcePath) {
+    return request('/api/workspace/container/paste', {
+      method: 'POST',
+      body: JSON.stringify({ projectId: sourceProjectId, sourcePath }),
+    })
+  },
+
   importProject(projectId, payload) {
     return request(workspacePath(projectId, '/import'), {
       method: 'POST',

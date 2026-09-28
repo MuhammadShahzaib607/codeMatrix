@@ -13,6 +13,12 @@ router.use(protect)
 // '/:projectId' guard below so 'scratch' is not treated as a project id.
 router.post('/scratch', workspaceController.openScratchWorkspaceHandler)
 
+// The Explorer's top level: the per-user container of projects. Registered
+// before the '/:projectId' guard so 'container' is not read as a project id.
+router.get('/container', workspaceController.listContainer)
+router.post('/container/entry', workspaceController.createContainerEntry)
+router.post('/container/paste', workspaceController.pasteToContainer)
+
 router.use('/:projectId', validateProjectId, authorizeProject)
 
 router.post('/:projectId/import', workspaceController.importProject)

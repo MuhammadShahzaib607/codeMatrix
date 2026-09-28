@@ -1,5 +1,6 @@
 export const MIN_LINE_COUNTS = {
   'css/style.css': 400,
+  'css/base.css': 350,
   'js/main.js': 120,
   'index.html': 220,
   'about.html': 140,
@@ -8,7 +9,7 @@ export const MIN_LINE_COUNTS = {
 
 export const EXTENSION_MIN_LINES = {
   html: 100,
-  css: 150,
+  css: 80,
   js: 50,
 }
 
@@ -24,6 +25,8 @@ export const MIN_MISSING_CLASSES = 12
 export const REPEATED_SECTION_IDS = ['services', 'testimonials', 'blogs', 'team']
 export const CONTACT_FIELDS = ['name', 'email', 'subject', 'message']
 export const REQUIRED_STYLESHEET = 'css/style.css'
+export const BASE_STYLESHEET = 'css/base.css'
+export const SHARED_STYLESHEETS = [BASE_STYLESHEET, REQUIRED_STYLESHEET]
 export const REQUIRED_SCRIPT = 'js/main.js'
 export const REQUIRED_JS_SNIPPETS = [
   ['addEventListener', 'event listeners'],

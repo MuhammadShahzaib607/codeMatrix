@@ -13,6 +13,8 @@ import {
   writeFileToWorkspace,
 } from '../utils/workspaceManager.js'
 import { buildSystemPrompt, isVanillaFramework, resolveTier } from '../agent/prompts/index.js'
+import { buildProjectSnapshot } from '../agent/prompts/projectSnapshot.js'
+import { queueAgentFsChange } from './agentFsNotifier.js'
 import { findRuleBlock } from './strictRules.js'
 import { formatGateReport, vanillaGate } from '../agent/quality/vanillaGate.js'
 import { formatQuickCheck, quickCheck } from '../agent/quality/quickCheck.js'
@@ -674,6 +676,23 @@ function debugToolCall(name, filePath, content, outcome) {
   )
 }
 
+function missingParentFolders(projectId, filePath) {
+  const segments = String(filePath ?? '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+  const missing = []
+  for (let index = 1; index < segments.length; index += 1) {
+    const prefix = segments.slice(0, index).join('/')
+    try {
+      if (!existsInWorkspace(projectId, prefix)) missing.push(prefix)
+    } catch {
+      return []
+    }
+  }
+  return missing
+}
+
 async function executeTool(name, rawArgs, projectId) {
   const args = normalizeToolArgs(projectId, name, rawArgs)
   switch (name) {
@@ -699,6 +718,8 @@ async function executeTool(name, rawArgs, projectId) {
         debugToolCall(name, filePath, content, 'rejected')
         return { text: invalid, rejected: true }
       }
+      const existedBefore = existsInWorkspace(projectId, filePath)
+      const newFolders = existedBefore ? [] : missingParentFolders(projectId, filePath)
       let saved
       try {
         saved = writeFileToWorkspace(projectId, filePath, content)
@@ -712,6 +733,10 @@ async function executeTool(name, rawArgs, projectId) {
         text: `${verb} ${saved}`,
         modelText: `ok, ${countLines(content)} lines`,
         lines: countLines(content),
+        fsChanges: [
+          ...newFolders.map((folder) => ({ path: folder, type: 'addDir' })),
+          { path: saved, type: existedBefore ? 'change' : 'add' },
+        ],
       }
     }
     case 'append_to_file': {
@@ -723,6 +748,8 @@ async function executeTool(name, rawArgs, projectId) {
         debugToolCall(name, filePath, content, 'rejected')
         return { text: invalid, rejected: true }
       }
+      const appendedToExisting = existsInWorkspace(projectId, filePath)
+      const appendedFolders = appendedToExisting ? [] : missingParentFolders(projectId, filePath)
       let saved
       try {
         saved = appendFileToWorkspace(projectId, filePath, content)
@@ -735,6 +762,10 @@ async function executeTool(name, rawArgs, projectId) {
         text: `Appended to ${saved}`,
         modelText: `ok, ${countLines(content)} lines`,
         lines: countLines(content),
+        fsChanges: [
+          ...appendedFolders.map((folder) => ({ path: folder, type: 'addDir' })),
+          { path: saved, type: appendedToExisting ? 'change' : 'add' },
+        ],
       }
     }
     case 'read_file': {
@@ -757,7 +788,7 @@ async function executeTool(name, rawArgs, projectId) {
       const filePath = String(args.path ?? '').trim()
       if (!filePath) return { text: 'Error: a "path" is required.' }
       const deleted = await deleteFromWorkspace(projectId, filePath)
-      return { text: `Deleted ${deleted}` }
+      return { text: `Deleted ${deleted}`, fsChanges: [{ path: deleted, type: 'unlink' }] }
     }
     case 'run_command': {
       const command = String(args.command ?? '').trim()
@@ -1090,12 +1121,27 @@ export async function runAgent({
   const treeContext = await buildTreeContext(projectId)
   const vanillaMode = isVanillaFramework(framework)
 
+  // Follow-up runs used to see the file tree only, so the model invented a new
+  // header/footer instead of reusing the existing one. On a non-empty workspace
+  // we now read the project ONCE on the server (no model tokens) and inject a
+  // compact snapshot: file list, per-page title + linked css/js, the exact
+  // header/nav and footer markup of the main page, the nav/footer link lists,
+  // the :root tokens and the shared class names.
+  let projectSnapshotText = null
+  try {
+    const snapshot = await buildProjectSnapshot({ projectId, framework })
+    projectSnapshotText = snapshot?.text ?? null
+  } catch (error) {
+    console.warn(`[agent] project snapshot failed: ${error?.message ?? error}`)
+    projectSnapshotText = null
+  }
+
   const repairIntent = !resume && vanillaMode && detectRepairIntent(task)
   let repairClean = false
   let repairInfo = null
   if (repairIntent) {
     try {
-      const autofix = await autofixConnections({ projectId })
+      const autofix = await autofixConnections({ projectId, navLinks: vanillaMode })
       if (autofix.fixes.length > 0) {
         event_('gate', `Auto-fixed ${autofix.fixes.length} broken asset link(s) on the server.`, {
           status: 'done',
@@ -1147,6 +1193,8 @@ export async function runAgent({
       tier: resolveTier(tierCandidate.limits, { vanilla: vanillaMode }),
       now: new Date(),
       projectStructure: treeContext,
+      projectSnapshot: projectSnapshotText,
+      updateWorkflow: vanillaMode,
       strictRules,
     }),
   }
@@ -1850,7 +1898,7 @@ export async function runAgent({
 
       if (vanillaMode) {
         try {
-          const autofix = await autofixConnections({ projectId })
+          const autofix = await autofixConnections({ projectId, navLinks: vanillaMode })
           if (autofix.fixes.length > 0) {
             event_('gate', `Auto-fixed ${autofix.fixes.length} broken asset link(s) on the server.`, {
               status: 'done',
@@ -2112,6 +2160,13 @@ export async function runAgent({
       }
 
       const failed = String(outcome.text ?? '').startsWith('Error')
+
+      // The Explorer must follow the agent in real time, so every successful
+      // file operation pushes a direct change event to the project's room —
+      // chokidar is a second, slower safety net for terminal/external changes.
+      if (!failed && Array.isArray(outcome.fsChanges) && outcome.fsChanges.length > 0) {
+        for (const change of outcome.fsChanges) queueAgentFsChange(projectId, change)
+      }
       if (ruleBlock) {
         event_('rule_blocked', `Blocked by your rule: ${truncate(ruleBlock.rule, 80)}`, {
           tool: name,
@@ -2172,7 +2227,7 @@ export async function runAgent({
         // moment they are written, not three pages later.
         if (vanillaMode && /\.(html?|css|js)$/i.test(filePath)) {
           try {
-            const autofix = await autofixConnections({ projectId })
+            const autofix = await autofixConnections({ projectId, navLinks: vanillaMode })
             const fixText = formatAutofixReport(autofix)
             if (fixText) modelResult = `${modelResult}\n\n${fixText}`
             if (autofix.fixes.length > 0) {

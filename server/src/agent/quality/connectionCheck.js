@@ -162,6 +162,72 @@ function htmlIdsOf(html) {
   return ids
 }
 
+function normalizeNavHref(pageFile, href) {
+  const value = String(href ?? '').trim()
+  if (!value) return ''
+  const hashIndex = value.indexOf('#')
+  const fragment = hashIndex === -1 ? '' : value.slice(hashIndex)
+  let target = hashIndex === -1 ? value : value.slice(0, hashIndex)
+  target = target.replace(/^\/+/, '').replace(/^\.\//, '').trim()
+  if (!target) {
+    // A bare "#section" is a link inside the CURRENT page. Section ids are
+    // reused across pages, so it is compared page-independently: this keeps a
+    // legitimate "#services" on the about page from reading as a difference.
+    return fragment || ''
+  }
+  if (REMOTE.test(target) || IGNORED_SCHEMES.test(value)) return ''
+  target = target.replace(/^\.\//, '')
+  return `${target}${fragment}`
+}
+
+function navItemsOf(html) {
+  const navMatch = /<nav\b[\s\S]*?<\/nav>/i.exec(String(html ?? ''))
+  if (!navMatch) return { found: false, items: [] }
+  const block = navMatch[0]
+  const items = []
+  const pattern = /<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi
+  let match = pattern.exec(block)
+  while (match) {
+    const href = String(match[1] ?? match[2] ?? match[3] ?? '').trim()
+    const label = String(match[4] ?? '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+    if (href) items.push({ href, label, markup: match[0] })
+    match = pattern.exec(block)
+  }
+  return { found: true, block, items }
+}
+
+function navHrefValue(attrs) {
+  const match = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(String(attrs ?? ''))
+  return String(match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim()
+}
+
+function footerLinksOf(html) {
+  const footerMatch = /<footer\b[\s\S]*?<\/footer>/i.exec(String(html ?? ''))
+  if (!footerMatch) return { found: false, links: [], headings: [] }
+  const block = footerMatch[0]
+  const links = []
+  const pattern = /<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi
+  let match = pattern.exec(block)
+  while (match) {
+    const href = String(match[1] ?? match[2] ?? match[3] ?? '').trim()
+    if (href) links.push(href)
+    match = pattern.exec(block)
+  }
+  const headings = []
+  for (const heading of block.matchAll(/<h[2-4]\b[^>]*>([\s\S]*?)<\/h[2-4]>/gi)) {
+    const text = String(heading[1]).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+    if (text) headings.push(text)
+  }
+  return { found: true, block, links, headings }
+}
+
+function pageStylesheetName(pageFile, stylesheet) {
+  const base = path.posix.basename(String(pageFile ?? ''))
+  const name = base.replace(/\.[^.]+$/, '')
+  const dir = path.posix.dirname(String(stylesheet ?? ''))
+  return dir && dir !== '.' ? `${dir}/${name}.css` : `${name}.css`
+}
+
 function cssBracesBalanced(css) {
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
   const open = (stripped.match(/\{/g) ?? []).length
@@ -215,6 +281,8 @@ export async function connectionCheck({
   const problemFiles = new Set()
   const stylesheetTargets = new Map()
   const scriptTargets = new Map()
+  const navData = new Map()
+  const footerData = new Map()
   const details = {
     htmlFiles,
     cssFiles: cssAll,
@@ -226,6 +294,10 @@ export async function connectionCheck({
     missingSelectors: [],
     unbalancedCss: [],
     undefinedVars: [],
+    navInconsistent: [],
+    navUnreachable: [],
+    footerInconsistent: [],
+    missingPageCss: [],
   }
 
   for (const file of htmlFiles) {
@@ -282,6 +354,8 @@ export async function connectionCheck({
     }
     stylesheetTargets.set(file, sheets)
     scriptTargets.set(file, scripts)
+    navData.set(file, navItemsOf(html))
+    footerData.set(file, footerLinksOf(html))
 
     // Only complain about a MISSING stylesheet link. A page that links one but
     // with a path that could not be resolved already got its own, precise
@@ -302,25 +376,161 @@ export async function connectionCheck({
   }
 
   if (htmlFiles.length > 1) {
-    const pairs = [
-      ['stylesheet', stylesheetTargets],
-      ['script', scriptTargets],
-    ]
-    for (const [label, map] of pairs) {
-      const entries = htmlFiles
-        .map((file) => ({ file, key: [...(map.get(file) ?? [])].sort().join('|') }))
-        .filter((entry) => entry.key)
-      if (entries.length < 2) continue
-      const reference = entries[0]
-      for (const entry of entries.slice(1)) {
+    // A project may link a SHARED stylesheet plus one page stylesheet per page
+    // (css/base.css + css/<page>.css), so "the same set on every page" is no
+    // longer the rule: what must be on EVERY page is the intersection — the
+    // shared stylesheet(s). A page missing one of those is the real bug.
+    const sheetEntries = htmlFiles
+      .map((file) => ({ file, sheets: [...(stylesheetTargets.get(file) ?? [])] }))
+      .filter((entry) => entry.sheets.length > 0)
+    if (sheetEntries.length >= 2) {
+      const shared = sheetEntries
+        .slice(1)
+        .reduce(
+          (acc, entry) => acc.filter((sheet) => entry.sheets.includes(sheet)),
+          sheetEntries[0].sheets.slice(),
+        )
+      for (const entry of sheetEntries) {
+        const missing = shared.filter((sheet) => !entry.sheets.includes(sheet))
+        if (missing.length === 0) continue
+        problems.push(
+          `"${entry.file}" does not link the shared stylesheet(s) ${missing.join(', ')} that the other pages link (${sheetEntries[0].file} links ${sheetEntries[0].sheets.join(', ')}) — every page must link the same shared stylesheet with the same relative path.`,
+        )
+        details.inconsistent = details.inconsistent ?? []
+        details.inconsistent.push({ file: entry.file, reference: sheetEntries[0].file, label: 'stylesheet' })
+        problemFiles.add(entry.file)
+      }
+    }
+
+    const scriptEntries = htmlFiles
+      .map((file) => ({ file, key: [...(scriptTargets.get(file) ?? [])].sort().join('|') }))
+      .filter((entry) => entry.key)
+    if (scriptEntries.length >= 2) {
+      const reference = scriptEntries[0]
+      for (const entry of scriptEntries.slice(1)) {
         if (entry.key !== reference.key) {
           problems.push(
-            `"${entry.file}" links different ${label} files than "${reference.file}" (${entry.key} vs ${reference.key}) — every page must link the same shared ${label} with the same relative path.`,
+            `"${entry.file}" links different script files than "${reference.file}" (${entry.key} vs ${reference.key}) — every page must link the same shared script with the same relative path.`,
           )
           details.inconsistent = details.inconsistent ?? []
-          details.inconsistent.push({ file: entry.file, reference: reference.file, label })
+          details.inconsistent.push({ file: entry.file, reference: reference.file, label: 'script' })
           problemFiles.add(entry.file)
         }
+      }
+    }
+  }
+
+  const navFiles = htmlFiles.filter((file) => {
+    const nav = navData.get(file)
+    return nav?.found && nav.items.length > 0
+  })
+  if (navFiles.length >= 2) {
+    const referenceFile =
+      navFiles.find((file) => /(^|\/)index\.html?$/i.test(file)) ?? navFiles[0]
+    const signatureOf = (file) =>
+      new Set(
+        navData
+          .get(file)
+          .items.map((item) => normalizeNavHref(file, item.href))
+          .filter(Boolean),
+      )
+    const reference = signatureOf(referenceFile)
+    for (const file of navFiles) {
+      if (file === referenceFile) continue
+      const current = signatureOf(file)
+      const missing = [...reference].filter((href) => !current.has(href))
+      const extra = [...current].filter((href) => !reference.has(href))
+      if (missing.length === 0 && extra.length === 0) continue
+      problems.push(
+        `The header nav of "${file}" does not match "${referenceFile}":${
+          missing.length > 0 ? ` missing link(s) ${missing.join(', ')}` : ''
+        }${extra.length > 0 ? ` extra link(s) ${extra.join(', ')}` : ''}. Copy the header/nav markup from "${referenceFile}" so EVERY page lists the same links.`,
+      )
+      details.navInconsistent.push({ file, reference: referenceFile, missing, extra })
+      problemFiles.add(file)
+    }
+
+    const unreachable = []
+    for (const file of htmlFiles) {
+      const nav = navData.get(file)
+      if (!nav?.found || nav.items.length === 0) continue
+      const targets = new Set(
+        nav.items
+          .map((item) => normalizeNavHref(file, item.href).split('#')[0])
+          .filter(Boolean),
+      )
+      const missing = htmlFiles.filter((other) => other !== file && !targets.has(other))
+      if (missing.length > 0) unreachable.push({ file, missing })
+    }
+    if (unreachable.length > 0) {
+      details.navUnreachable = unreachable
+      for (const entry of unreachable) problemFiles.add(entry.file)
+      problems.push(
+        `${unreachable.length} page(s) cannot reach every other page from their nav: ${unreachable
+          .slice(0, 6)
+          .map((entry) => `"${entry.file}" is missing ${entry.missing.join(', ')}`)
+          .join('; ')}. Add the missing links to the nav of the page(s) listed (use edit_file).`,
+      )
+    }
+  }
+
+  const footerFiles = htmlFiles.filter((file) => footerData.get(file)?.found)
+  if (footerFiles.length >= 2) {
+    const referenceFile =
+      footerFiles.find((file) => /(^|\/)index\.html?$/i.test(file)) ?? footerFiles[0]
+    const referenceFooter = footerData.get(referenceFile)
+    const referenceLinks = new Set(
+      referenceFooter.links.map((href) => normalizeNavHref(referenceFile, href)).filter(Boolean),
+    )
+    for (const file of footerFiles) {
+      if (file === referenceFile) continue
+      const footer = footerData.get(file)
+      const links = new Set(footer.links.map((href) => normalizeNavHref(file, href)).filter(Boolean))
+      const missing = [...referenceLinks].filter((href) => !links.has(href))
+      const headingsDiffer =
+        referenceFooter.headings.length > 0 &&
+        footer.headings.length > 0 &&
+        footer.headings.join('|') !== referenceFooter.headings.join('|')
+      if (missing.length === 0 && !headingsDiffer) continue
+      problems.push(
+        `The footer of "${file}" differs from "${referenceFile}":${
+          missing.length > 0 ? ` missing link(s) ${missing.join(', ')}` : ''
+        }${headingsDiffer ? ` different column headings (${footer.headings.join(', ')} vs ${referenceFooter.headings.join(', ')})` : ''}. Reuse the SAME footer markup on every page (brand blurb, quick links, contact, social icons, copyright bar).`,
+      )
+      details.footerInconsistent.push({ file, reference: referenceFile, missing })
+      problemFiles.add(file)
+    }
+  }
+
+  // Per-page stylesheet convention (css/base.css + one css/<page>.css per page).
+  // Projects that still use a single shared stylesheet are left alone.
+  const baseSheet = cssAll.find((file) => /(^|\/)base\.css$/i.test(file))
+  if (baseSheet && htmlFiles.length > 0) {
+    for (const file of htmlFiles) {
+      const sheets = stylesheetTargets.get(file) ?? new Set()
+      if (!sheets.has(baseSheet)) {
+        problems.push(
+          `"${file}" does not link the shared "${baseSheet}". Every page links base.css first, then its own page stylesheet.`,
+        )
+        details.missingPageCss.push({ file, missing: baseSheet })
+        problemFiles.add(file)
+        continue
+      }
+      const ownSheet = pageStylesheetName(file, baseSheet)
+      if (!cssAll.includes(ownSheet)) {
+        problems.push(
+          `"${ownSheet}" is missing: every page needs its own page stylesheet (${ownSheet} for ${file}) with only the rules of that page's sections.`,
+        )
+        details.missingPageCss.push({ file, missing: ownSheet })
+        problemFiles.add(file)
+        continue
+      }
+      if (!sheets.has(ownSheet)) {
+        problems.push(
+          `"${file}" does not link its own page stylesheet "${ownSheet}" (link base.css first, then ${ownSheet}).`,
+        )
+        details.missingPageCss.push({ file, missing: ownSheet })
+        problemFiles.add(file)
       }
     }
   }
@@ -461,14 +671,20 @@ export function formatConnectionReport(result, { max = 6 } = {}) {
   return [
     'LINK/STYLE CHECK FAILED — fix exactly these, then continue:',
     ...lines.slice(0, max),
-    'Every page lives at the project root and links the shared css/style.css and js/main.js with a RELATIVE path (never a leading "/"). Give every class the HTML uses a CSS rule.',
+    'Every page lives at the project root and links the SAME shared stylesheet(s) and the same script as the other pages, with a RELATIVE path (never a leading "/"); a css/base.css project also gives every page its own css/<page>.css. Give every class the HTML uses a CSS rule.',
   ].join('\n')
 }
 
 export function formatAutofixReport(result) {
   if (!result || !Array.isArray(result.fixes) || result.fixes.length === 0) return ''
-  const lines = result.fixes.slice(0, 6).map((fix) => `${fix.file}: "${fix.from}" -> "${fix.to}"`)
-  return ['The server auto-fixed broken asset path(s) (no need to redo these):', ...lines].join('\n')
+  const lines = result.fixes
+    .slice(0, 8)
+    .map((fix) =>
+      fix.kind === 'nav'
+        ? `${fix.file}: added the missing nav link to "${fix.to}"`
+        : `${fix.file}: "${fix.from}" -> "${fix.to}"`,
+    )
+  return ['The server auto-fixed these (no need to redo them, and do not undo them):', ...lines].join('\n')
 }
 
 function basenameMatches(all, bare) {
@@ -484,7 +700,49 @@ function replaceAttribute(text, attr, current, next) {
   return text.replace(pattern, (_match, prefix) => `${prefix}"${next}"`)
 }
 
-export async function autofixConnections({ projectId = null, root = null, files = null } = {}) {
+function indentationOf(text, index) {
+  const start = text.lastIndexOf('\n', Math.max(0, index - 1)) + 1
+  const match = /^[ \t]*/.exec(text.slice(start, index))
+  return match ? match[0] : ''
+}
+
+function insertNavLink(html, { label, href, active = false }) {
+  const navMatch = /<nav\b[\s\S]*?<\/nav>/i.exec(html)
+  if (!navMatch) return null
+  const anchors = [
+    ...navMatch[0].matchAll(/<a\b[^>]*href\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)[^>]*>[\s\S]*?<\/a>/gi),
+  ]
+  if (anchors.length === 0) return null
+
+  const template = anchors[anchors.length - 1]
+  const opening = /^<a\b([^>]*)>/i.exec(template[0])
+  let attrs = opening ? opening[1] : ''
+  attrs = attrs.replace(/\s*href\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i, '')
+  attrs = attrs.replace(/\s*aria-current\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i, '')
+  const classMatch = /\s*class\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs)
+  const classValue = classMatch ? String(classMatch[1] ?? classMatch[2] ?? classMatch[3] ?? '') : ''
+  if (classMatch) attrs = attrs.replace(classMatch[0], '')
+  const tokens = classValue
+    .split(/\s+/)
+    .filter((token) => token && !/^(active|is-active|current)$/i.test(token))
+  if (active) tokens.push('active')
+  const classAttr = tokens.length > 0 ? ` class="${tokens.join(' ')}"` : ''
+  const ariaAttr = active ? ' aria-current="page"' : ''
+  const markup = `<a${attrs.replace(/\s+/g, ' ').replace(/\s+$/, '')}${classAttr}${ariaAttr} href="${href}">${label}</a>`
+
+  const templateStart = navMatch.index + template.index
+  const insertAt = templateStart + template[0].length
+  const indent = indentationOf(html, templateStart)
+  const next = `${html.slice(0, insertAt)}\n${indent}${markup}${html.slice(insertAt)}`
+  return next === html ? null : { next, markup }
+}
+
+export async function autofixConnections({
+  projectId = null,
+  root = null,
+  files = null,
+  navLinks = false,
+} = {}) {
   const fixes = []
   const changed = []
   let workspaceRoot = root
@@ -552,6 +810,60 @@ export async function autofixConnections({ projectId = null, root = null, files 
     }
   }
 
+  // Trivially fixable case: a nav link that SOME page has and another page is
+  // missing. The server inserts a copy of the page's own last nav item with the
+  // right href + label, so every page ends up listing the same links without
+  // spending a model round on it. A page whose whole nav is absent, and a page
+  // no nav links to at all, are left for the model to fix.
+  if (navLinks && htmlFiles.length > 1) {
+    const contents = new Map()
+    for (const file of htmlFiles) {
+      try {
+        contents.set(file, await fs.readFile(path.join(workspaceRoot, file), 'utf8'))
+      } catch {}
+    }
+
+    const union = new Map()
+    for (const file of htmlFiles) {
+      const html = contents.get(file)
+      if (html == null) continue
+      for (const item of navItemsOf(html).items) {
+        const target = normalizeNavHref(file, item.href).split('#')[0]
+        if (!target || !allSet.has(target)) continue
+        if (!union.has(target)) union.set(target, item.label || path.posix.basename(target))
+      }
+    }
+
+    for (const file of htmlFiles) {
+      let html = contents.get(file)
+      if (html == null) continue
+      const nav = navItemsOf(html)
+      if (!nav.found || nav.items.length === 0) continue
+      const present = new Set(
+        nav.items.map((item) => normalizeNavHref(file, item.href).split('#')[0]).filter(Boolean),
+      )
+      let touched = false
+      for (const [target, label] of union) {
+        if (present.has(target)) continue
+        const result = insertNavLink(html, {
+          label,
+          href: relativeRef(file, target),
+          active: target === file,
+        })
+        if (!result) continue
+        html = result.next
+        present.add(target)
+        touched = true
+        fixes.push({ file, kind: 'nav', attr: 'href', from: '(missing)', to: target })
+      }
+      if (!touched) continue
+      try {
+        await fs.writeFile(path.join(workspaceRoot, file), html, 'utf8')
+        changed.push(file)
+      } catch {}
+    }
+  }
+
   return { fixes, changed }
 }
 
@@ -578,6 +890,11 @@ export const __testables = {
   htmlIdsOf,
   cssBracesBalanced,
   replaceAttribute,
+  navItemsOf,
+  footerLinksOf,
+  normalizeNavHref,
+  insertNavLink,
+  pageStylesheetName,
   UNSTYLED_CLASS_TOLERANCE,
   RUNTIME_CLASS_ALLOWLIST,
 }

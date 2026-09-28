@@ -123,6 +123,147 @@ export function getOwnerContainerPath(ownerId) {
   return path.join(WORKSPACES_ROOT, workspaceOwnerKey(ownerId))
 }
 
+/** Same, but guarantees the folder exists — it is the Explorer's top level. */
+export function ensureOwnerContainer(ownerId) {
+  const containerPath = getOwnerContainerPath(ownerId)
+  fs.mkdirSync(containerPath, { recursive: true })
+  return containerPath
+}
+
+/**
+ * Reverse registry lookup: which project owns this folder inside this container?
+ * Used by the Explorer's container listing to turn a top-level folder row back
+ * into the project it represents.
+ */
+export function findProjectIdForFolder(container, folderName) {
+  const registry = loadRegistry()
+  for (const [projectId, record] of Object.entries(registry)) {
+    if (record?.container === container && record?.folderName === folderName) return projectId
+  }
+  return null
+}
+
+const CONTAINER_FILE_NAME_PATTERN = /^[^/\\:*?"<>|\u0000-\u001F]+$/
+
+export function sanitizeContainerFileName(displayName) {
+  const raw = String(displayName ?? '').trim()
+  if (!raw || !CONTAINER_FILE_NAME_PATTERN.test(raw)) {
+    throw new ApiError(
+      400,
+      'A file name cannot be empty or contain \\ / : * ? " < > | characters.',
+      'INVALID_NAME',
+    )
+  }
+  const name = raw.replace(/[.\s]+$/, '').slice(0, FOLDER_NAME_MAX_LENGTH)
+  if (!name || name === '.' || name === '..') {
+    throw new ApiError(400, 'That file name is not usable.', 'INVALID_NAME')
+  }
+  if (WINDOWS_RESERVED_NAMES.test(name)) {
+    throw new ApiError(400, 'That file name is reserved by the operating system.', 'INVALID_NAME')
+  }
+  return name
+}
+
+/**
+ * The Explorer's TOP LEVEL: every entry of the user's container, with the
+ * project each top-level folder belongs to. A folder created outside the app
+ * (terminal, or an older version) gets registered as a project on first sight,
+ * so it can be opened like any other instead of being an unopenable stray row.
+ */
+export async function listContainerEntries(ownerId, { limit = 200 } = {}) {
+  const container = workspaceOwnerKey(ownerId)
+  const containerPath = ensureOwnerContainer(ownerId)
+  let dirents = []
+  try {
+    dirents = await fsp.readdir(containerPath, { withFileTypes: true })
+  } catch {
+    return { container, entries: [] }
+  }
+
+  const entries = []
+  const claimed = new Set()
+  for (const dirent of dirents.slice(0, limit)) {
+    const name = String(dirent.name ?? '')
+    if (!name || name.startsWith('.')) continue
+    if (dirent.isDirectory()) {
+      let projectId = findProjectIdForFolder(container, name)
+      if (!projectId) {
+        projectId = crypto.randomUUID()
+        try {
+          setWorkspaceRecord(projectId, { container, folderName: name })
+        } catch {
+          projectId = null
+        }
+      }
+      if (projectId) claimed.add(projectId)
+      entries.push({ name, type: 'folder', projectId })
+    } else {
+      entries.push({ name, type: 'file', projectId: null })
+    }
+  }
+
+  entries.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'folder' ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+  return { container, entries }
+}
+
+/**
+ * A top-level FILE lives beside the projects, inside the container.
+ */
+export async function createContainerFile(ownerId, displayName, content = '') {
+  const containerPath = ensureOwnerContainer(ownerId)
+  const name = sanitizeContainerFileName(displayName)
+  const absolute = path.join(containerPath, name)
+  if (fs.existsSync(absolute)) {
+    throw new ApiError(409, `"${name}" already exists at the top level.`, 'ALREADY_EXISTS')
+  }
+  await fsp.writeFile(absolute, typeof content === 'string' ? content : '', 'utf8')
+  return { name, path: absolute }
+}
+
+/** Stats for one path inside a project, using the same traversal guard. */
+export async function statWorkspaceEntry(projectId, relativePath) {
+  const { absolute, relative } = resolveInsideWorkspace(projectId, relativePath)
+  const stats = await fsp.stat(absolute).catch(() => null)
+  return { absolute, relative, stats }
+}
+
+/**
+ * Copies ONE file from a project into the user's container, beside the project
+ * folders. Name clashes get a " (2)" suffix instead of overwriting anything.
+ */
+export async function copyFileIntoContainer(ownerId, absoluteSource, displayName) {
+  const containerPath = ensureOwnerContainer(ownerId)
+  const base = sanitizeContainerFileName(displayName)
+  const dot = base.lastIndexOf('.')
+  const stem = dot > 0 ? base.slice(0, dot) : base
+  const extension = dot > 0 ? base.slice(dot) : ''
+  let name = base
+  for (let counter = 2; counter <= 50; counter += 1) {
+    if (!fs.existsSync(path.join(containerPath, name))) break
+    name = `${stem} (${counter})${extension}`
+  }
+  const destination = path.join(containerPath, name)
+  if (fs.existsSync(destination)) {
+    throw new ApiError(409, 'Too many copies of that file at the top level.', 'ALREADY_EXISTS')
+  }
+  await fsp.copyFile(absoluteSource, destination)
+  return { name }
+}
+
+/**
+ * A top-level FOLDER is a PROJECT: it gets a project id, a registry record and a
+ * MongoDB metadata document (never file contents), exactly like an import.
+ */
+export async function createContainerProject(ownerId, displayName, projectId = null) {
+  const container = workspaceOwnerKey(ownerId)
+  const id = projectId ?? crypto.randomUUID()
+  const folder = registerWorkspaceFolder(id, { ownerId, displayName, container })
+  return { projectId: id, name: folder.folderName, container, path: folder.path }
+}
+
 function folderPathFor(container, folderName) {
   return container
     ? path.join(WORKSPACES_ROOT, container, folderName)

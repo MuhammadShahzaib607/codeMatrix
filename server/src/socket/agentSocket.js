@@ -9,6 +9,8 @@ import { hasResumableSession } from '../services/agentSessionService.js'
 import { adoptScratchProject } from '../services/scratchProjectService.js'
 import { sanitizeStrictRules } from '../services/strictRules.js'
 import { ensureScratchWorkspace, isScratchProjectId } from '../utils/workspaceManager.js'
+import { registerAgentFsEmitter, unregisterAgentFsEmitter } from '../services/agentFsNotifier.js'
+import { roomFor } from './workspaceSocket.js'
 
 // ---------------------------------------------------------------------------
 // The agent's real-time channel.
@@ -180,6 +182,14 @@ export default function registerAgentSocket(io) {
           room.emit('agent:action', event)
         }
 
+        // Direct file-change feed for the Explorer: every successful agent file
+        // operation is batched here (~150ms) and pushed to the project's room,
+        // so files and folders appear while the agent works instead of waiting
+        // for chokidar (which is slower and can miss same-process writes).
+        registerAgentFsEmitter(projectId, (payload) => {
+          io.to(roomFor(projectId)).emit('workspace:fsChanged', payload)
+        })
+
         const emitDelta = (delta) => {
           if (!delta) return
           room.emit('agent:delta', { runId, text: delta.text ?? '', reset: Boolean(delta.reset) })
@@ -271,6 +281,7 @@ export default function registerAgentSocket(io) {
           // Safety net: if the run failed before the model named the project,
           // still give the scratch workspace a real name derived from the task.
           if (scratchRun && !scratchAdopted) await adopt(null)
+          unregisterAgentFsEmitter(projectId)
           active = false
           activeRuns.delete(userId)
           stopRequests.delete(userId)

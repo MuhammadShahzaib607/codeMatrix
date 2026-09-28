@@ -112,6 +112,17 @@
   display: block;
 }
 
+/* The file was rewritten on disk (by the agent or the terminal) while this tab
+   had unsaved edits: the buffer is kept and the tab is marked. */
+.tab-changed-icon {
+  color: var(--warning-text, var(--accent));
+  flex: 0 0 auto;
+}
+
+.tab.is-changed-on-disk .tab-name {
+  color: var(--warning-text, var(--accent));
+}
+
 /* In-flight save (auto-save or Ctrl+S): swap the dot for a quiet spinner. */
 .tab-saving-spinner {
   display: none;

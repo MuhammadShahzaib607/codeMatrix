@@ -4387,6 +4387,271 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
   - The MongoDB mirror (ApiKeyUsage) exists so numbers survive a restart; if the
     database is down everything still works from the in-memory cache alone.
   - usageTone thresholds (<70 / 70-90 / 90+) and the accent→orange→red palette
-    live in client/src/utils/rateLimit.js and Common/UsageBar.css; keep the AI
-    panel's .ai-usage-mini colours in step with them.
+    live in client/src/utils/rateLimit.js and Common/UsageBar.css. The AI panel
+    now renders the SHARED Common/UsageBar (compact) instead of its old private
+    .ai-usage-mini span, so there is a single set of colours to keep in step.
+
+
+================================================================================
+AI Agent Fix Pass: Project Naming + File Linking + Action Feed + Usage Bar
+================================================================================
+
+STATUS: complete and verified. Four reported issues fixed, plus two more bugs
+found while verifying them (both were breaking the live preview). Acceptance:
+37/37 server-flow checks, 23/23 headless-Chrome UI checks, oxlint clean, build
+ok. The same tests run against the PREVIOUS code score 14/34 and 16/24, i.e.
+they reproduce the reported bugs before the fix.
+
+--------------------------------------------------------------------------------
+1. ROOT CAUSE — THE NESTED "todo-app" FOLDER (issues #1 and #4)
+--------------------------------------------------------------------------------
+THE RENAME WAS NEVER A COPY. renameWorkspaceFolder() has always been a true
+top-level fs.renameSync of the folder itself (workspaceManager.js), so contents
+keep their relative positions. The real defect was TIMING + PATH, three parts:
+
+  (a) THE CONTAINER CAME FIRST. POST /api/workspace/scratch ignored the task and
+      always created/reused a folder literally named "Scratch", so every fresh
+      agent task started its life inside a folder that was not the project.
+  (b) THE RENAME COULD ONLY HAPPEN AFTER THE MODEL SPOKE. agentSocket renamed
+      the folder when the model's first message contained a PROJECT_NAME line
+      (and otherwise in `finally`, i.e. AFTER every tool call). A model's first
+      message is very often tool_calls with content: null — extractProjectName()
+      then returned null and the rename ran at the very end of the run.
+  (c) THE MODEL NESTED ITS OWN NAME. Nothing told the model that the workspace
+      root already IS the project folder, so it wrote paths prefixed with the
+      name it had just chosen ("todo-app/index.html").
+
+  Net effect, reproduced on the ORIGINAL code (tmp-fresh-task-test: 14/34):
+      Scratch/task-tracker/{index.html,style.css,script.js}
+  …and, when the name only arrived at the end, the rename produced the reported
+  double:  task-tracker/task-tracker/*  — a project nested inside a copy of
+  itself, with GET /preview/.../index.html answering 404 because the Explorer and
+  the preview both expect the files at the project root.
+
+THE FIX — the name is settled BEFORE the folder exists and BEFORE the first
+file-write, and paths can never re-create the project's own name:
+
+  server/src/controllers/workspace.controller.js
+    POST /api/workspace/scratch now takes an optional { task }. With a task:
+      * a FRESH workspace is created DIRECTLY under its final name (the
+        backend-derived slug, chooseScratchProjectName/deriveProjectName) — no
+        generic "Scratch" container is ever created;
+      * an anonymous Scratch being reused for a task is renamed IN PLACE (still
+        a true folder rename) before anything is written;
+      * the response carries that real name with isScratch: false, because a
+        workspace named after a task IS a real project from that moment.
+      Without a task (Explorer "New File" with no project) the classic
+      anonymous Scratch behaves exactly as before — verified 21/21 by the
+      legacy tmp-create-test.
+
+  client/src/services/api.js + features/workspaceThunks.js + features/aiSlice.js
+    openScratchWorkspace({ task }) forwards the task; when the server answers
+    with isScratch:false the thunk dispatches applyAgentProject, so the Explorer
+    root label, the topbar chip and workspace.source ('cloud' -> Export/Sync)
+    flip at OPEN time instead of waiting for a mid-run adoption.
+
+  server/src/socket/agentSocket.js
+    adopt(null) now runs BEFORE runAgent builds its prompt: any still-anonymous
+    folder is renamed to the task slug before the first tool call. The model's
+    PROJECT_NAME line can still rename it again (to a better name) on its first
+    message — also before any tool executes — and `finally` remains the safety
+    net. This is what made the legacy fallback test's rename assertions flip
+    from FAIL to PASS (16/24 -> 21/24 with only its pre-existing, unrelated
+    fallback-note expectations failing).
+
+  server/src/services/scratchProjectService.js
+    adoptScratchProject() is now idempotent and precise: it renames only when
+    the folder is still anonymous OR the model proposed a DIFFERENT name, only
+    upserts the Project record when it is out of date, and only emits the
+    'project' feed row when the workspace actually transitioned — so repeated
+    calls (pre-run + first message + finally) can no longer double-emit.
+
+  server/src/services/agentService.js — THE SELF-NESTING GUARD
+    normalizeToolArgs() runs on every file tool's path (and on the path shown in
+    the feed): when the FIRST segment equals the workspace folder's own name AND
+    no entry of that name exists at the root — i.e. the call would CREATE the
+    project's own name as a nested folder — the segment is dropped
+    ("task-tracker/index.html" -> "index.html"). An existing entry with that
+    name is left completely alone, so a task that genuinely asks for such a
+    folder still works. Normalisation is idempotent; run_command is untouched.
+
+  server/src/services/agentFrameworks.js
+    SHARED_RULES now states it outright: the workspace folder is already named
+    after the project, PROJECT_NAME only NAMES it (never mkdir it), and files go
+    at the ROOT (index.html, not "todo-app/index.html").
+
+--------------------------------------------------------------------------------
+2. FILE LINKING IN GENERATED HTML/CSS/JS (issue #2) — TWO BUGS, BOTH FIXED
+--------------------------------------------------------------------------------
+  (i) THE NESTING above: with files at Scratch/<name>/* the browser could not
+      resolve anything relative to the root. Fixed by issue #1's fix.
+ (ii) FOUND WHILE VERIFYING IN A REAL BROWSER: even with flat siblings, the
+      preview's stylesheet/script requests were answered 401. A browser resolves
+      href="style.css" inside /preview/<id>/index.html?token=… to
+      /preview/<id>/style.css — THE QUERY STRING IS DROPPED — and protectPreview
+      only accepted ?token= / Authorization. Every generated site therefore
+      rendered unstyled and with dead JS even though the files existed.
+      server/src/middlewares/protectPreview.js now mirrors a presented
+      query/header token into a per-project, path-scoped cookie
+      (cm_preview_<projectId>; Path=/preview/<projectId>; HttpOnly; SameSite=Lax)
+      and accepts it on later sub-resource requests. No HTML rewriting, and it
+      also covers CSS url(), fonts and fetch() inside the page.
+
+CONFIRMED WORKING (headless Chrome, real preview URL):
+  - GET /preview/<id>/index.html -> 200 text/html;
+  - <link rel="stylesheet" href="style.css"> -> applied (body rgb(15,23,42),
+    h1 rgb(167,139,250) — exactly the generated style.css values);
+  - <script src="script.js"> -> executed (typeof window.saveTodo ===
+    'function') and functional (it wrote localStorage);
+  - a bare asset request with no token and no cookie is refused 401, and the
+    cookie alone authenticates it 200 text/css — so the cookie is what makes
+    relative linking work.
+
+--------------------------------------------------------------------------------
+3. ROOT CAUSE — BROKEN ACTION FEED ("stack of flat gray lines")
+--------------------------------------------------------------------------------
+ROOT CAUSE: a CSS flexbox shrink, not the data and not a stuck loader. There is
+no skeleton state anywhere in the client; every event rendered — at 8 pixels
+high.
+
+  .ai-messages is `display:flex; flex-direction:column; overflow-y:auto`.
+  Its children kept the default `flex-shrink: 1`, and `.ai-action` has
+  `overflow: hidden`, which removes a flex item's content-based minimum height
+  (min-height resolves to 0 for scroll containers). So as soon as the feed was
+  taller than the panel the browser SHRANK the action cards instead of
+  scrolling: the chat bubbles (overflow: visible -> min-height: auto) survived
+  at full height while every action card collapsed to a ~8px sliver, showing
+  only its 1px top/bottom borders — the "thin repeated horizontal line elements"
+  in the screenshot. The container's scrollHeight equalled its clientHeight
+  because the content had been squashed to fit, so the feed never scrolled.
+
+  MEASURED in real Chrome against the built stylesheet:
+    before: 10 action cards x 8px, feed 402px viewport = 402px content (squashed)
+    after:  10 action cards x 30px, feed 384px viewport, 622px content (scrolls)
+
+FIX (client/src/components/AIPanel/AIPanel.css): one rule,
+`.ai-messages > * { flex: 0 0 auto; }` — rows keep their natural height and the
+container scrolls. Every action type goes through the same ActionRow, so this
+covers all of them; icons, descriptions, exit-code badges and expanded details
+all render at full size again.
+
+--------------------------------------------------------------------------------
+4. VISUAL RATE-LIMIT PROGRESS BAR IN THE AI PANEL (issue #4)
+--------------------------------------------------------------------------------
+ROOT CAUSE OF "only compact text": the panel's private .ai-usage-mini span WAS
+in the DOM but drew a 54x3px track whose FILL was 0px wide at 100% remaining
+(usedPercent = 0), so at a healthy budget the bar was visually empty and only
+the text read as content.
+
+FIX (client/src/components/AIPanel/AIPanel.jsx + .css): the strip now renders
+the SHARED Common/UsageBar component (the same one Settings uses — one set of
+numbers and tone thresholds can never drift) in compact mode, on its own row
+under the model indicator:
+  - rail 100% wide, 5px tall, drawn on --bg-input with a --border ring so an
+    empty bar at 0% used is still unmistakably a progress bar;
+  - fill = today's request budget already USED, colour shifting accent -> orange
+    (--warning) at 70% -> red (--danger) at 90%, i.e. it depletes into red;
+  - the existing "…% daily requests remaining" text stays next to the model
+    name, and the tooltip still carries X / Y + the reset window.
+
+LIVE UPDATES: the bar re-renders from ai.usageByKeyId, which the server streams
+on EVERY Groq response ('agent:usage' socket event, plus a reconcile fetch on
+'agent:done'). Verified in the browser over a real run:
+    fill 0px / "not used yet"  ->  167.5px (50%) / "50% daily requests remaining".
+
+--------------------------------------------------------------------------------
+5. TWO MORE BUGS FOUND AND FIXED WHILE VERIFYING
+--------------------------------------------------------------------------------
+  - THE FILE WATCHER WENT STALE ON RENAME (fileWatcher.js + both rename call
+    sites). The client subscribes to the workspace as soon as it opens, so the
+    watcher was attached to the OLD folder name; when the agent renamed the
+    folder mid-run, chokidar kept watching a path that no longer existed and
+    every later write was invisible — no `workspace:treeChanged`, so the
+    Explorer never showed the generated files (and the preview stopped
+    live-reloading). NEW restartWatching(projectId) tears the watcher down and
+    re-points it at the current path, preserving refs + both notifiers; it is
+    called by adoptScratchProject() and openScratchWorkspaceHandler() whenever a
+    rename actually happened. After the fix the Explorer lists the generated
+    files seconds after the run.
+  - ADOPTED WORKSPACES WERE REUSED AS THE NEXT SCRATCH (workspace.controller).
+    Because a task-named workspace kept isScratch: true, findScratchProjectForOwner
+    returned it for the NEXT anonymous open and the second task wrote into the
+    first task's project. Task-named workspaces are now created/updated with
+    isScratch: false, so a fresh task always gets a fresh workspace.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED THIS ENTRY
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings, 0 errors (86 files). vite build: succeeds.
+    node --check on every changed server file: passes.
+  - SAME TESTS AGAINST THE OLD CODE (git stash, then pop): the flow test scores
+    14/34 — Scratch container created, model paths nested task-tracker/*,
+    preview 404, tree not flat; the legacy fallback test scores 16/24 with every
+    rename check failing (rename raced agent:done). Both pass after the fix.
+  - client/tmp-fresh-task-test.mjs — 37/37. Scripted mock Groq
+    (tmp-mock-groq-nested.mjs) that behaves like a real model, three scenarios:
+      A) model NAMES its project (PROJECT_NAME: task-tracker) and writes
+         task-tracker/* -> folder born as todo-app, renamed BEFORE the first
+         write, files flat at the root, no Scratch folder, no copy left behind,
+         rename proven by `fs.existsSync(old) === false`;
+      B) model NEVER names it (first message = tool_calls, content null — the
+         old deferred-rename case) -> folder already named silent-notes, files
+         flat despite the model writing silent-notes/*;
+      C) an anonymous Scratch reused for a task (keep-me.txt inside) -> pre-run
+         rename to readme-file, contents intact, project event before the write.
+      Plus: preview 200s for index.html/style.css/script.js with correct MIME,
+      the cookie auth round-trip, and agent:usage streaming (40 -> 35 -> 30 ->
+      25 -> 20 remaining over one run).
+  - client/tmp-ui-e2e-test.mjs — 23/23, REAL Chrome (headless, CDP) driving the
+    REAL UI: sign in -> pick HTML/CSS/JS -> "create a todo app with localStorage"
+    -> live feed sampled every 120ms (min card height 28px, 0 collapsed samples,
+    computed flex-shrink 0, overflow-y auto) -> usage bar 0px -> 167.5px with the
+    text updating live -> Explorer root labelled task-tracker with the three
+    files beside it -> preview opened and asserted styled + functional.
+  - Legacy regression tests: tmp-create-test 21/21 (anonymous Scratch flow
+    unchanged), tmp-agent-socket-test 21/21, tmp-agent-fallback-test 21/24 (the
+    3 failures are pre-existing, stale expectations about the fallback note
+    sequence/429 count and fail identically on the old code),
+    tmp-agent-model-test 15/17 (2 failures are the stale "expects
+    openai/gpt-oss-120b" default from before the model switch — untouched code).
+  - Layout proof: client/dist assets were measured in Chrome before and after
+    the CSS change (8px collapsed -> 30px cards, squashed -> scrolling).
+
+--------------------------------------------------------------------------------
+CLEANUP NOTE (please read)
+--------------------------------------------------------------------------------
+The tests registered throwaway accounts in the dev MongoDB (emails
+probe*/fresh-*/ui-e2e-*@example.com) and created their workspace folders.
+server/tmp-cleanup-session.mjs deletes exactly those users, their projects,
+folders, registry entries and empty containers:
+
+    cd server && node tmp-cleanup-session.mjs
+
+It could not run at the end of this session because the Atlas SRV lookup
+(ECONNREFUSED _mongodb._tcp.cluster0...) stopped resolving again — same flaky
+DNS as previous phases. Re-run it when DNS is back.
+The temporary test files (tmp-mock-groq-nested.mjs, tmp-cdp.mjs,
+client/tmp-fresh-task-test.mjs, client/tmp-ui-e2e-test.mjs) are kept on purpose:
+they are the re-runnable checks for all four issues; delete them if unwanted.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - A fresh agent task must be named BEFORE the first write. If you add another
+    entry point that opens a workspace for the agent, pass the task through
+    POST /api/workspace/scratch { task } — never let the agent start in a
+    folder that is not the project.
+  - normalizeToolArgs() is the only guard against the model re-creating its own
+    project folder. If you add a tool that takes a path, run it through there.
+  - Never give .ai-messages children a shrinking flex basis again: the feed is a
+    scrolling flex column and `.ai-action`'s overflow:hidden makes its minimum
+    height 0 — that combination is what produced the flat-gray-line bug.
+  - The preview credential is a PATH-SCOPED COOKIE (cm_preview_<projectId>),
+    not a rewritten URL — do not strip it, and do not "simplify" protectPreview
+    back to query-only or every generated site loses its CSS again.
+  - restartWatching() must be called after ANY rename of a workspace folder
+    while a watcher may be attached (renameWorkspaceFolder itself cannot do it:
+    fileWatcher imports workspaceManager, so a static import would be a cycle).
+  - The AI panel's bar is Common/UsageBar in compact mode — extend THAT rather
+    than adding another private bar; Settings and the panel share its numbers.
 

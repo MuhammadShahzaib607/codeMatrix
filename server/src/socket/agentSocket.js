@@ -115,11 +115,20 @@ export default function registerAgentSocket(io) {
           if (socket.connected) socket.emit('agent:usage', usage)
         }
 
-        // Turn an anonymous scratch workspace into a real, NAMED project. The
-        // model is asked to open its first message with a PROJECT_NAME line, so
-        // adoption runs as soon as that first message arrives; a run that fails
-        // before the model speaks is adopted in the `finally` below. Either way
-        // the workspace is never left called "Scratch".
+        // Turn an anonymous scratch workspace into a real, NAMED project.
+        //
+        // The name is settled BEFORE the first tool call runs:
+        //   1. `adopt(null)` below renames any still-anonymous folder to a slug
+        //      derived from the task, so the agent's very first file-write
+        //      already lands in the final project folder (a true top-level
+        //      folder rename — contents keep their relative paths);
+        //   2. the model is asked to open its first message with a PROJECT_NAME
+        //      line, so a BETTER name from the model renames the folder again as
+        //      soon as that message arrives — still before any file is written;
+        //   3. the `finally` below is the safety net for a run that dies before
+        //      either chance to name it.
+        // Either way the workspace is never left called "Scratch", and no file
+        // is ever written into a generic Scratch container.
         const scratchRun = isScratchProjectId(projectId)
         let scratchAdopted = false
         const adopt = async (modelSuggestedName = null) => {
@@ -137,6 +146,10 @@ export default function registerAgentSocket(io) {
             console.warn(`[agent] scratch adoption failed for ${projectId}: ${error.message}`)
           }
         }
+
+        // Name the workspace NOW — before the system prompt is even built — so
+        // the folder the tools resolve against is the project itself.
+        await adopt(null)
 
         try {
           const result = await runAgent({

@@ -182,8 +182,14 @@ export const workspaceApi = {
   baseUrl: API_BASE_URL,
 
   // The user's ONE reusable scratch workspace (created on demand server-side).
-  openScratch() {
-    return request('/api/workspace/scratch', { method: 'POST' })
+  openScratch(task) {
+    // `task` (optional) names the workspace from the task text BEFORE the
+    // folder exists, so a fresh agent run never writes into a "Scratch"
+    // container — see openScratchWorkspaceHandler on the server.
+    return request('/api/workspace/scratch', {
+      method: 'POST',
+      body: task ? JSON.stringify({ task }) : undefined,
+    })
   },
 
   importProject(projectId, payload) {

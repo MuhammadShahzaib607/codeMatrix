@@ -233,6 +233,38 @@ export function startWatchingProject(projectId, notify, previewNotify) {
   return true
 }
 
+/**
+ * Re-points an EXISTING watcher at the project's current folder path.
+ *
+ * The workspace folder can be renamed while a watcher is attached — that is
+ * exactly what the agent does when it adopts a scratch workspace (Scratch ->
+ * todo-app) or honours the model's PROJECT_NAME suggestion mid-run. From that
+ * moment chokidar is watching a path that no longer exists, so every later
+ * write is invisible: the Explorer silently stops auto-refreshing and the live
+ * preview stops reloading for the rest of the run.
+ *
+ * Called by every rename. Keeps the reference count and both notifiers exactly
+ * as they were — only the underlying watch moves to the new path.
+ */
+export function restartWatching(projectId) {
+  const entry = watchers.get(projectId)
+  if (!entry) return false
+
+  const { refs, notify, previewNotify, suppressUntil } = entry
+  watchers.delete(projectId)
+  if (entry.timer) clearTimeout(entry.timer)
+  if (entry.previewTimer) clearTimeout(entry.previewTimer)
+  Promise.resolve(entry.watcher.close()).catch(() => {})
+
+  const started = startWatchingProject(projectId, notify, previewNotify)
+  const next = watchers.get(projectId)
+  if (started && next) {
+    next.refs = refs
+    next.suppressUntil = suppressUntil ?? 0
+  }
+  return started
+}
+
 /** Releases one reference; closes the watcher when the last one is gone. */
 export function stopWatchingProject(projectId) {
   const entry = watchers.get(projectId)

@@ -8,7 +8,8 @@ import {
 } from '../models/project.repository.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
-import { suppressWatcher } from '../utils/fileWatcher.js'
+import { suppressWatcher, restartWatching } from '../utils/fileWatcher.js'
+import { chooseScratchProjectName } from '../services/scratchProjectService.js'
 import {
   copyPathInWorkspace,
   createFolderInWorkspace,
@@ -19,11 +20,13 @@ import {
   getWorkspacePath,
   getWorkspaceRecord,
   getWorkspaceTree,
+  isScratchFolderName,
   isScratchProjectId,
   nextScratchProjectId,
   readFileFromWorkspace,
   registerWorkspaceFromDiskPath,
   renamePathInWorkspace,
+  renameWorkspaceFolder,
   workspaceFolderPath,
   writeFileToWorkspace,
 } from '../utils/workspaceManager.js'
@@ -158,9 +161,30 @@ export const getTree = asyncHandler(async (req, res) => {
  * real named project), `findScratch*` no longer matches it, so the NEXT call
  * creates a new scratch — a user never accumulates two anonymous scratch
  * workspaces.
+ *
+ * OPTIONAL `{ task }` BODY — the agent's fresh-task flow. When the caller passes
+ * the task text, the workspace is named from it (backend-derived slug) BEFORE
+ * any folder is created or any file is written:
+ *   - a FRESH workspace is created directly under its final name (no generic
+ *     "Scratch" container ever exists);
+ *   - an anonymous scratch being reused is renamed in place — a true top-level
+ *     fs rename of the folder itself, so every file inside keeps its relative
+ *     path and nothing is copied into a nested subfolder.
+ * The response then carries that real name with `isScratch: false`, because a
+ * workspace named after a task IS a real project from that moment on.
  */
 export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
   const ownerId = req.user.id
+
+  const task = typeof req.body?.task === 'string' ? req.body.task.trim() : ''
+  // No task -> the classic anonymous scratch. With a task -> the final project
+  // name, decided BEFORE the folder exists. A derived name that still LOOKS
+  // like an anonymous scratch (e.g. a task made only of stop words) is ignored
+  // so the workspace stays genuinely anonymous.
+  const derived = task ? chooseScratchProjectName({ modelSuggestedName: null, task }) : null
+  const requestedName = derived && !isScratchFolderName(derived) ? derived : null
+  const isAnonymous = !requestedName
+  const displayName = requestedName ?? 'Scratch'
 
   let projectId = null
   let created = false
@@ -178,39 +202,43 @@ export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
       projectId = fromRegistry
     } else {
       projectId = nextScratchProjectId(ownerId)
-      const folder = createWorkspaceFolder(projectId, { ownerId, displayName: 'Scratch' })
+      // Born with its final name: the agent's first file-write already lands in
+      // the real project folder.
+      createWorkspaceFolder(projectId, { ownerId, displayName })
       created = true
-      if (isDatabaseConnected()) {
-        await upsertProject({
-          projectId,
-          name: 'Scratch',
-          owner: ownerId,
-          diskPath: folder.path,
-          diskFolderName: folder.folderName,
-          isScratch: true,
-        })
-      }
     }
   }
 
-  // Keep the record's scratch flag fresh and bump lastAccessedAt so the
-  // workspace sorts to the top of Recent Projects.
-  if (isDatabaseConnected() && !created) {
-    const record = getWorkspaceRecord(projectId)
-    if (record) {
-      await upsertProject({
-        projectId,
-        name: 'Scratch',
-        owner: ownerId,
-        diskPath: workspaceFolderPath(record.container, record.folderName),
-        diskFolderName: record.folderName,
-        isScratch: true,
-      })
+  // An anonymous scratch being (re)used for a TASK gets its real name now — a
+  // folder rename, not a copy, so contents stay exactly where they are.
+  if (!isAnonymous) {
+    const previousName = getWorkspaceRecord(projectId)?.folderName ?? null
+    const renamedTo = renameWorkspaceFolder(projectId, { displayName })
+    // Keep any already-attached file watcher pointed at the new path.
+    if (renamedTo && previousName && renamedTo.folderName !== previousName) {
+      restartWatching(projectId)
     }
   }
 
-  const tree = await getWorkspaceTree(projectId, { name: 'Scratch' })
-  res.json({ projectId, name: 'Scratch', isScratch: true, created, tree })
+  const record = getWorkspaceRecord(projectId)
+  const name = isAnonymous ? 'Scratch' : record?.folderName ?? displayName
+
+  // One upsert: keeps lastAccessedAt/Recent Projects fresh, and flags a
+  // task-named workspace as a REAL project (isScratch: false) so the next
+  // scratch request starts from a genuinely fresh workspace.
+  if (isDatabaseConnected() && record) {
+    await upsertProject({
+      projectId,
+      name,
+      owner: ownerId,
+      diskPath: workspaceFolderPath(record.container, record.folderName),
+      diskFolderName: record.folderName,
+      isScratch: isAnonymous,
+    })
+  }
+
+  const tree = await getWorkspaceTree(projectId, { name })
+  res.json({ projectId, name, isScratch: isAnonymous, created, tree })
 })
 
 export const getFile = asyncHandler(async (req, res) => {

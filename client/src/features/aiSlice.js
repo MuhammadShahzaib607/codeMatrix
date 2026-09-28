@@ -162,9 +162,12 @@ export const startAgentTask = createAsyncThunk(
       // blocking the run — the agent's first tool calls then create the files.
       let activeProjectId = projectId
       if (!activeProjectId) {
-        // No project open: reuse the user's existing scratch workspace (or open
-        // a fresh one) rather than creating a conflicting new one.
-        const data = await dispatch(openScratchWorkspace()).unwrap()
+        // No project open: open (or reuse) the user's scratch workspace — but
+        // PASS THE TASK, so the server names the workspace from it before the
+        // folder exists. The agent's first file-write therefore lands in the
+        // real project folder (e.g. todo-app/) and never in a "Scratch"
+        // container that would have to be renamed later.
+        const data = await dispatch(openScratchWorkspace({ task })).unwrap()
         activeProjectId = data?.projectId ?? null
         if (!activeProjectId) throw new Error('Could not open a workspace for the agent.')
       }

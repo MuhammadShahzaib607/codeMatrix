@@ -1,9 +1,11 @@
 import crypto from 'node:crypto'
+import path from 'node:path'
 import { env } from '../config/env.js'
 import { runWorkspaceCommand } from '../utils/terminalManager.js'
 import {
   deleteFromWorkspace,
   existsInWorkspace,
+  getWorkspacePath,
   getWorkspaceTree,
   listDirectoryInWorkspace,
   readFileFromWorkspace,
@@ -494,10 +496,67 @@ function describeAction(name, args) {
 }
 
 // ---------------------------------------------------------------------------
+// The self-nesting guard
+// ---------------------------------------------------------------------------
+//
+// Tool paths are relative to the workspace ROOT — but a model that has just
+// named its project has a habit of writing that name into the path as well
+// ("todo-app/index.html" while the workspace root is already "todo-app"). That
+// is what used to scatter a brand-new project across a nested copy of itself:
+// the Explorer root and the live preview then disagreed about where index.html
+// lived, so <link rel="stylesheet"> / <script src> could not resolve.
+//
+// Rule: when the FIRST segment of a path equals the workspace folder's own name
+// and no entry of that name exists at the root (i.e. the call would CREATE the
+// project's own name as a nested folder), the segment is dropped and the path
+// is resolved from the root instead. An existing entry with that name is left
+// completely alone — the task may genuinely ask for one (a monorepo with
+// client/server folders, or even a nested folder matching the project name, is
+// fine once it really exists).
+//
+// Normalisation is idempotent, so running it twice (feed label + execution) is
+// harmless. run_command is never touched: a shell command is opaque here.
+function normalizeToolArgs(projectId, name, args) {
+  if (name === 'run_command' || !args || typeof args.path !== 'string') return args
+
+  const raw = args.path.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/^\/+/, '')
+  if (!raw) return args
+
+  let rootName = ''
+  try {
+    rootName = path.basename(getWorkspacePath(projectId))
+  } catch {
+    return args
+  }
+  if (!rootName) return args
+
+  const segments = raw.split('/').filter(Boolean)
+  if (segments[0].toLowerCase() !== rootName.toLowerCase()) return args
+
+  try {
+    if (existsInWorkspace(projectId, segments[0])) return args // a real nested folder
+  } catch {
+    return args
+  }
+
+  // "todo-app/index.html" -> "index.html". A bare "todo-app" only makes sense
+  // as a folder to LIST (the root itself); as a file to create it is left alone.
+  if (segments.length > 1) {
+    return { ...args, path: segments.slice(1).join('/') }
+  }
+  if (name === 'list_directory') {
+    return { ...args, path: '' }
+  }
+  return args
+}
+
+// ---------------------------------------------------------------------------
 // The six REAL tools
 // ---------------------------------------------------------------------------
 
-async function executeTool(name, args, projectId) {
+async function executeTool(name, rawArgs, projectId) {
+  const args = normalizeToolArgs(projectId, name, rawArgs)
+
   switch (name) {
     case 'create_file':
     case 'edit_file': {
@@ -1037,6 +1096,9 @@ export async function runAgent({
       } catch {
         args = {}
       }
+      // Resolve the path the tool will ACTUALLY use, so the feed line, the
+      // stored details and the disk all agree (see normalizeToolArgs).
+      args = normalizeToolArgs(projectId, name, args)
 
       const actionId = crypto.randomUUID()
       const description = describeAction(name, args)

@@ -12,6 +12,7 @@ import { markSaved, removeContent, setContent } from './editorSlice'
 import { clearTsConfig, setTsConfig } from './tsconfigSlice'
 import {
   addTab,
+  applyAgentProject,
   clearWorkspace,
   markWorkspaceMissing,
   refreshTree,
@@ -64,21 +65,34 @@ export const refreshWorkspaceTree = createAsyncThunk(
  * "Scratch"), and only a
  * genuinely free slot creates a new one. Once the workspace has been adopted as
  * a named project, a later call opens a fresh scratch instead.
+ *
+ * Pass `{ task }` when the caller is starting an agent run: the server then
+ * names the workspace from the task BEFORE the folder is created, so the
+ * agent's first file-write already lands in the real project folder instead of
+ * a generic "Scratch" container.
  */
 export const openScratchWorkspace = createAsyncThunk(
   'workspace/openScratch',
-  async (_, { dispatch }) => {
+  async (arg, { dispatch }) => {
+    const task = typeof arg === 'object' && arg ? arg.task : undefined
     try {
-      const data = await workspaceApi.openScratch()
+      const data = await workspaceApi.openScratch(task)
       const name = data?.name ?? 'Scratch'
+      const projectId = data.projectId
       dispatch(
         setScratchWorkspace({
-          projectId: data.projectId,
+          projectId,
           name,
           tree: [toReduxTree(data.tree)],
         }),
       )
-      saveWorkspaceRef({ projectId: data.projectId, name })
+      // A workspace opened with its final project name is a REAL project from
+      // the start (isScratch: false): flip the source and the root label right
+      // away instead of waiting for a mid-run adoption to do it at the end.
+      if (data.isScratch === false) {
+        dispatch(applyAgentProject({ projectId, name }))
+      }
+      saveWorkspaceRef({ projectId, name })
       return data
     } catch (error) {
       throw handleFailure(error, dispatch)

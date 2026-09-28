@@ -35,6 +35,7 @@ import { saveFrameworkFor, saveSelectedKeyId, frameworkFor } from '../../service
 import { DEFAULT_AGENT_MODEL } from '../../utils/agentDefaults'
 import { FRAMEWORKS } from '../../utils/agentFrameworks'
 import { resetHint, usageStats, usageTone } from '../../utils/rateLimit'
+import UsageBar from '../Common/UsageBar'
 import './AIPanel.css'
 
 // Icon per streamed action type (spec: FilePlus=create, Pencil=edit,
@@ -329,8 +330,8 @@ export default function AIPanel() {
         )}
       </div>
 
-      {/* The model the last run resolved, plus a compact live usage indicator
-          for the active key. Full-width so it never fights the header for room. */}
+      {/* The model the last run resolved, plus the live rate-limit usage for the
+          active key. Full-width so it never fights the header for room. */}
       <div className="ai-model-label" title={modelTooltip}>
         <span className="ai-model-name">{modelLabel}</span>
         {activeKey && (
@@ -343,14 +344,29 @@ export default function AIPanel() {
             ) : (
               <span className="ai-model-usage is-none">not used yet</span>
             )}
-            {requestsStats && (
-              <span className={`ai-usage-mini is-${requestsTone}`} aria-hidden="true">
-                <span style={{ width: `${requestsStats.usedPercent}%` }} />
-              </span>
-            )}
           </>
         )}
       </div>
+
+      {/* The visual progress bar for those same numbers — the compact twin of
+          the fuller bars in Settings (shared UsageBar, so the two can never
+          drift). Fill = today's request budget already used, tone shifting
+          accent → orange → red as it depletes. It re-renders from
+          usageByKeyId, which the live 'agent:usage' socket event updates on
+          every Groq response, so the bar moves WHILE the task runs. */}
+      {activeKey && (
+        <div className="ai-usage-row">
+          <UsageBar
+            compact
+            label="Daily requests"
+            used={requestsStats?.used ?? 0}
+            limit={requestsStats?.limit ?? 0}
+            usedPercent={requestsStats?.usedPercent ?? 0}
+            tone={requestsTone}
+            title={modelTooltip}
+          />
+        </div>
+      )}
 
       <div className="ai-messages" ref={scrollRef}>
         {timeline.length === 0 && (

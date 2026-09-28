@@ -221,7 +221,7 @@ export const updateApiKey = createAsyncThunk(
 export const startAgentTask = createAsyncThunk(
   'ai/startTask',
   async ({ projectId, task, resume = false }, { dispatch, getState, rejectWithValue }) => {
-    const { ai } = getState()
+    const { ai, settings } = getState()
 
     // Optimistic user row + running state, so the request shows immediately.
     dispatch(agentStarted({ task }))
@@ -267,6 +267,9 @@ export const startAgentTask = createAsyncThunk(
             providerPreference: ai.providerPreference,
             keyId: ai.selectedKeyId,
             resume: resume && Boolean(activeProjectId),
+            strictRules: (settings?.agent?.strictRules ?? [])
+              .filter((rule) => rule.enabled)
+              .map((rule) => ({ id: rule.id, text: rule.text })),
           },
           (response) => {
             clearTimeout(timeout)

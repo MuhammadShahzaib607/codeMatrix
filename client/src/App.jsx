@@ -85,8 +85,9 @@ export default function App() {
       theme: settings.theme,
       editor: settings.editor,
       terminal: settings.terminal,
+      agent: settings.agent,
     })
-  }, [settings.theme, settings.editor, settings.terminal])
+  }, [settings.theme, settings.editor, settings.terminal, settings.agent])
 
   // The available shells are decided by the server's OS, so ask the server once
   // on load (Windows dev sees PowerShell/CMD/bash, the Linux deploy sees bash).

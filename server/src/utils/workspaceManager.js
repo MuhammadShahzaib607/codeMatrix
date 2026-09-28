@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { env } from '../config/env.js'
+import { pauseWatching, resumeWatching } from './fileWatcher.js'
 import ApiError from './ApiError.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -211,6 +212,43 @@ export function registerWorkspaceFolder(projectId, options = {}) {
   return { container, folderName, path: folderPath }
 }
 
+const RENAME_RETRY_DELAYS_MS = [100, 200, 400, 600, 800]
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export async function renameFolderWithRetry(fromAbsolute, toAbsolute, renameImpl = null) {
+  const rename =
+    typeof renameImpl === 'function'
+      ? renameImpl
+      : (from, to) => fsp.rename(from, to)
+
+  let lastError = null
+  for (let attempt = 0; attempt < RENAME_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await rename(fromAbsolute, toAbsolute)
+      return true
+    } catch (error) {
+      lastError = error
+      if (!RENAME_RETRY_CODES.has(error?.code)) throw error
+      if (attempt < RENAME_RETRY_DELAYS_MS.length - 1) {
+        await sleep(RENAME_RETRY_DELAYS_MS[attempt])
+      }
+    }
+  }
+
+  try {
+    await copyDirectoryRecursive(fromAbsolute, toAbsolute, { copied: 0 })
+    await fsp.rm(fromAbsolute, { recursive: true, force: true })
+    return true
+  } catch (fallbackError) {
+    await fsp.rm(toAbsolute, { recursive: true, force: true }).catch(() => {})
+    throw lastError ?? fallbackError
+  }
+}
+
 /**
  * Renames a workspace's on-disk folder to match a new DISPLAY name, using the
  * same sanitizing + collision handling as a fresh import (name free -> use it,
@@ -221,7 +259,7 @@ export function registerWorkspaceFolder(projectId, options = {}) {
  * named after the task. Returns { container, folderName, path } or null when the
  * workspace has no registry record (nothing to rename).
  */
-export function renameWorkspaceFolder(projectId, { displayName = null } = {}) {
+export async function renameWorkspaceFolder(projectId, { displayName = null } = {}) {
   const record = getWorkspaceRecord(projectId)
   if (!record) return null
 
@@ -239,12 +277,21 @@ export function renameWorkspaceFolder(projectId, { displayName = null } = {}) {
     const currentPath = folderPathFor(record.container, record.folderName)
     if (fs.existsSync(currentPath)) {
       fs.mkdirSync(path.dirname(nextPath), { recursive: true })
-      fs.renameSync(currentPath, nextPath)
+      await pauseWatching(projectId)
+      try {
+        await renameFolderWithRetry(currentPath, nextPath)
+      } catch (error) {
+        await resumeWatching(projectId)
+        throw error
+      }
+      registry[projectId] = { container: record.container, folderName: nextName }
+      saveRegistry(registry)
+      await resumeWatching(projectId)
     } else {
       fs.mkdirSync(nextPath, { recursive: true })
+      registry[projectId] = { container: record.container, folderName: nextName }
+      saveRegistry(registry)
     }
-    registry[projectId] = { container: record.container, folderName: nextName }
-    saveRegistry(registry)
   } else {
     fs.mkdirSync(nextPath, { recursive: true })
   }

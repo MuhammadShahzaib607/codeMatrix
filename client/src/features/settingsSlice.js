@@ -1,5 +1,11 @@
-import { createSlice } from '@reduxjs/toolkit'
-import { DEFAULT_SETTINGS, readSettings, sanitizeSettings } from '../services/settingsStorage'
+import { createSlice, nanoid } from '@reduxjs/toolkit'
+import {
+  DEFAULT_SETTINGS,
+  STRICT_RULE_MAX_COUNT,
+  STRICT_RULE_MAX_LENGTH,
+  readSettings,
+  sanitizeSettings,
+} from '../services/settingsStorage'
 
 /**
  * User preferences + the Settings modal's own UI state. The persisted part
@@ -44,6 +50,51 @@ const settingsSlice = createSlice({
       if (key && Object.hasOwn(state.terminal, key)) state.terminal[key] = value
     },
 
+    addStrictRule(state, action) {
+      const text = String(action.payload ?? '')
+        .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, STRICT_RULE_MAX_LENGTH)
+      if (!text) return
+      if (state.agent.strictRules.length >= STRICT_RULE_MAX_COUNT) return
+      const key = text.toLowerCase()
+      if (state.agent.strictRules.some((rule) => rule.text.toLowerCase() === key)) return
+      state.agent.strictRules.push({ id: nanoid(), text, enabled: true })
+    },
+
+    updateStrictRule(state, action) {
+      const { id, text } = action.payload ?? {}
+      const rule = state.agent.strictRules.find((entry) => entry.id === id)
+      if (!rule) return
+      const next = String(text ?? '')
+        .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, STRICT_RULE_MAX_LENGTH)
+      if (!next) return
+      const key = next.toLowerCase()
+      if (
+        state.agent.strictRules.some(
+          (entry) => entry.id !== id && entry.text.toLowerCase() === key,
+        )
+      ) {
+        return
+      }
+      rule.text = next
+    },
+
+    toggleStrictRule(state, action) {
+      const rule = state.agent.strictRules.find((entry) => entry.id === action.payload)
+      if (rule) rule.enabled = !rule.enabled
+    },
+
+    removeStrictRule(state, action) {
+      state.agent.strictRules = state.agent.strictRules.filter(
+        (entry) => entry.id !== action.payload,
+      )
+    },
+
     /** Back to factory defaults (theme + editor + terminal). */
     resetSettings(state) {
       const defaults = sanitizeSettings(DEFAULT_SETTINGS)
@@ -61,6 +112,10 @@ export const {
   setTheme,
   updateEditorSetting,
   updateTerminalSetting,
+  addStrictRule,
+  updateStrictRule,
+  toggleStrictRule,
+  removeStrictRule,
   resetSettings,
 } = settingsSlice.actions
 

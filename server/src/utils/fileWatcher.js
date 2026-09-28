@@ -63,6 +63,7 @@ const NEVER_DESCEND_INTO = new Set([
 // projectId -> { watcher, refs, timer, eventCount, suppressUntil, notify,
 //                previewTimer, previewNotify }
 const watchers = new Map()
+const heldWatchers = new Map()
 
 /**
  * Drops watcher notifications caused by the SERVER'S OWN API mutation for a
@@ -265,10 +266,41 @@ export function restartWatching(projectId) {
   return started
 }
 
+export async function pauseWatching(projectId) {
+  const entry = watchers.get(projectId)
+  if (!entry) return false
+  const { refs, notify, previewNotify } = entry
+  watchers.delete(projectId)
+  if (entry.timer) clearTimeout(entry.timer)
+  if (entry.previewTimer) clearTimeout(entry.previewTimer)
+  heldWatchers.set(projectId, { refs, notify, previewNotify })
+  try {
+    await entry.watcher.close()
+  } catch {}
+  return true
+}
+
+export async function resumeWatching(projectId) {
+  const held = heldWatchers.get(projectId)
+  if (!held) return false
+  heldWatchers.delete(projectId)
+  const started = startWatchingProject(projectId, held.notify, held.previewNotify)
+  const next = watchers.get(projectId)
+  if (next) next.refs = held.refs
+  return started
+}
+
 /** Releases one reference; closes the watcher when the last one is gone. */
 export function stopWatchingProject(projectId) {
   const entry = watchers.get(projectId)
-  if (!entry) return false
+  if (!entry) {
+    const held = heldWatchers.get(projectId)
+    if (!held) return false
+    held.refs -= 1
+    if (held.refs > 0) return true
+    heldWatchers.delete(projectId)
+    return true
+  }
   entry.refs -= 1
   if (entry.refs > 0) return true
 
@@ -286,6 +318,7 @@ export function getWatchedProjectIds() {
 export async function closeAllWatchers() {
   const entries = [...watchers.values()]
   watchers.clear()
+  heldWatchers.clear()
   await Promise.all(
     entries.map(async (entry) => {
       if (entry.timer) clearTimeout(entry.timer)

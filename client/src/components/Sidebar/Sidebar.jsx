@@ -16,6 +16,7 @@ import {
   deleteWorkspaceProject,
   duplicateWorkspaceEntry,
   openScratchWorkspace,
+  refreshWorkspaceTree,
   renameWorkspaceEntry,
 } from '../../features/workspaceThunks'
 import useAuthGuard from '../../hooks/useAuthGuard'
@@ -147,7 +148,7 @@ export default function Sidebar() {
    */
   function beginCreatingIn(parentId, type) {
     setCreating({ parentId, type })
-    if (parentId && parentId !== ROOT_ID) {
+    if (parentId) {
       dispatch(setFolderOpen({ id: parentId, isOpen: true }))
     }
   }
@@ -281,6 +282,15 @@ export default function Sidebar() {
     [],
   )
   const stablePreview = useCallback((node) => previewRef.current?.(node), [])
+
+  const handleRefreshTree = useCallback(() => {
+    const activeProjectId = projectIdRef.current
+    if (activeProjectId) dispatch(refreshWorkspaceTree({ projectId: activeProjectId }))
+  }, [dispatch])
+
+  const handleCollapseAll = useCallback(() => {
+    dispatch(collapseAll())
+  }, [dispatch])
 
   const submitCreate = useCallback(
     async (rawName) => {
@@ -442,6 +452,8 @@ export default function Sidebar() {
           onPaste={stablePaste}
           onCopyPath={handleCopyPath}
           onPreview={stablePreview}
+          onRefresh={handleRefreshTree}
+          onCollapseAll={handleCollapseAll}
           canDeleteProject={canDeleteProject}
           onDeleteProject={requestDeleteProject}
         />

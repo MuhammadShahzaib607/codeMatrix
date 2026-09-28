@@ -20,6 +20,7 @@ import {
   Search,
   Send,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Square,
@@ -80,6 +81,7 @@ const ACTION_ICONS = {
   resume: RefreshCw,
   complete: Check,
   gate: ShieldCheck,
+  rule_blocked: ShieldAlert,
   error: AlertTriangle,
 }
 
@@ -111,7 +113,7 @@ function detailsText(entry) {
 
 // Types that are narration rather than tool activity: they render as one small
 // dim line instead of a tool row.
-const NOTE_TYPES = new Set(['note', 'fallback', 'gate', 'plan', 'project', 'resume'])
+const NOTE_TYPES = new Set(['note', 'fallback', 'gate', 'plan', 'project', 'resume', 'rule_blocked'])
 
 /**
  * ONE compact line per tool call, in the same continuous flow as the streamed
@@ -372,6 +374,8 @@ export default function AIPanel() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
   const userId = useSelector((state) => state.auth.user?.id ?? null)
+  const strictRules = useSelector((state) => state.settings.agent?.strictRules ?? [])
+  const activeRules = strictRules.filter((rule) => rule.enabled)
 
   const projectId = workspace.projectId
 
@@ -569,7 +573,24 @@ export default function AIPanel() {
         <span className="ai-header-title">AI Agent</span>
         <span className={`ai-badge ${running ? 'is-working' : ''}`}>
           {running ? 'Working' : 'Ready'}
-        </span>        {timeline.length > 0 && !running && (
+        </span>
+        <button
+          type="button"
+          className="ai-rules-chip"
+          title={
+            activeRules.length > 0
+              ? `Strict rules active:\n- ${activeRules
+                  .map((rule) => rule.text)
+                  .join('\n- ')}\n\nClick to open Settings › Strict Rules`
+              : 'No strict rules yet — click to add them in Settings › Strict Rules'
+          }
+          onClick={() => dispatch(openSettings('strict'))}
+        >
+          <ShieldCheck size={11} />
+          <span>
+            {activeRules.length} rule{activeRules.length === 1 ? '' : 's'} active
+          </span>
+        </button>        {timeline.length > 0 && !running && (
           <button
             type="button"
             className="ai-header-action"

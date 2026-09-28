@@ -11,6 +11,7 @@ import {
   Plus,
   Search,
   Settings2,
+  ShieldAlert,
   TerminalSquare,
   Trash2,
   User,
@@ -27,15 +28,23 @@ import {
 } from '../../features/aiSlice'
 import { logout } from '../../features/authSlice'
 import {
+  addStrictRule,
   closeSettings,
+  removeStrictRule,
   resetSettings,
   setSettingsSection,
   setTheme,
+  toggleStrictRule,
   updateEditorSetting,
+  updateStrictRule,
   updateTerminalSetting,
 } from '../../features/settingsSlice'
 import { openDeleteProjectModal, showToast } from '../../features/uiSlice'
 import { saveSelectedKeyId } from '../../services/aiStorage'
+import {
+  STRICT_RULE_MAX_COUNT,
+  STRICT_RULE_MAX_LENGTH,
+} from '../../services/settingsStorage'
 import { formatCompact, keyStatusLabel, resetHint, usageMeters } from '../../utils/rateLimit'
 import { THEMES } from '../../utils/themes'
 import { isCloudWorkspace } from '../../utils/workspace'
@@ -52,6 +61,7 @@ const SECTIONS = [
   { id: 'editor', label: 'Editor', icon: Settings2 },
   { id: 'terminal', label: 'Terminal', icon: TerminalSquare },
   { id: 'ai', label: 'AI Assistant', icon: Bot },
+  { id: 'strict', label: 'Strict Rules', icon: ShieldAlert },
   { id: 'general', label: 'General', icon: User },
 ]
 
@@ -64,6 +74,19 @@ const FALLBACK_PROVIDERS = [
 ]
 
 const MAX_KEYS_PER_PROVIDER = 3
+
+const RULE_IDEAS = [
+  'Never overwrite or delete existing files unless I explicitly ask. Modify existing files with small edits only.',
+  'Keep the existing design, colors, class names and layout; do not restyle things I did not mention.',
+  'Do not rename or move files/folders unless I ask.',
+  'Do not install new packages or add external libraries/CDNs unless I ask.',
+  'Before big changes (more than 3 files), list the plan first.',
+  'Keep code simple and readable; no over-engineering; no extra files.',
+  'Write responsive, accessible HTML (alt text, aria-labels, semantic tags).',
+  'Do not add comments in generated code.',
+  'Reply/summarize in Roman Urdu (or English).',
+  'Never touch files outside the folders I mention.',
+]
 
 const FONT_OPTIONS = [
   { value: '', label: 'System Default (monospace)' },
@@ -179,7 +202,7 @@ function Row({ label, hint, children }) {
 
 export default function SettingsModal() {
   const dispatch = useDispatch()
-  const { isOpen, activeSection, theme, editor, terminal } = useSelector(
+  const { isOpen, activeSection, theme, editor, terminal, agent } = useSelector(
     (state) => state.settings,
   )
   const { availableShells, defaultShell } = useSelector((state) => state.terminal)
@@ -194,6 +217,9 @@ export default function SettingsModal() {
   const [isSavingKey, setIsSavingKey] = useState(false)
   // { mode: 'reveal' | 'edit', key } for the password-gated dialog.
   const [keyAccess, setKeyAccess] = useState(null)
+  const [newRule, setNewRule] = useState('')
+  const [editingRuleId, setEditingRuleId] = useState(null)
+  const [editingRuleText, setEditingRuleText] = useState('')
   // The one key currently shown in full ({ id, value }); null = all masked.
   const [revealedKey, setRevealedKey] = useState(null)
 
@@ -308,6 +334,71 @@ export default function SettingsModal() {
     }
     // Any copy action re-masks too, so the plaintext does not linger on screen.
     setRevealedKey((current) => (current?.id === keyId ? null : current))
+  }
+
+  const strictRules = agent?.strictRules ?? []
+  const normalizedRule = (text) => String(text ?? '').replace(/\s+/g, ' ').trim()
+
+  function tryAddRule(text, { quiet = false } = {}) {
+    const value = normalizedRule(text)
+    if (!value) return false
+    if (strictRules.length >= STRICT_RULE_MAX_COUNT) {
+      if (!quiet) {
+        dispatch(
+          showToast({
+            message: `Maximum ${STRICT_RULE_MAX_COUNT} rules — delete one before adding another.`,
+            type: 'error',
+          }),
+        )
+      }
+      return false
+    }
+    if (strictRules.some((rule) => rule.text.toLowerCase() === value.toLowerCase())) {
+      if (!quiet) dispatch(showToast({ message: 'You already have that rule.', type: 'info' }))
+      return false
+    }
+    dispatch(addStrictRule(value))
+    return true
+  }
+
+  function handleAddRuleSubmit(event) {
+    event.preventDefault()
+    if (tryAddRule(newRule)) setNewRule('')
+  }
+
+  function handleRuleIdea(idea) {
+    if (tryAddRule(idea)) dispatch(showToast({ message: 'Rule added.', type: 'success' }))
+  }
+
+  function beginRuleEdit(rule) {
+    setEditingRuleId(rule.id)
+    setEditingRuleText(rule.text)
+  }
+
+  function commitRuleEdit() {
+    const id = editingRuleId
+    const value = normalizedRule(editingRuleText)
+    setEditingRuleId(null)
+    setEditingRuleText('')
+    if (!id || !value) return
+    if (value.length > STRICT_RULE_MAX_LENGTH) {
+      dispatch(
+        showToast({
+          message: `Rules are limited to ${STRICT_RULE_MAX_LENGTH} characters.`,
+          type: 'error',
+        }),
+      )
+      return
+    }
+    if (
+      strictRules.some(
+        (rule) => rule.id !== id && rule.text.toLowerCase() === value.toLowerCase(),
+      )
+    ) {
+      dispatch(showToast({ message: 'You already have that rule.', type: 'info' }))
+      return
+    }
+    dispatch(updateStrictRule({ id, text: value }))
   }
 
   return (
@@ -713,6 +804,134 @@ export default function SettingsModal() {
                     )}
                   </>
                 )}
+              </section>
+            )}
+
+            {activeSection === 'strict' && (
+              <section className="settings-section">
+                <h3 className="settings-section-title">Strict Rules</h3>
+                <p className="settings-section-desc">
+                  Custom rules attached to <strong>every</strong> agent task, on top of the
+                  built-in prompt. The agent follows them over style preferences — never over
+                  safety or its tool protocol. Two presets (no overwrite/delete, no rename/move)
+                  are also enforced by the server.
+                </p>
+
+                {strictRules.length === 0 && (
+                  <p className="settings-section-desc">
+                    No rules yet. Add one below, or click an idea to start.
+                  </p>
+                )}
+
+                <div className="settings-rule-list">
+                  {strictRules.map((rule) => (
+                    <div
+                      key={rule.id}
+                      className={`settings-rule ${rule.enabled ? '' : 'is-off'}`}
+                    >
+                      <Toggle
+                        label={`Rule enabled: ${rule.text}`}
+                        checked={rule.enabled}
+                        onChange={() => dispatch(toggleStrictRule(rule.id))}
+                      />
+                      {editingRuleId === rule.id ? (
+                        <input
+                          className="settings-rule-input"
+                          value={editingRuleText}
+                          maxLength={STRICT_RULE_MAX_LENGTH}
+                          placeholder="Rule text…"
+                          spellCheck={false}
+                          autoFocus
+                          onChange={(event) => setEditingRuleText(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault()
+                              commitRuleEdit()
+                            } else if (event.key === 'Escape') {
+                              setEditingRuleId(null)
+                              setEditingRuleText('')
+                            }
+                          }}
+                          onBlur={commitRuleEdit}
+                        />
+                      ) : (
+                        <span className="settings-rule-text" title={rule.text}>
+                          {rule.text}
+                        </span>
+                      )}
+                      {!editingRuleId && (
+                        <span className="settings-rule-actions">
+                          <button
+                            type="button"
+                            className="settings-rule-action"
+                            aria-label={`Edit rule: ${rule.text}`}
+                            title="Edit rule"
+                            onClick={() => beginRuleEdit(rule)}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className="settings-rule-action is-danger"
+                            aria-label={`Delete rule: ${rule.text}`}
+                            title="Delete rule"
+                            onClick={() => dispatch(removeStrictRule(rule.id))}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <form className="settings-rule-form" onSubmit={handleAddRuleSubmit}>
+                  <input
+                    className="settings-rule-input settings-rule-new"
+                    value={newRule}
+                    maxLength={STRICT_RULE_MAX_LENGTH}
+                    placeholder="Type a rule for the agent…"
+                    spellCheck={false}
+                    onChange={(event) => setNewRule(event.target.value)}
+                  />
+                  <span className="settings-rule-counter">
+                    {newRule.length}/{STRICT_RULE_MAX_LENGTH} · {strictRules.length}/
+                    {STRICT_RULE_MAX_COUNT}
+                  </span>
+                  <button
+                    type="submit"
+                    className="settings-btn"
+                    disabled={!normalizedRule(newRule)}
+                  >
+                    <Plus size={14} />
+                    <span>Add rule</span>
+                  </button>
+                </form>
+
+                <h3 className="settings-section-title settings-section-title-spaced">
+                  Ideas — one click to add
+                </h3>
+                <div className="settings-idea-list">
+                  {RULE_IDEAS.map((idea) => {
+                    const alreadyAdded = strictRules.some(
+                      (rule) => rule.text.toLowerCase() === idea.toLowerCase(),
+                    )
+                    return (
+                      <button
+                        key={idea}
+                        type="button"
+                        className={`settings-idea ${alreadyAdded ? 'is-added' : ''}`}
+                        disabled={
+                          alreadyAdded || strictRules.length >= STRICT_RULE_MAX_COUNT
+                        }
+                        title={alreadyAdded ? 'Already in your rules' : 'Add this rule'}
+                        onClick={() => handleRuleIdea(idea)}
+                      >
+                        {idea}
+                      </button>
+                    )
+                  })}
+                </div>
               </section>
             )}
 

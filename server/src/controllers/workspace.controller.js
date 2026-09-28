@@ -8,7 +8,7 @@ import {
 } from '../models/project.repository.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
-import { suppressWatcher, restartWatching } from '../utils/fileWatcher.js'
+import { suppressWatcher } from '../utils/fileWatcher.js'
 import {
   copyPathInWorkspace,
   createFolderInWorkspace,
@@ -205,12 +205,7 @@ export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
   // An anonymous scratch being (re)used for a TASK gets its real name now — a
   // folder rename, not a copy, so contents stay exactly where they are.
   if (!isAnonymous) {
-    const previousName = getWorkspaceRecord(projectId)?.folderName ?? null
-    const renamedTo = renameWorkspaceFolder(projectId, { displayName })
-    // Keep any already-attached file watcher pointed at the new path.
-    if (renamedTo && previousName && renamedTo.folderName !== previousName) {
-      restartWatching(projectId)
-    }
+    await renameWorkspaceFolder(projectId, { displayName })
   }
 
   const record = getWorkspaceRecord(projectId)

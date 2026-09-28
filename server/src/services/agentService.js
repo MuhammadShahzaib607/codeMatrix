@@ -13,6 +13,7 @@ import {
   writeFileToWorkspace,
 } from '../utils/workspaceManager.js'
 import { buildSystemPrompt, isVanillaFramework, resolveTier } from '../agent/prompts/index.js'
+import { findRuleBlock } from './strictRules.js'
 import { formatGateReport, vanillaGate } from '../agent/quality/vanillaGate.js'
 import { formatQuickCheck, quickCheck } from '../agent/quality/quickCheck.js'
 import {
@@ -502,6 +503,16 @@ function looksLikePlaceholder(content) {
   return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(trimmed))
 }
 
+function looksComplete(filePath, text) {
+  const lines = countLines(text)
+  if (lines < 10 || looksLikePlaceholder(text)) return false
+  if (/\.html?$/i.test(String(filePath ?? ''))) {
+    const head = text.replace(/^\uFEFF/, '').trimStart()
+    return /^<!doctype\s+html/i.test(head) && /<\/html>\s*$/i.test(text.trimEnd())
+  }
+  return true
+}
+
 function validateWriteContent(name, filePath, content) {
   const text = typeof content === 'string' ? content : String(content ?? '')
   const lines = countLines(text)
@@ -575,18 +586,61 @@ function describeAction(name, args, { phase = 'running', lines = 0 } = {}) {
   }
 }
 
-function describeFailure(name, args) {
+function describeFailure(name, args, outcome = null) {
   const filePath = args.path ?? 'file'
+  const raw = String(outcome?.text ?? '')
+  const reason = raw.startsWith('Error:')
+    ? raw.replace(/^Error:\s*/, '').split('\n')[0].slice(0, 160)
+    : ''
   switch (name) {
     case 'create_file':
-      return `Failed to write ${filePath} — the content was rejected`
+      return reason ? `Failed to write ${filePath} — ${reason}` : `Failed to write ${filePath}`
     case 'append_to_file':
-      return `Failed to extend ${filePath} — the content was rejected`
+      return reason ? `Failed to extend ${filePath} — ${reason}` : `Failed to extend ${filePath}`
     case 'edit_file':
-      return `Failed to edit ${filePath} — the content was rejected`
+      return reason ? `Failed to edit ${filePath} — ${reason}` : `Failed to edit ${filePath}`
     default:
-      return `Failed: ${name}`
+      return reason ? `Failed: ${name} — ${reason}` : `Failed: ${name}`
   }
+}
+
+const ERROR_HINTS = {
+  EPERM:
+    'The path is locked by another program on Windows (open terminal, editor or antivirus). Retry, close what holds it, or write to a different path.',
+  EBUSY: 'The path is busy right now. Retry in a moment, or write to a different path.',
+  EACCES: 'The path is not writable. Check the folder permissions or pick another path.',
+  ENOSPC: 'The disk is full — free some space and retry.',
+  ENOENT:
+    'The target folder no longer exists. Call list_directory to see the current structure and use the path it shows.',
+  EISDIR: 'That path is a folder, not a file. Use a file path inside it.',
+  ENOTDIR:
+    'Part of the path is a file, not a folder. Call list_directory and correct the path.',
+  NOT_A_FILE: 'That path is a folder. Use a file path inside it.',
+  NOT_A_FOLDER: 'That path is a file. Use the parent folder instead.',
+  ALREADY_EXISTS: 'An item with that name already exists — pick a different name or edit the existing one.',
+  INVALID_PATH: 'The path is outside the workspace or malformed — use a relative path inside the project.',
+  FILE_MISSING:
+    'The file does not exist. Call list_directory to confirm the path, then create it with create_file.',
+  WORKSPACE_MISSING:
+    'The workspace folder is gone (it may have been cleared on restart). Re-import the project, then retry.',
+}
+
+function toolErrorMessage(name, args, error) {
+  const code = error?.code ? String(error.code) : null
+  const reason = error?.message ?? String(error)
+  const hint = code ? ERROR_HINTS[code] : null
+  const target = args?.path ? `"${args.path}"` : args?.command ? `command "${truncate(args.command, 80)}"` : 'the target'
+  const verb =
+    name === 'create_file'
+      ? 'create'
+      : name === 'append_to_file'
+        ? 'extend'
+        : name === 'edit_file'
+          ? 'edit'
+          : name === 'delete_file'
+            ? 'delete'
+            : name
+  return `Error: could not ${verb} ${target}${code ? ` (${code})` : ''}: ${reason}${hint ? ` ${hint}` : ''}`
 }
 
 function normalizeToolArgs(projectId, name, args) {
@@ -631,12 +685,27 @@ async function executeTool(name, rawArgs, projectId) {
       if (name === 'edit_file' && !existsInWorkspace(projectId, filePath)) {
         return { text: `Error: "${filePath}" does not exist (use create_file).` }
       }
+      if (name === 'create_file' && existsInWorkspace(projectId, filePath)) {
+        const existing = await readWorkspaceFileSafe(projectId, filePath)
+        if (existing !== null && looksComplete(filePath, existing)) {
+          return {
+            text: `Error: "${filePath}" already exists (${countLines(existing)} lines) and is complete, so create_file would throw that file away. Use edit_file to replace it, append_to_file to extend it, or pick a new file name.`,
+            rejected: true,
+          }
+        }
+      }
       const invalid = validateWriteContent(name, filePath, content)
       if (invalid) {
         debugToolCall(name, filePath, content, 'rejected')
         return { text: invalid, rejected: true }
       }
-      const saved = writeFileToWorkspace(projectId, filePath, content)
+      let saved
+      try {
+        saved = writeFileToWorkspace(projectId, filePath, content)
+      } catch (error) {
+        debugToolCall(name, filePath, content, 'error')
+        return { text: toolErrorMessage(name, args, error) }
+      }
       debugToolCall(name, saved, content, 'written')
       const verb = name === 'create_file' ? 'Created' : 'Updated'
       return {
@@ -654,7 +723,13 @@ async function executeTool(name, rawArgs, projectId) {
         debugToolCall(name, filePath, content, 'rejected')
         return { text: invalid, rejected: true }
       }
-      const saved = appendFileToWorkspace(projectId, filePath, content)
+      let saved
+      try {
+        saved = appendFileToWorkspace(projectId, filePath, content)
+      } catch (error) {
+        debugToolCall(name, filePath, content, 'error')
+        return { text: toolErrorMessage(name, args, error) }
+      }
       debugToolCall(name, saved, content, 'appended')
       return {
         text: `Appended to ${saved}`,
@@ -938,6 +1013,7 @@ export async function runAgent({
   resume = false,
   shouldStop = null,
   runStartedAt = null,
+  strictRules = [],
 }) {
   const startedAt = Number.isFinite(runStartedAt) ? runStartedAt : Date.now()
   let toolCalls = 0
@@ -1071,6 +1147,7 @@ export async function runAgent({
       tier: resolveTier(tierCandidate.limits, { vanilla: vanillaMode }),
       now: new Date(),
       projectStructure: treeContext,
+      strictRules,
     }),
   }
 
@@ -1983,6 +2060,13 @@ export async function runAgent({
       const filePath = String(args.path ?? '')
       const alreadyWritten = filePath ? writtenThisRun.get(filePath) : null
       let rejection = ''
+      const ruleBlock = findRuleBlock({
+        name,
+        args,
+        rules: strictRules,
+        fileExists: (target) => existsInWorkspace(projectId, target),
+      })
+      if (ruleBlock) rejection = ruleBlock.message
 
       // Cap the appends per file. Growing one stylesheet through 31 tiny
       // append calls is exactly the loop that burned ~510K tokens on a 3-page
@@ -2007,12 +2091,14 @@ export async function runAgent({
         rejection = `Error: "${filePath}" was already written in this run (${alreadyWritten.lines} lines) and create_file would OVERWRITE it. Use append_to_file to extend it, or edit_file to replace it deliberately.`
       }
 
-      event_(TOOL_LABELS[name] ?? 'thinking', describeAction(name, args, { phase: 'running' }), {
-        tool: name,
-        args: { path: args.path, command: args.command },
-        status: 'running',
-        actionId,
-      })
+      if (!ruleBlock) {
+        event_(TOOL_LABELS[name] ?? 'thinking', describeAction(name, args, { phase: 'running' }), {
+          tool: name,
+          args: { path: args.path, command: args.command },
+          status: 'running',
+          actionId,
+        })
+      }
 
       let outcome
       if (rejection) {
@@ -2021,25 +2107,36 @@ export async function runAgent({
         try {
           outcome = await executeTool(name, args, projectId)
         } catch (error) {
-          outcome = { text: `Error: ${error.message}` }
+          outcome = { text: toolErrorMessage(name, args, error) }
         }
       }
 
       const failed = String(outcome.text ?? '').startsWith('Error')
-      event_(
-        TOOL_LABELS[name] ?? 'thinking',
-        failed
-          ? describeFailure(name, args)
-          : describeAction(name, args, { phase: 'done', lines: outcome.lines ?? 0 }),
-        {
+      if (ruleBlock) {
+        event_('rule_blocked', `Blocked by your rule: ${truncate(ruleBlock.rule, 80)}`, {
           tool: name,
           args: { path: args.path, command: args.command },
-          status: failed ? 'error' : 'done',
+          status: 'done',
           actionId,
           result: truncate(outcome.text, 2000),
-          ...(outcome.details ?? {}),
-        },
-      )
+          rule: ruleBlock.rule,
+        })
+      } else {
+        event_(
+          TOOL_LABELS[name] ?? 'thinking',
+          failed
+            ? describeFailure(name, args, outcome)
+            : describeAction(name, args, { phase: 'done', lines: outcome.lines ?? 0 }),
+          {
+            tool: name,
+            args: { path: args.path, command: args.command },
+            status: failed ? 'error' : 'done',
+            actionId,
+            result: truncate(outcome.text, 2000),
+            ...(outcome.details ?? {}),
+          },
+        )
+      }
 
       const writeSucceeded = WRITE_TOOLS.has(name) && !failed
       let modelResult = outcome.modelText ?? truncate(outcome.text ?? '', MAX_TOOL_RESULT_CHARS)

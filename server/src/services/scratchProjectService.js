@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import { isDatabaseConnected } from '../config/db.js'
 import { findProject, upsertProject } from '../models/project.repository.js'
-import { restartWatching } from '../utils/fileWatcher.js'
 import { slugifyProjectName } from './agentService.js'
 import { fallbackProjectName } from './agentFrameworks.js'
 import {
@@ -10,7 +10,10 @@ import {
   isScratchFolderName,
   isScratchProjectId,
   renameWorkspaceFolder,
+  workspaceFolderPath,
 } from '../utils/workspaceManager.js'
+
+const fsp = fs.promises
 
 /**
  * Turning an anonymous scratch workspace into a real, NAMED project.
@@ -23,11 +26,16 @@ import {
  * junk ("PROJECT_NAME: project") silently falls back instead of producing a bad
  * folder name. The result is that a workspace an agent has worked in is never
  * left called "Scratch"/"scratch-<id>".
- *
- * The rename itself is a TRUE top-level folder rename (fs.renameSync inside
- * renameWorkspaceFolder): the folder keeps every file's relative position, so
- * nothing is copied into a nested subfolder and no path becomes stale.
  */
+
+async function folderIsEmpty(folderPath) {
+  try {
+    const entries = await fsp.readdir(folderPath)
+    return entries.length === 0
+  } catch {
+    return false
+  }
+}
 
 /**
  * The name to give an adopted workspace: an AI-generated suggestion when there
@@ -58,6 +66,7 @@ export async function adoptScratchProject({
   emit = null,
   modelSuggestedName = null,
   framework = null,
+  fresh = true,
 }) {
   if (!isScratchProjectId(projectId)) return null
 
@@ -70,31 +79,67 @@ export async function adoptScratchProject({
   const project = isDatabaseConnected() ? await findProject(projectId) : null
   const anonymous = isScratchFolderName(record.folderName)
   const suggested = slugifyProjectName(modelSuggestedName)
+  const currentPath = workspaceFolderPath(record.container, record.folderName)
 
-  // Target name: the model's suggestion when usable, else the name already on
-  // disk, else a safe framework-based name.
+  const recordStale = (name) =>
+    Boolean(project && (project.isScratch || project.name !== name || project.diskFolderName !== name))
+
+  const empty = await folderIsEmpty(currentPath)
+  const mayRename = empty && (fresh || anonymous)
+
+  if (!mayRename) {
+    if (recordStale(record.folderName) && isDatabaseConnected()) {
+      await upsertProject({
+        projectId,
+        name: record.folderName,
+        owner: userId,
+        diskPath: currentPath,
+        diskFolderName: record.folderName,
+        isScratch: anonymous,
+      })
+      if (typeof emit === 'function') {
+        emit({
+          type: 'project',
+          description: anonymous
+            ? `Working in scratch workspace “${record.folderName}”.`
+            : `Working in project “${record.folderName}”.`,
+          details: {
+            status: 'done',
+            projectId,
+            name: record.folderName,
+            tool: 'project',
+            renamed: false,
+          },
+          actionId: crypto.randomUUID(),
+          at: Date.now(),
+        })
+      }
+    }
+    return { projectId, name: record.folderName, adopted: !anonymous, renamed: false }
+  }
+
   const name =
     suggested ??
     (anonymous ? chooseScratchProjectName({ modelSuggestedName: null, framework }) : record.folderName)
 
-  // A real rename happens only when the folder is still anonymous, or when the
-  // model explicitly proposed a name that differs from the one on disk.
-  const folder = renameWorkspaceFolder(projectId, { displayName: name })
-  if (!folder) return null
+  let folder = { container: record.container, folderName: record.folderName, path: currentPath }
+  let renamed = false
+  try {
+    const moved = await renameWorkspaceFolder(projectId, { displayName: name })
+    if (moved) {
+      folder = moved
+      renamed = folder.folderName !== record.folderName
+    }
+  } catch (error) {
+    console.warn(
+      `[agent] workspace rename failed for ${projectId}: ${error?.code ? `${error.code} ` : ''}` +
+        `${error?.message ?? error} — keeping folder "${record.folderName}"`,
+    )
+    return { projectId, name: record.folderName, adopted: false, renamed: false }
+  }
 
-  const renamed = folder.folderName !== record.folderName
   const finalName = folder.folderName
-
-  // The watcher may already be attached to the OLD folder name (the client
-  // subscribes as soon as the workspace opens): move it, or the Explorer's
-  // auto-refresh and the preview's live reload would go silent for the rest of
-  // the run.
-  if (renamed) restartWatching(projectId)
-
-  // Transition the Project record only when it is actually out of date — an
-  // already-adopted workspace short-circuits here, which is what keeps repeated
-  // calls (first message + finally) from re-emitting feed rows.
-  const needsRecord = anonymous || renamed || Boolean(project && (project.isScratch || project.name !== finalName))
+  const needsRecord = anonymous || renamed || recordStale(finalName)
   const adopted = anonymous || renamed || Boolean(project && project.isScratch)
 
   if (needsRecord && isDatabaseConnected()) {
@@ -103,7 +148,7 @@ export async function adoptScratchProject({
       name: finalName,
       owner: userId,
       diskPath: folder.path,
-      diskFolderName: folder.folderName,
+      diskFolderName: finalName,
       isScratch: false,
     })
   }
@@ -123,5 +168,5 @@ export async function adoptScratchProject({
     })
   }
 
-  return { projectId, name: finalName, adopted }
+  return { projectId, name: finalName, adopted, renamed }
 }

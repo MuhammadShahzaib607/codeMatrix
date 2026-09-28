@@ -26,7 +26,13 @@ export const DEFAULT_SETTINGS = {
     preferredShell: null,
     fontSize: 13,
   },
+  agent: {
+    strictRules: [],
+  },
 }
+
+export const STRICT_RULE_MAX_COUNT = 20
+export const STRICT_RULE_MAX_LENGTH = 300
 
 function clamp(value, min, max, fallback) {
   const number = Number(value)
@@ -38,11 +44,48 @@ function oneOf(value, allowed, fallback) {
   return allowed.includes(value) ? value : fallback
 }
 
+function stripControlChars(text) {
+  let out = ''
+  for (const char of text) {
+    const code = char.codePointAt(0)
+    out += code < 32 || code === 127 ? ' ' : char
+  }
+  return out
+}
+
+export function sanitizeStrictRules(raw) {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set()
+  const rules = []
+  for (const entry of raw) {
+    if (rules.length >= STRICT_RULE_MAX_COUNT) break
+    const source = entry && typeof entry === 'object' ? entry.text : entry
+    const text = stripControlChars(String(source ?? ''))
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, STRICT_RULE_MAX_LENGTH)
+    if (!text) continue
+    const key = text.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    rules.push({
+      id:
+        entry && typeof entry === 'object' && typeof entry.id === 'string' && entry.id
+          ? entry.id
+          : `rule-${rules.length}-${text.length}`,
+      text,
+      enabled: entry && typeof entry === 'object' ? entry.enabled !== false : true,
+    })
+  }
+  return rules
+}
+
 export function sanitizeSettings(raw) {
   const source = raw && typeof raw === 'object' ? raw : {}
   const editor = source.editor && typeof source.editor === 'object' ? source.editor : {}
   const terminal =
     source.terminal && typeof source.terminal === 'object' ? source.terminal : {}
+  const agent = source.agent && typeof source.agent === 'object' ? source.agent : {}
 
   return {
     theme: oneOf(source.theme, THEME_IDS, DEFAULT_SETTINGS.theme),
@@ -60,6 +103,9 @@ export function sanitizeSettings(raw) {
       preferredShell:
         typeof terminal.preferredShell === 'string' ? terminal.preferredShell : null,
       fontSize: clamp(terminal.fontSize, 10, 22, DEFAULT_SETTINGS.terminal.fontSize),
+    },
+    agent: {
+      strictRules: sanitizeStrictRules(agent.strictRules),
     },
   }
 }

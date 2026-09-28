@@ -789,3 +789,126 @@
   gap: 8px;
   margin-top: 2px;
 }
+
+.settings-rule-list {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.settings-rule {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.settings-rule.is-off {
+  opacity: 0.55;
+}
+
+.settings-rule-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.settings-rule-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.4rem 0.55rem;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.settings-rule-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.settings-rule-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.settings-rule-action:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.settings-rule-action.is-danger:hover {
+  color: var(--danger);
+  border-color: var(--danger-soft);
+}
+
+.settings-rule-form {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+}
+
+.settings-rule-new {
+  flex: 1;
+}
+
+.settings-rule-counter {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.settings-idea-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+}
+
+.settings-idea {
+  border: 1px dashed var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.settings-idea:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.settings-idea.is-added {
+  border-style: solid;
+  color: var(--accent);
+}
+
+.settings-idea:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

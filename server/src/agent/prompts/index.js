@@ -1,5 +1,6 @@
 import { BASE_PROMPT } from './base.js'
 import { buildContextBlock } from './context.js'
+import { buildStrictRulesBlock } from '../../services/strictRules.js'
 import { angularPrompt } from './stacks/angular.js'
 import { expressPrompt } from './stacks/express.js'
 import { nestPrompt } from './stacks/nest.js'
@@ -61,10 +62,14 @@ export function buildSystemPrompt({
   tier = PROMPT_TIERS.FULL,
   now = new Date(),
   projectStructure = null,
+  strictRules = [],
 } = {}) {
   const stack = STACKS[String(framework ?? '').trim()] ?? null
   const compact = tier === PROMPT_TIERS.COMPACT
-  const sections = [BASE_PROMPT, buildContextBlock(now)]
+  const sections = [BASE_PROMPT]
+  const rulesBlock = buildStrictRulesBlock(strictRules)
+  if (rulesBlock) sections.push(rulesBlock)
+  sections.push(buildContextBlock(now))
 
   if (!stack) {
     sections.push(UNKNOWN_STACK_PROMPT)

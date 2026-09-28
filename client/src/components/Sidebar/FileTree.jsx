@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   ChevronRight,
+  ChevronsUp,
   Clipboard,
   Copy,
   FileCode,
@@ -11,6 +12,7 @@ import {
   Link,
   Pencil,
   Play,
+  RefreshCw,
   Scissors,
   Trash2,
 } from 'lucide-react'
@@ -330,6 +332,8 @@ function FileTree({
   onPaste,
   onCopyPath,
   onPreview,
+  onRefresh,
+  onCollapseAll,
   canDeleteProject = false,
   onDeleteProject,
 }) {
@@ -415,6 +419,46 @@ function FileTree({
   }
 
   function buildMenuItems(node) {
+    if (!node) {
+      const canPaste = Boolean(clipboard.path)
+      return [
+        {
+          id: 'new-file',
+          label: 'New File',
+          icon: FilePlus,
+          onSelect: () => onRequestCreate(ROOT_ID, 'file'),
+        },
+        {
+          id: 'new-folder',
+          label: 'New Folder',
+          icon: FolderPlus,
+          onSelect: () => onRequestCreate(ROOT_ID, 'folder'),
+        },
+        canPaste ? { separator: true } : null,
+        canPaste
+          ? {
+              id: 'paste',
+              label: 'Paste',
+              icon: Clipboard,
+              onSelect: () => onPaste({ id: ROOT_ID, type: 'folder' }),
+            }
+          : null,
+        { separator: true },
+        {
+          id: 'refresh',
+          label: 'Refresh',
+          icon: RefreshCw,
+          onSelect: () => onRefresh?.(),
+        },
+        {
+          id: 'collapse-all',
+          label: 'Collapse All',
+          icon: ChevronsUp,
+          onSelect: () => onCollapseAll?.(),
+        },
+      ]
+    }
+
     const isLocked = lockedId !== null && node.id === lockedId
     const isFolder = node.type === 'folder'
     const canPaste = isFolder && Boolean(clipboard.path)
@@ -535,6 +579,12 @@ function FileTree({
       tabIndex={-1}
       onMouseDown={handleMouseDown}
       onKeyDown={handleKeyDown}
+      onContextMenu={(event) => {
+        if (event.target?.closest?.('[data-node-id]')) return
+        event.preventDefault()
+        onClearSelection?.()
+        setMenu({ x: event.clientX, y: event.clientY, node: null })
+      }}
     >
       {/* Root-level inline create row. It renders here (top level, NO indentation)
           whenever the target parent has no row of its own yet — which is exactly

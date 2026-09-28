@@ -7,6 +7,7 @@ import { resolveKeysForUser } from '../services/apiKeyService.js'
 import { runAgent } from '../services/agentService.js'
 import { hasResumableSession } from '../services/agentSessionService.js'
 import { adoptScratchProject } from '../services/scratchProjectService.js'
+import { sanitizeStrictRules } from '../services/strictRules.js'
 import { ensureScratchWorkspace, isScratchProjectId } from '../utils/workspaceManager.js'
 
 // ---------------------------------------------------------------------------
@@ -154,6 +155,7 @@ export default function registerAgentSocket(io) {
         }
 
         const wantsResume = payload?.resume === true
+        const strictRules = sanitizeStrictRules(payload?.strictRules)
         if (wantsResume && !hasResumableSession(projectId)) {
           ack({
             ok: false,
@@ -213,6 +215,7 @@ export default function registerAgentSocket(io) {
               emit,
               modelSuggestedName: suggestedName,
               framework: payload?.framework,
+              fresh: !wantsResume,
             })
             if (result?.adopted) scratchAdopted = true
           } catch (error) {
@@ -242,6 +245,7 @@ export default function registerAgentSocket(io) {
             runStartedAt: startedAt,
             shouldStop: () => stopRequests.has(userId),
             onProjectName: (name) => adopt(name),
+            strictRules,
           })
           room.emit('agent:done', {
             ok: true,

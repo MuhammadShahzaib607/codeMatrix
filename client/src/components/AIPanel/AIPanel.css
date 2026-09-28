@@ -1118,3 +1118,8 @@
   opacity: 0.4;
   cursor: default;
 }
+
+/* The Stop button replaces Send while a run is in flight. */
+.ai-send.is-stop {
+  background: var(--danger);
+}

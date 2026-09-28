@@ -12,19 +12,29 @@ import { ensureScratchWorkspace, isScratchProjectId } from '../utils/workspaceMa
 // ---------------------------------------------------------------------------
 // The agent's real-time channel.
 //
-//   client -> server: agent:run { token, projectId, task, framework, keyId? }
-//                     (ack)     { ok: true, started: true, runId } | { ok: false, message }
+//   client -> server: agent:run    { token, projectId, task, framework, keyId? }
+//                     (ack)        { ok: true, started: true, runId, startedAt }
+//                                  | { ok: false, message }
+//                     agent:attach { token }  re-join the run after a reconnect
+//                     (ack)        { ok, active, runId, startedAt }
+//                     agent:stop   { token }  end the current run deliberately
 //   server -> client: agent:action { type, description, details, actionId, at }
 //                     agent:delta  { runId, text }  live assistant text, token by
 //                                  token; { runId, text: '', reset: true } drops
 //                                  text that a non-streamed retry is replacing
-//                     agent:done   { ok, message, toolCalls, durationMs, ... }
+//                     agent:done   { ok, message, toolCalls, durationMs, startedAt,
+//                                    requests, totalTokens, stopped, ... }
 //
 // The JWT is verified here (the socket layer itself is unauthenticated for
 // terminal/workspace events), the project's ownership is checked the same way
 // the REST routes do it, and the Groq key is chosen from the caller's OWN
 // saved keys — decrypted in memory for exactly this run.
 // ---------------------------------------------------------------------------
+
+const activeRuns = new Map()
+const stopRequests = new Set()
+
+const userRoom = (userId) => `agent-user:${userId}`
 
 function verifyUser(token) {
   try {
@@ -41,6 +51,34 @@ export default function registerAgentSocket(io) {
     // interleaving two loops' tool results.
     let active = false
 
+    socket.on('agent:attach', (payload, acknowledge) => {
+      const ack = typeof acknowledge === 'function' ? acknowledge : () => {}
+      const userId = verifyUser(payload?.token)
+      if (!userId) {
+        ack({ ok: false, code: 'UNAUTHORIZED' })
+        return
+      }
+      socket.join(userRoom(userId))
+      const run = activeRuns.get(userId)
+      ack({
+        ok: true,
+        active: Boolean(run),
+        runId: run?.runId ?? null,
+        startedAt: run?.startedAt ?? null,
+      })
+    })
+
+    socket.on('agent:stop', (payload, acknowledge) => {
+      const ack = typeof acknowledge === 'function' ? acknowledge : () => {}
+      const userId = verifyUser(payload?.token)
+      if (!userId) {
+        ack({ ok: false, code: 'UNAUTHORIZED' })
+        return
+      }
+      if (activeRuns.has(userId)) stopRequests.add(userId)
+      ack({ ok: true })
+    })
+
     socket.on('agent:run', async (payload, acknowledge) => {
       const ack = typeof acknowledge === 'function' ? acknowledge : () => {}
 
@@ -56,6 +94,15 @@ export default function registerAgentSocket(io) {
             ok: false,
             message: 'Please sign in to use the AI assistant.',
             code: 'UNAUTHORIZED',
+          })
+          return
+        }
+
+        if (activeRuns.has(userId)) {
+          ack({
+            ok: false,
+            message: 'An agent task is already running. Let it finish first.',
+            code: 'ALREADY_RUNNING',
           })
           return
         }
@@ -120,19 +167,24 @@ export default function registerAgentSocket(io) {
         // One id per run: every streamed delta carries it, so a client that has
         // already moved on (or a resumed run) can ignore stale text.
         const runId = crypto.randomUUID()
-        ack({ ok: true, started: true, runId })
+        const startedAt = Date.now()
+        socket.join(userRoom(userId))
+        stopRequests.delete(userId)
+        activeRuns.set(userId, { runId, startedAt, task, projectId })
+        ack({ ok: true, started: true, runId, startedAt })
 
+        const room = io.to(userRoom(userId))
         const emit = (event) => {
-          if (socket.connected) socket.emit('agent:action', event)
+          room.emit('agent:action', event)
         }
 
         const emitDelta = (delta) => {
-          if (!socket.connected || !delta) return
-          socket.emit('agent:delta', { runId, text: delta.text ?? '', reset: Boolean(delta.reset) })
+          if (!delta) return
+          room.emit('agent:delta', { runId, text: delta.text ?? '', reset: Boolean(delta.reset) })
         }
 
         const emitUsage = (usage) => {
-          if (socket.connected) socket.emit('usage:update', usage)
+          room.emit('usage:update', usage)
         }
 
         // Turn an anonymous scratch workspace into a real, NAMED project.
@@ -187,32 +239,37 @@ export default function registerAgentSocket(io) {
             providerPreference: payload?.providerPreference ?? 'auto',
             taskId: crypto.randomUUID(),
             resume: wantsResume,
+            runStartedAt: startedAt,
+            shouldStop: () => stopRequests.has(userId),
             onProjectName: (name) => adopt(name),
           })
-          if (socket.connected) {
-            socket.emit('agent:done', {
-              ok: true,
-              message: result.message,
-              toolCalls: result.toolCalls,
-              durationMs: result.durationMs,
-              limitReached: Boolean(result.limitReached),
-              model: result.model,
-              provider: result.provider ?? null,
-            })
-          }
+          room.emit('agent:done', {
+            ok: true,
+            message: result.message,
+            toolCalls: result.toolCalls,
+            durationMs: result.durationMs,
+            startedAt,
+            limitReached: Boolean(result.limitReached),
+            stopped: Boolean(result.stopped),
+            requests: result.requests ?? 0,
+            totalTokens: result.totalTokens ?? 0,
+            model: result.model,
+            provider: result.provider ?? null,
+          })
         } catch (error) {
-          if (socket.connected) {
-            socket.emit('agent:done', {
-              ok: false,
-              message: error.message,
-              code: error.code ?? null,
-            })
-          }
+          room.emit('agent:done', {
+            ok: false,
+            message: error.message,
+            code: error.code ?? null,
+            startedAt,
+          })
         } finally {
           // Safety net: if the run failed before the model named the project,
           // still give the scratch workspace a real name derived from the task.
           if (scratchRun && !scratchAdopted) await adopt(null)
           active = false
+          activeRuns.delete(userId)
+          stopRequests.delete(userId)
           // The plaintext keys live only in this scope; drop the references now.
           keys = null
         }

@@ -18,6 +18,8 @@ export const MIN_REPEATED_ITEMS = 3
 export const MIN_FAQ_ITEMS = 5
 export const MIN_MEDIA_RULES = 2
 export const GATE_MAX_REPAIR_ROUNDS = 3
+export const MAX_MISSING_CLASS_RATIO = 0.8
+export const MIN_MISSING_CLASSES = 12
 
 export const REPEATED_SECTION_IDS = ['services', 'testimonials', 'blogs', 'team']
 export const CONTACT_FIELDS = ['name', 'email', 'subject', 'message']

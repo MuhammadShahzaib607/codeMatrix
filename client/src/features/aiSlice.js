@@ -64,6 +64,8 @@ const initialState = {
   running: false,
   thinking: false,
   thinkingText: '',
+  startedAt: null,
+  runId: null,
   timeline: [],
 }
 
@@ -124,6 +126,48 @@ export const deleteApiKey = createAsyncThunk(
       return { keyId }
     } catch (error) {
       dispatch(showToast({ message: error.message, type: 'error' }))
+      return rejectWithValue(error.message)
+    }
+  },
+)
+
+export const stopAgentTask = createAsyncThunk('ai/stopTask', async (_, { rejectWithValue }) => {
+  try {
+    const socket = getSocket()
+    const token = getAuthToken()
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 5000)
+      socket.emit('agent:stop', { token }, () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
+    return { stopped: true }
+  } catch (error) {
+    return rejectWithValue(error.message)
+  }
+})
+
+export const attachAgentRun = createAsyncThunk(
+  'ai/attachRun',
+  async (_, { dispatch, rejectWithValue }) => {
+    try {
+      const socket = getSocket()
+      const token = getAuthToken()
+      const ack = await new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve(null), 8000)
+        socket.emit('agent:attach', { token }, (response) => {
+          clearTimeout(timeout)
+          resolve(response ?? null)
+        })
+      })
+      if (!ack?.ok) return rejectWithValue('Could not re-attach to the task.')
+      if (ack.active) {
+        dispatch(agentRunStarted({ startedAt: ack.startedAt ?? null, runId: ack.runId ?? null }))
+        return { active: true, startedAt: ack.startedAt ?? null, runId: ack.runId ?? null }
+      }
+      return { active: false }
+    } catch (error) {
       return rejectWithValue(error.message)
     }
   },
@@ -234,6 +278,7 @@ export const startAgentTask = createAsyncThunk(
       if (!ack?.ok) {
         throw new Error(ack?.message ?? 'the agent could not start.')
       }
+      dispatch(agentRunStarted({ startedAt: ack.startedAt ?? null, runId: ack.runId ?? null }))
       return { started: true }
     } catch (error) {
       // EVERY failure ends up as a visible agent bubble in the chat area —
@@ -306,7 +351,24 @@ const aiSlice = createSlice({
       state.usageTask = null
       state.waitingMs = 0
       state.switchingTo = null
+      state.startedAt = null
+      state.runId = null
       state.timeline.push({ id: nanoid(), kind: 'user', text: action.payload.task })
+    },
+
+    agentRunStarted(state, action) {
+      const { startedAt = null, runId = null } = action.payload ?? {}
+      state.startedAt = Number.isFinite(startedAt) ? startedAt : Date.now()
+      if (runId) state.runId = runId
+    },
+
+    adoptRunningTask(state, action) {
+      const { startedAt = null, runId = null } = action.payload ?? {}
+      state.running = true
+      state.thinking = true
+      state.thinkingText = 'A task is still running…'
+      state.startedAt = Number.isFinite(startedAt) ? startedAt : Date.now()
+      if (runId) state.runId = runId
     },
 
     /**
@@ -427,8 +489,18 @@ const aiSlice = createSlice({
     },
 
     agentDone(state, action) {
-      const { ok = true, message = '', toolCalls, durationMs, limitReached, model, provider } =
-        action.payload ?? {}
+      const {
+        ok = true,
+        message = '',
+        toolCalls,
+        durationMs,
+        limitReached,
+        model,
+        provider,
+        requests = null,
+        totalTokens = null,
+        stopped = false,
+      } = action.payload ?? {}
       if (model) state.model = String(model)
       if (provider) state.provider = String(provider)
       state.running = false
@@ -436,16 +508,30 @@ const aiSlice = createSlice({
       state.thinkingText = ''
       state.waitingMs = 0
       state.switchingTo = null
-      state.canContinue = !ok || Boolean(limitReached)
+      state.canContinue = (!ok || Boolean(limitReached)) && !stopped
+      const duration = Number.isFinite(durationMs) ? durationMs : null
+      if (duration != null) {
+        for (let index = state.timeline.length - 1; index >= 0; index -= 1) {
+          if (state.timeline[index].kind === 'user') {
+            state.timeline[index].durationMs = duration
+            break
+          }
+        }
+      }
       state.timeline.push({
         id: nanoid(),
         kind: 'agent',
         text: message,
         ok: Boolean(ok),
         toolCalls,
-        durationMs,
+        durationMs: duration,
         limitReached: Boolean(limitReached),
+        requests,
+        totalTokens,
+        stopped: Boolean(stopped),
       })
+      state.startedAt = null
+      state.runId = null
     },
 
     clearTimeline(state) {
@@ -501,6 +587,8 @@ export const {
   setKeys,
   usageUpdated,
   agentStarted,
+  agentRunStarted,
+  adoptRunningTask,
   agentAction,
   agentDelta,
   agentDone,

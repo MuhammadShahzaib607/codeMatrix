@@ -167,6 +167,12 @@ export async function quickCheck({
       }
       if (value.startsWith('#') || value === '') continue
       if (/^(https?:)/i.test(value)) continue
+      if (value.startsWith('/') && !value.startsWith('//')) {
+        problems.push(
+          `"${file}" uses the root-absolute path "${value}" — the preview serves this project under /preview/<projectId>/, so it is fetched from the server root and 404s. Use a relative path with no leading "/" (for example "${value.replace(/^\/+/, '')}").`,
+        )
+        continue
+      }
       if (!LOCAL_ASSET.test(value.split('#')[0].split('?')[0])) continue
       const target = posixJoin(file, value.split('#')[0].split('?')[0])
       if (!target || !(await fileExists(target))) {

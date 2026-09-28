@@ -1,19 +1,25 @@
 export const vanillaPrompt = `Stack: HTML5, CSS3 and vanilla JavaScript only. No frameworks, no build tools, no CSS or JS libraries, no npm packages, no external scripts. Icons are inline SVG. Never use a remote image URL (they break) — use inline SVG illustrations, CSS gradients and CSS shapes. The ONLY allowed CDN is Google Fonts: at most two families via a <link> plus a system font fallback stack.
 
-PLAN FIRST: every explicit requirement of the task becomes one short line in plan.requirements, and the plan also fixes the design system up front — the brand (name, tagline, industry), the palette hex values (--bg, --surface, --text, --muted, --primary, --accent, --border), the one or two Google Fonts, the spacing scale, and the section list of every page in plan.pages. Reuse that checklist in your final summary and confirm every line as done or as substituted.
+WORK IN THIS EXACT ORDER — one file at a time:
 
-WRITE ORDER — finish one file completely before starting the next:
-1. css/style.css (variables, reset, layout, components, responsive breakpoints)
-2. index.html
-3. the other pages, reusing the EXACT same header/nav/footer markup as index.html
-4. js/main.js (mobile nav toggle, active link, smooth scroll, form validation when a form exists, small interactions)
+1. PLAN: reply with the plan JSON only (schema in your system prompt). It must list every page the user asked for (index.html, about.html, contact.html, …), turn every explicit requirement into one short line in plan.requirements, and fix the design decisions: the brand (name, tagline, industry), the palette hex values (--bg, --surface, --text, --muted, --primary, --accent, --border), the one or two Google Fonts, the spacing scale, and the section list of every page in plan.pages. Reuse that checklist in your final summary.
+
+2. HTML FIRST — one complete page per create_file call, in plan order (index.html, then each other requested page). Each page is the FULL document: <!DOCTYPE html>, <head> (charset, viewport, description, unique <title>, the Google Fonts link, <link rel="stylesheet" href="css/style.css">), the shared <header> with nav + hamburger button, a <main> with real semantic sections, the shared <footer>, and <script src="js/main.js" defer></script> before </body>. Copy the header/nav/footer markup IDENTICALLY on every page (only class="active" and aria-current="page" change). Write real, specific, benefit-driven English copy — never lorem ipsum, TODO or "coming soon". Link between pages with correct relative paths. Use clear, consistent class names because the NEXT file must style exactly those classes.
+
+3. CSS SECOND — one create_file for css/style.css that styles EXACTLY the classes and ids you used in the HTML (variables, reset, layout, components, responsive media queries, focus styles). Every section needs its own rules, and the contact page needs rules for the form, each field group, input, textarea, label, inline error, submit button, the info cards and the map block. The server checks that EVERY class and id used in the HTML has a rule in the linked CSS, so keep the names in step and never leave a page unstyled.
+
+4. JS LAST — js/main.js only if the request needs it (mobile nav toggle, active link, form validation, small interactions). Skip it when nothing needs it.
+
+5. VERIFY — cheap server checks run after every page and again when you finish: missing files, links, root-absolute paths, classes and ids with no CSS rule, and JS selectors with no matching element. Fix exactly what they report, then end with a short summary that confirms each checklist item.
 
 CHUNKING — the rule that keeps a build cheap:
 - A file under about 250 lines MUST be written in ONE create_file call. Most pages and stylesheets fit in one call; prefer one call.
 - Only a genuinely larger file is split, into at most 3 parts: create_file for part 1, then append_to_file for parts 2 and 3. Every part is a complete logical block of at least ~80 lines (a whole HTML section or a whole set of CSS rules), never cut mid-tag or mid-rule.
 - NEVER send a series of 10-line snippets, and NEVER call create_file twice on the same path — create_file overwrites the file and destroys every earlier part. Use append_to_file or edit_file to extend a file you already wrote.
+- NEVER call a write tool with empty content or with a placeholder such as "[written: 248 lines]", "TODO: content" or "..." — the server rejects it and the file is not written. Always send the real, full content.
 
-STRUCTURE: pages at the workspace root (index.html, about.html, contact.html plus anything else requested), css/style.css, js/main.js, all linked with relative paths.
+STRUCTURE: pages at the workspace root (index.html, about.html, contact.html plus anything else requested), css/style.css, js/main.js.
+ASSET PATHS (one convention, every page): <link rel="stylesheet" href="css/style.css"> in <head> and <script src="js/main.js" defer></script> before </body>. NEVER start an asset path with "/" — "/css/style.css" is fetched from the server root instead of the project and 404s, which is exactly why a generated page renders unstyled. Do not use "./" or "../" on root pages.
 NAV RULE: every nav item must work. A requested item with no page of its own becomes a section with that id on the home page and is linked as index.html#services from every page. No dead links, no href="#".
 SECTION IDS (use exactly): home — hero, services, features, testimonials, blogs, faq, cta; about — page-hero, story, mission, vision, values, stats, team; contact — page-hero, contact-form, contact-info.
 HOME: hero (eyebrow badge, h1 with a gradient-highlighted keyword, subheading, two CTAs, an inline SVG or CSS visual, a trust stats row); services (6 cards: SVG icon, title, two sentences, link); features (3-4 rows or an icon list); testimonials (3 cards: quote, initials avatar, name, role, 5-star SVG rating); blogs (3 cards: gradient thumbnail, category tag, title, excerpt, date within the last 6 months of today, read time); faq (6 items in an accessible accordion: button plus panel, aria-expanded, aria-controls, one open at a time); cta (full-width gradient banner with heading, text and button).
@@ -25,7 +31,7 @@ QUALITY: semantic landmarks, exactly one h1 per page, logical heading order, uni
 NO OVER-ENGINEERING: no build step, no bundler, no framework, and no file beyond what the task and the design system need.`
 
 export const vanillaDesignSystem = `DESIGN SYSTEM in the :root of css/style.css — color tokens (--bg, --surface, --text, --muted, --primary, --primary-600, --accent, --border), a spacing scale, radii, shadows, fluid type with clamp(), a container width and transition timings. Pick ONE cohesive palette that fits the brand (not default blue and white), support prefers-color-scheme dark through those variables, and keep contrast at least 4.5:1. Modern touches: gradient hero with soft blurred shapes, glass navbar, card lift and shadow on hover, gradient buttons with visible focus rings, 5-7rem desktop section padding, consistent radii, scroll reveal via IntersectionObserver adding .in-view, and every animation disabled under prefers-reduced-motion. Mentioned dark mode or theme in the task means a navbar theme toggle persisted in localStorage, with an inline head script that avoids the flash.
-RESPONSIVE: mobile-first, breakpoints 480, 768, 1024 and 1280, grids built with repeat(auto-fit, minmax(260px, 1fr)), no horizontal scroll at 360px, touch targets at least 44px.
+RESPONSIVE: mobile-first, breakpoints 480, 768, 1024 and 1280, grids built with repeat(auto-fit, minmax(260px, 1fr)), no horizontal scroll at 360px, touch targets at least 44px.   
 JS in js/main.js, everything inside DOMContentLoaded and each feature guarded by element existence: hamburger toggle, sticky header state, active link, smooth scroll with header offset, reveal on scroll, accordion, count-up stats, form validation (required, email regex, message at least 10 characters, inline errors, success message, reset), footer year via new Date().getFullYear(), back-to-top button.`
 
 export const vanillaCompactPrompt = vanillaPrompt

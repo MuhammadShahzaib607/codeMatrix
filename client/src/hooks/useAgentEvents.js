@@ -1,6 +1,14 @@
 import { useEffect } from 'react'
 import { useDispatch, useStore } from 'react-redux'
-import { agentAction, agentDelta, agentDone, fetchKeyUsage, usageUpdated } from '../features/aiSlice'
+import {
+  adoptRunningTask,
+  agentAction,
+  agentDelta,
+  agentDone,
+  attachAgentRun,
+  fetchKeyUsage,
+  usageUpdated,
+} from '../features/aiSlice'
 import { applyAgentProject } from '../features/fileSystemSlice'
 import { getSocket } from '../services/socket'
 import { saveWorkspaceRef } from '../services/workspaceStorage'
@@ -55,15 +63,68 @@ export default function useAgentEvents() {
       dispatch(fetchKeyUsage())
     }
 
+    let droppedSince = false
+
+    function handleDisconnect() {
+      if (!store.getState().ai.running) return
+      droppedSince = true
+      dispatch(
+        agentAction({
+          type: 'note',
+          description: 'Connection lost — reconnecting and resuming the task…',
+          details: { status: 'done', tool: 'note' },
+          actionId: `reconnect-${Date.now()}`,
+          at: Date.now(),
+        }),
+      )
+    }
+
+    function handleConnect() {
+      if (!droppedSince) return
+      droppedSince = false
+      if (!store.getState().ai.running) return
+      dispatch(attachAgentRun())
+        .unwrap()
+        .then((result) => {
+          if (result && result.active === false) {
+            dispatch(
+              agentDone({
+                ok: false,
+                message: 'The connection dropped and the task ended while you were away.',
+              }),
+            )
+          }
+        })
+        .catch(() => {})
+    }
+
+    // After a page refresh the Redux run state is gone. Ask the server once
+    // whether a task is still in flight and adopt it, so the timer and the live
+    // feed resume instead of the panel showing "Ready".
+    if (store.getState().auth.isAuthenticated) {
+      dispatch(attachAgentRun())
+        .unwrap()
+        .then((result) => {
+          if (result?.active && !store.getState().ai.running) {
+            dispatch(adoptRunningTask({ startedAt: result.startedAt, runId: result.runId }))
+          }
+        })
+        .catch(() => {})
+    }
+
     socket.on('agent:action', handleAction)
     socket.on('agent:delta', handleDelta)
     socket.on('usage:update', handleUsage)
     socket.on('agent:done', handleDone)
+    socket.on('disconnect', handleDisconnect)
+    socket.on('connect', handleConnect)
     return () => {
       socket.off('agent:action', handleAction)
       socket.off('agent:delta', handleDelta)
       socket.off('usage:update', handleUsage)
       socket.off('agent:done', handleDone)
+      socket.off('disconnect', handleDisconnect)
+      socket.off('connect', handleConnect)
     }
   }, [dispatch, store])
 }

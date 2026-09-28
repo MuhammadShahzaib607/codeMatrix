@@ -3932,6 +3932,13 @@ VISIBLE IN THE LIVE FEED + MODEL INDICATOR
       edit_file file bodies are DROPPED, leaving only { path } (plus command for
       run_command). This is the single largest win, because a create_file call
       embeds the entire file in its arguments.
+      [SUPERSEDED — see the final entry "Agent Placeholder Bug Fix + HTML-First
+       Workflow + Auto-Continue + Prompt Timer". Rewriting old tool-call
+       arguments is GONE (it made the model copy "[written: N lines]" straight
+       into later create_file calls). condenseHistory now replaces each old
+       (assistant tool_call + tool result) pair with a short "[did: …]" note plus
+       a running workspace-state note, and the real arguments are never
+       mutated.]
   Nothing is mutated on the canonical history (re-running a tool is always
   possible), and tool_call/tool pairing stays intact (we only shrink strings).
   Also reduced the per-result caps: MAX_TOOL_RESULT_CHARS 12000 -> 8000 and
@@ -4004,6 +4011,9 @@ VERIFICATION PERFORMED THIS ENTRY
         later turns, the big.js body was sent in FULL while recent and slimmed
         to {"path":"big.js"} once old, and every tool-call argument in the last
         prompt was < 1200 chars.
+        [SUPERSEDED — the "slimmed to {\"path\":\"big.js\"}" behaviour was the
+         placeholder bug's ancestor: old tool-call arguments are no longer
+         rewritten at all. See the final entry.]
   - Regression: the pre-existing dynamic-model test (client/tmp-agent-model-
     test.mjs, 17/17) still passes — one GET /models for a single key, every
     chat call on openai/gpt-oss-120b, 6 tools sent, model returned to the
@@ -4025,6 +4035,9 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
   - trimMessages only changes what is SENT, never the stored history. If you add
     a tool whose result is large AND needed long-term, prefer writing it to the
     workspace and re-reading on demand over enlarging KEEP_RECENT_MESSAGES.
+    [SUPERSEDED — the function is now condenseHistory(); it still only changes
+     what is SENT, and it no longer rewrites tool-call arguments (see the final
+     entry).]
   - Scratch adoption keys off the registry folder name 'Scratch'; if you change
     ensureScratchWorkspace's displayName, update SCRATCH_FOLDER_NAME in
     socket/agentSocket.js to match.
@@ -5142,6 +5155,9 @@ MOD  client/src/utils/agentFrameworks.js  comment now points at the new prompts.
     provider prompt caching work across the many turns of a build.
   - gatePassed is false when the gate did not run (non-vanilla) as well as when
     it failed; the returned `message` is the trustworthy signal.
+    [UPDATED by "HTML/CSS/JS Connection Check + Auto-Fix": a repair run ("css not
+    applied" / "fix styling") also reports gatePassed:false but with
+    gateSkipped:true, because it intentionally does not run the design gate.]
   - FOLLOW-UP (flagged, not done): preview URLs still expose the internal
     projectId for adopted scratch workspaces. Resolving a display name to a
     projectId would make /preview/<project-name>/index.html read like the
@@ -5149,4 +5165,765 @@ MOD  client/src/utils/agentFrameworks.js  comment now points at the new prompts.
   - FOLLOW-UP: the 8K-tpm Groq window forces a 20s wait roughly every 4-5 turns
     on a 5-file vanilla build. If that is too slow, raise BUDGET_WAIT_STEP_MS or
     prefer Mistral for vanilla (it already wins whenever a Mistral key exists).
+
+
+================================================================================
+AI Code Editor — Agent Placeholder Bug Fix + HTML-First Workflow + Auto-Continue
+               + Prompt Timer
+================================================================================
+
+STATUS: complete. Verified with mock providers (no live model/API key or MongoDB
+        in the sandbox). Run the suite with `cd server && node
+        tmp-placeholder-fix-test.mjs` before deleting it.
+
+--------------------------------------------------------------------------------
+TASK 1 — THE PLACEHOLDER BUG (the agent wrote "[written: 248 lines]" into
+the HTML file, then claimed the site was complete)
+--------------------------------------------------------------------------------
+ROOT CAUSE (1a) — it was BOTH halves the brief suspected, and the first one
+caused the second:
+  1. HISTORY STUBBING (the real root cause). agentService.js had
+     stubWriteArguments(): after each write it rewrote that assistant tool call's
+     arguments to `{ path, content: "[written: N lines]" }` to save tokens.
+     condenseHistory() keeps the last KEEP_RECENT_MESSAGES (8) verbatim, so the
+     model's NEXT turn saw its OWN create_file call carrying the literal string
+     "[written: 248 lines]" and imitated it: index.html was created with exactly
+     that one-line content. The old arguments were never restored, and a resume
+     replayed the same stubbed history.
+  2. NO WRITE VALIDATION. executeTool() wrote whatever content arrived. Empty
+     content ("0 lines") and the placeholder string both went straight to disk,
+     so a 1-line index.html existed and passed the existence-only plan check.
+  3. FEED LIE. The done event always rendered describeAction(..., { lines:
+     outcome.lines ?? 0 }) with status 'done', so a rejected/failed write showed
+     as "Wrote <file> · 0 lines" — indistinguishable from success. hence "Wrote
+     file · 0 lines" four times in the reported run.
+  4. TRUNCATED SUMMARY. DESIRED_MAX_COMPLETION was 2500 and finish_reason was
+     never inspected, so a final summary cut off by the token limit ("The site is
+     ready to be") was accepted as the answer.
+
+FIX (1b):
+  - stubWriteArguments() is DELETED. Old (assistant tool_call + tool result)
+    pairs are collapsed by condenseHistory(messages, keep, workspaceSummary) into
+    ONE short assistant note ("[did: create_file index.html]") plus ONE user note
+    ("Files already written in this run: index.html (248 lines), …", real line
+    counts only). Tool-call arguments are NEVER rewritten and the model can never
+    see a "[written: …]" style string inside a create_file call.
+  - SERVER-SIDE WRITE VALIDATION (validateWriteContent) rejects, with a clear
+    message back to the model, any create_file / edit_file / append_to_file whose
+    content is: empty or whitespace-only; a placeholder (starts with [written /
+    [omitted / [truncated / [redacted / [placeholder / [content, or is "..." / "…"
+    / "TODO: content" / "<content omitted>"); and for create_file/edit_file on a
+    .html file: fewer than MIN_HTML_LINES (10) lines, or content that does not
+    start with <!DOCTYPE html>. The error text says exactly what to do ("Write the
+    FULL file content in THIS call").
+  - A REJECTED WRITE IS NEVER A SUCCESS. It never enters writtenThisRun, plan
+    verification, the session state or the feed; the feed shows "Failed to write
+    <file> — the content was rejected" with status 'error' instead of "Wrote … 0
+    lines".
+  - PLAN VERIFICATION CHECKS REAL CONTENT (plannedFileIssues): each planned file
+    must exist AND be non-empty, non-placeholder and (for HTML) complete — at
+    least 10 lines, starting with <!DOCTYPE html>, ending with </html>. The
+    reminder now lists the exact problem per file; quickCheck (10-line minimum,
+    closing tag, no dead/remote links) still runs as the cheap second pass and
+    vanillaGate as the full pass.
+    [UPDATED by "HTML/CSS/JS Connection Check + Auto-Fix": quickCheck ALSO
+    rejects a root-absolute asset path (a leading "/") now — see that entry.]
+  - TRUNCATED SUMMARY: finish_reason === 'length' on a final turn re-requests the
+    summary up to MAX_SUMMARY_CONTINUES (2) times before accepting it, and
+    DESIRED_MAX_COMPLETION was raised 2500 -> 3200.
+  - AUTO MODEL PREFERENCE: codestral stays selectable, but Auto now subtracts a
+    penalty from code-completion-tuned models (CODE_COMPLETION_MODEL = /codestral/i)
+    in pickAutoCandidate() and the vanilla "strongest model" pick, so a Mistral
+    key prefers mistral-large-latest for a tool-heavy build. A model the user
+    pins explicitly still wins (autoScore gives it +1000).
+  - DEBUG_AGENT=1 logs every write tool call (tool, path, content length, first
+    40 chars, outcome).
+
+--------------------------------------------------------------------------------
+TASK 2 — HTML-FIRST WORKFLOW (prompts/stacks/vanilla.js)
+--------------------------------------------------------------------------------
+The write order was reversed (it used to be css/style.css FIRST). The prompt now
+mandates this EXACT order, one file at a time:
+  1. PLAN — the plan JSON only: every requested page, every requirement as a
+     plan.requirements line, and the design decisions (brand, palette hexes,
+     fonts, spacing scale, per-page section list).
+  2. HTML FIRST — one complete page per create_file call, in plan order. Each
+     page is the full document (DOCTYPE, head, shared header/nav/hamburger,
+     semantic main, shared footer, script tag), real copy (never lorem/TODO/
+     "coming soon"), correct relative links, and clear consistent class names.
+  3. CSS SECOND — css/style.css styles EXACTLY the classes and ids used in the
+     HTML (server-checked; see below).
+  4. JS LAST — js/main.js only when the page needs it.
+  5. VERIFY — fix what the server checks report, then a short checklist summary.
+The chunking rules are kept: one create_file under ~250 lines; a genuinely larger
+file in at most 3 parts (create_file + up to 2 append_to_file) of >= ~80 lines;
+append caps; stuck-loop detection; soft token budget; tool-call cap. A normal
+3-page site is still ~8-12 requests.
+CSS CLASS COVERAGE: vanillaGate gained a class-coverage rule (folded into the
+'assets' check group). It collects the distinct classes used in the HTML and the
+class selectors defined in css/style.css and fails ONLY on a gross mismatch
+(missing >= MIN_MISSING_CLASSES = 12 AND missing/distinct > MAX_MISSING_CLASS_RATIO
+= 0.8), so utility/state classes a partly-mapped sheet omits are not punished.
+Both knobs live in quality/thresholds.js.
+    [UPDATED by "HTML/CSS/JS Connection Check + Auto-Fix": the gate is still
+    lenient, but a stricter connectionCheck (tolerance of 2 unstyled classes) now
+    runs after every write and before the run finishes, so an unstyled page like
+    contact.html is caught even when its missing-class RATIO is below 0.8.]
+
+--------------------------------------------------------------------------------
+TASK 3 — NO MORE RANDOM PAUSES (auto-continue inside ONE run)
+--------------------------------------------------------------------------------
+ROOT CAUSE (3a) — the run ended (and showed a Continue button) whenever any of
+these fired, even though all of them are recoverable:
+  * tool-call cap reached (VANILLA_MAX_TOOL_CALLS 25 / MAX_TOOL_CALLS 60);
+  * soft token budget reached (TASK_TOKEN_BUDGET 150K) with files still missing;
+  * stuck-loop detection exhausted (2 warnings on the same path);
+  * the provider returned an empty response;
+  * quickCheck / vanillaGate repair rounds exhausted while the check still failed.
+The dominant cause in the reported run was the cap + the gate: codestral produced
+short/placeholder files, the plan never verified, and the cap/gate ended the run.
+(A socket drop was a SEPARATE failure: events were emitted to the OLD socket, so
+the client saw no further events and looked stopped.)
+
+FIX (3b):
+  - tryAutoContinue(reason) continues the SAME run: it raises the effective
+    tool-call cap by one per-run limit, raises the effective token budget by one
+    TASK_TOKEN_BUDGET, resets the stuck/parse/wrap-up counters, streams a
+    "Continuing automatically (n of 5) — …" note and appends a short guidance
+    message. MAX_AUTO_CONTINUES = 5 per task. Only when those 5 are spent does
+    the run end with limitReached/budgetReached (the one case that still shows
+    Continue). Empty responses get their own retry (MAX_EMPTY_RETRIES = 2).
+  - Truly terminal failures still end the run: all keys/models exhausted
+    (RATE_LIMITED after the cooling wait), an auth error on every key, no keys,
+    a repeated malformed tool call with no other model, or a user stop.
+  - SOCKET RESYNC: agentSocket now broadcasts every event to the user's ROOM
+    (`agent-user:<userId>`) and keeps activeRuns/stopRequests keyed by USER, not
+    by socket. A reconnect is a NEW socket; the client emits agent:attach { token }
+    and re-joins, so the live feed resumes instead of looking stopped. On mount
+    the client also attaches once, so a PAGE REFRESH discovers a run still in
+    flight and adopts it (running + the server's startedAt) rather than showing
+    Ready. A run that ended while the client was away is closed honestly.
+  - STOP BUTTON (3c): while running, the composer's Send button becomes a red
+    Stop button (Square icon) that emits agent:stop { token }. The server sets a
+    per-user flag and runAgent checks shouldStop() at each loop/checkpoint,
+    ending with a normal "Stopped by the user." completion (stopped: true, no
+    Continue button afterwards).
+
+--------------------------------------------------------------------------------
+TASK 4 — PER-PROMPT TIMER
+--------------------------------------------------------------------------------
+  - The run START time is chosen on the SERVER (agentSocket's Date.now(), passed
+    to runAgent as runStartedAt) and returned in the agent:run ack as `startedAt`
+    (and in agent:attach's ack). A refresh/reconnect therefore never restarts it.
+    Auto-continues keep ONE startedAt/one taskId, so the timer is one total per
+    user prompt.
+  - The server measures total elapsed itself: every agent:done carries
+    `durationMs`. Auto-continue time is included.
+  - Client: ai.startedAt (server clock) drives a 1-second interval while running.
+    The Working indicator shows "Working · 1m 23s". agent:done also carries
+    `requests` and `totalTokens` (from getTaskTotals), so the final feed line is
+    "Finished in 3m 42s · 9 requests · 61K tokens" (or "Stopped after …" /
+    "Failed after …"), kept in the feed. The same duration is written onto the
+    user prompt's block ("Took 3m 42s"). Format: Xs, Xm Ys, Xh Ym.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/services/agentService.js   stub removal, validateWriteContent,
+     plannedFileIssues/formatIssues, workspaceStateText, DEBUG_AGENT, real feed
+     labels for failures, auto-continue, summary-truncation retry, codestral
+     penalty, shouldStop, requests/totalTokens in the result, runStartedAt param.
+  server/src/socket/agentSocket.js       per-user rooms + activeRuns/stopRequests,
+     agent:attach + agent:stop, startedAt in the ack, totals/stopped in agent:done.
+  server/src/agent/prompts/stacks/vanilla.js   HTML-first workflow + placeholder
+     ban; chunking rules kept.
+  server/src/agent/quality/vanillaGate.js      CSS class-coverage rule (assets).
+  server/src/agent/quality/thresholds.js       MIN_MISSING_CLASSES,
+     MAX_MISSING_CLASS_RATIO.
+  client/src/features/aiSlice.js              startedAt/runId, agentRunStarted,
+     adoptRunningTask, stopAgentTask, attachAgentRun, richer agentDone.
+  client/src/hooks/useAgentEvents.js          reconnect attach + mount attach +
+     disconnect note.
+  client/src/components/AIPanel/AIPanel.jsx   live timer, formatDuration,
+     Finished/Stopped/Failed line, duration on the prompt block, Stop button.
+  client/src/components/AIPanel/AIPanel.css   .ai-send.is-stop.
+  server/tmp-placeholder-fix-test.mjs         NEW (deleted after the run).
+  server/tmp-agent-extras-test.mjs            NEW (deleted after the run).
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings / 0 errors (77 files). vite build: succeeds.
+    node --check: passes on every changed server file.
+  - tmp-placeholder-fix-test.mjs — 16/16, driving the REAL runAgent against a
+    scripted streaming Groq stand-in on a throwaway scratch workspace:
+      * a placeholder create_file is rejected (feed says "Failed to write …",
+        never "Wrote … 0 lines"), not written to disk, not counted;
+      * the rejection reaches the model as tool-result text asking for the FULL
+        file content;
+      * NO tool-call argument is rewritten into "[written: …]" by the server;
+      * a later request still carries the REAL index.html content (not stubbed);
+      * index.html on disk is the real page (DOCTYPE, ends with </html>) and
+        about.html / contact.html / css/style.css / js/main.js all exist;
+      * a recoverable stop (gate still failing) streams a "Continuing
+        automatically" note and the run reports a duration.
+  - tmp-agent-extras-test.mjs — 6/6: empty content is rejected with a clear
+    message; a summary cut off with finish_reason "length" is re-requested and
+    the final message is the complete one; the gate flags a stylesheet that
+    ignores the HTML classes and does not flag a matching one.
+  - PRESENT VERSUS STALE: the older server/tmp-vanilla-gate-test.mjs now reports
+    27/29 and server/tmp-vanilla-agent-test.mjs fails most checks, BOTH for
+    PRE-EXISTING reasons unrelated to this entry: (a) the vanilla compact prompt
+    has been identical to full since it was merged (the test expects compact <
+    full) and the test expects the literal "SECTION IDS (exact)" while the prompt
+    says "SECTION IDS (use exactly)"; (b) that agent test's mock replies with a
+    plain JSON body while providerClient always streams, so it receives empty
+    responses. Documented here rather than silently rewritten.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED
+--------------------------------------------------------------------------------
+  - A LIVE model run (Mistral codestral / a real Groq key) and the full browser
+    UI: no API key, no MongoDB and no browser session in the sandbox. The socket
+    layer (rooms, agent:attach, agent:stop) is verified by node --check + smoke
+    reasoning, NOT by a live Socket.IO run. The mock suites above exercise the
+    same agentService/agentSocket code paths they can reach.
+  - The per-prompt timer and Stop button were verified by unit-level client
+    build/lint only; no live socket round-trip was performed.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - NEVER rewrite the arguments of old tool calls. If you need to shrink history,
+    collapse the whole (assistant tool_call + tool result) pair into a note
+    (see condenseHistory) and put real line counts in workspaceStateText().
+  - Any new write tool MUST go through validateWriteContent(), and a rejected
+    write must not count as written anywhere.
+  - Tunables live at the top of agentService.js: MIN_HTML_LINES,
+    MAX_AUTO_CONTINUES (5), MAX_SUMMARY_CONTINUES (2), MAX_EMPTY_RETRIES (2),
+    DEBUG_AGENT, CODE_COMPLETION_MODEL.
+  - The socket layer is now per-USER (activeRuns/stopRequests/rooms). If you add
+    run state, key it by userId, not by socket, or a reconnect loses it.
+  - New agent action types still belong in ACTION_ICONS in AIPanel.jsx; the
+    error status on a tool row reuses the existing status styling.
+
+
+================================================================================
+AI Code Editor — HTML/CSS/JS Connection Check + Auto-Fix
+               (root-absolute asset paths, class coverage, "Fix links & styles")
+================================================================================
+
+STATUS: complete. Verified with a mock provider, four unit/integration suites and
+        real headless Chrome. NO live model/API key, NO MongoDB and NO real
+        browser session in the sandbox, so the live socket round-trip and the
+        live /preview HTTP path were not exercised end to end (see the
+        verification section for exactly what was driven instead).
+
+--------------------------------------------------------------------------------
+STEP 1 — ROOT CAUSE (measured on disk first, not guessed)
+--------------------------------------------------------------------------------
+The reported project is server/workspaces/u-6ab62726ce74736cedba9f08/
+modern-static-website (projectId scratch-6ab62726ce74736cedba9f08, folderName
+"modern-static-website"). Every .html was read, every <link>/<script>/<a>/<img>
+was resolved relative to ITS OWN folder, the CSS was parsed and measured, and the
+pages were requested through the real preview controller.
+
+1. THE ACTUAL CAUSE (the brief's 1d, triggered by 1a): contact.html line 8 used a
+   ROOT-ABSOLUTE stylesheet path
+
+       <link rel="stylesheet" href="/css/style.css">
+
+   instead of the relative css/style.css. The preview is mounted at /preview only
+   (app.use('/preview', previewRoutes)), so /css/style.css never reaches the
+   preview router at all — the browser asks the server root for it and gets a
+   404. Worse, protectPreview mirrors the JWT into a cookie scoped
+   `Path=/preview/<projectId>`, so any asset path outside that prefix could not
+   authenticate even if it did reach the router. js/main.js was linked
+   relatively and was fine; ONLY the stylesheet was root-absolute. `about.html`
+   was also linked from the nav but never generated, which is a second, separate
+   breakage.
+
+   PROVEN IN REAL HEADLESS CHROME (tmp-cdp.mjs, file:// load):
+     generated contact.html  -> body background rgba(0,0,0,0), font
+                                "Times New Roman" (browser defaults = UNSTYLED);
+     repaired fixture        -> body background rgb(11,16,32), font system-ui,
+                                input border rgb(35,48,77), input padding 12px,
+                                input radius 10px, submit background
+                                rgb(91,140,255), map height 260px.
+   The Google Fonts <link> did load (document.styleSheets.length === 1), so the
+   problem was never the fonts or the network — the local sheet simply 404'd.
+
+2. WHY NOTHING CAUGHT IT (the real defect to fix): BOTH cheap checkers erased a
+   leading "/" before resolving. cleanRelative() in quickCheck.js and
+   vanillaGate.js strips /^\/+/, and posixJoin() then resolves /css/style.css to
+   css/style.css — so a broken root-absolute link looked perfectly valid.
+   vanillaGate.links never looked for a leading slash, and the shared
+   stylesheet/script requirement matched after the same stripping. The 13
+   unstyled classes on the page also slipped through the gate's coverage rule
+   because that rule only fires when missing >= 12 AND missing/distinct > 0.8
+   (13 of 24 = 0.54, under the ratio).
+
+3. SECONDARY, ALREADY FIXED BY THE PREVIOUS ENTRY: index.html was a 20-byte
+   placeholder ("[written: 248 lines]") left by the pre-fix stub bug.
+   validateWriteContent() now rejects that exact string, so the current code no
+   longer reproduces it. It was NOT the cause of the missing styling.
+
+4. THE PREVIEW LAYER IS NOT AT FAULT. preview.controller.js serves relative
+   assets with the right MIME type (text/css, text/javascript),
+   Cache-Control: no-store, max-age=0 and X-Content-Type-Options: nosniff, and
+   the path-scoped cookie flow in protectPreview still works. Verified by driving
+   the controller and the middleware directly (21/21) — see VERIFICATION. No
+   preview code was changed, as the brief requires.
+
+--------------------------------------------------------------------------------
+STEP 2 — THE FIX
+--------------------------------------------------------------------------------
+A. NEW server/src/agent/quality/connectionCheck.js — one dependency-free
+   (regex, no cheerio) module, no model tokens on the happy path:
+
+   * connectionCheck({ projectId | root, files? | plan?, checkExistence?,
+     checkCoverage? }) -> { ok, problems, checked, details }
+       - every local href/src on link[rel=stylesheet], script[src], img[src],
+         source/iframe/video/audio[src] and a[href] is resolved relative to the
+         PAGE's own folder;
+       - a leading "/" is a HARD error reported BEFORE existence, with the exact
+         fix in the message ("never a leading slash; the preview serves this
+         project under /preview/<projectId>/") and the suggested relative path;
+       - missing targets, ".." escapes and dead page links are reported;
+       - consistency: every page that links a stylesheet/script must link the
+         SAME resolved files, so one page cannot link css/style.css while
+         another links style.css;
+       - CSS integrity: balanced braces, no placeholder text, a minimum size;
+       - CLASS coverage: every class used in the HTML needs a rule in the linked
+         CSS. Allowlist = classes the scripts touch (classList/className) plus a
+         small runtime set (active, in-view, is-open, ...). Tolerance is 2
+         classes, so a real gap (13 here) fails while a couple of dynamic
+         stragglers do not;
+       - ID coverage: every html id needs a rule EXCEPT association targets
+         (for=, aria-controls/-labelledby/-describedby, href="#...") and ids on
+         structural elements (section/main/header/footer/nav/aside/form/
+         article/figure) — those are anchors, not styling hooks. Tolerance 1;
+       - JS selectors: every querySelector / querySelectorAll / closest /
+         getElementById literal must exist in the HTML (tolerance 1), so a
+         script cannot look for elements the page does not have.
+
+   * autofixConnections({ projectId | root, files? }) — the zero-token repair.
+     It rewrites only an UNAMBIGUOUS wrong path: a leading "/" whose target
+     exists, or a reference whose basename matches exactly one file in the
+     project (style.css -> css/style.css). Returns { fixes, changed }. Only the
+     attribute value is replaced.
+
+   * formatConnectionReport / formatAutofixReport — short, exact model messages.
+   * detectRepairIntent(task) — matches "css not applied", "fix styling",
+     "styles are not working", "fix links & styles", "repair the css"; it does
+     NOT match a normal build task.
+
+B. WIRING (agentService.js):
+   * AFTER EVERY .html/.css/.js WRITE: autofixConnections(projectId) runs first
+     (so the correction is free and immediate), then a connectionCheck over the
+     whole workspace with checkExistence:false (siblings may not exist yet, so
+     only the file's own integrity and the cross-file coverage are asserted).
+     Both the fix note and the report are appended to that tool result, so the
+     model sees them in the SAME turn. An autofix also emits a feed row
+     ("Auto-fixed N broken asset link(s).") and sets details.autofixed.
+   * BEFORE THE RUN MAY FINISH (the no-tool-calls branch): the full check runs
+     after quickCheck and before the design gate, for up to
+     MAX_CONNECTION_ROUNDS (2) repair rounds; then tryAutoContinue; then a
+     gateFailure entry so the final summary can never claim a passing gate.
+   * REPAIR PATH ("Fix links & styles"): if the task matches
+     detectRepairIntent(task) AND the workspace really has pages, the agent does
+     NOT plan and does NOT generate. It autofixes, runs the check, and if the
+     project is already correct it finishes immediately with ZERO model requests
+     ("nothing needed fixing", repaired:true). Otherwise it sets the plan to
+     exactly the reported problem files and replaces the task with a
+     "REPAIR ONLY ... fix ONLY these" message quoting the server's lines. The
+     design gate is SKIPPED in this mode (gateSkipped:true, gatePassed:false) so
+     a link repair can never turn into a site rebuild.
+   * RESUME / Continue: on a vanilla resume the check runs up front and its
+     report is appended as guidance, so Continue on a broken project begins by
+     repairing the links and styles.
+   * New export MAX_CONNECTION_ROUNDS = 2. New constant UNSTYLED_CLASS_TOLERANCE
+     etc. live in connectionCheck.js.
+
+C. DEFENCE IN DEPTH: vanillaGate.links now rejects a root-absolute href and a
+   root-absolute img src, and the required-stylesheet / required-script match
+   refuses a leading "/" with a clearer message. quickCheck also rejects a
+   root-absolute path in its cheap per-write pass. Both keep working on the
+   relative paths they always accepted.
+
+D. PROMPT (stacks/vanilla.js, still ONE compact block): a new ASSET PATHS rule —
+   "one convention, every page: <link rel="stylesheet" href="css/style.css"> and
+   <script src="js/main.js" defer></script>; NEVER start an asset path with "/"
+   (it 404s under /preview/...); no './' or '../' on root pages". The CSS step now
+   demands rules for the form, every field group, input, textarea, label, inline
+   error, submit button, info cards and the map block. The VERIFY step lists
+   exactly what the server checks.
+
+E. PREVIEW: unchanged (verified correct; the brief forbids writing files from the
+   preview route).
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/agent/quality/connectionCheck.js   NEW — the check, the autofix, the
+     report formatters and detectRepairIntent. No comments (repo JS rule).
+  server/src/services/agentService.js           import + MAX_CONNECTION_ROUNDS,
+     connectionRounds, repair precheck (autofix + short-circuit + REPAIR ONLY
+     task), repairActive, per-write autofix/check + feed row, pre-finish check +
+     repair rounds, resume guidance, gateSkipped, honest gatePassed.
+  server/src/agent/quality/vanillaGate.js       links: reject root-absolute href
+     and img src; required stylesheet/script must be relative.
+  server/src/agent/quality/quickCheck.js        reject root-absolute paths.
+  server/src/agent/prompts/stacks/vanilla.js    ASSET PATHS rule, contact-form
+     CSS coverage rule, VERIFY list.
+  summary.txt                                   this entry + three [UPDATED]
+     notes on the older quickCheck / class-coverage / gatePassed statements.
+  server/tmp-connection-check-test.mjs          NEW (deleted after the run).
+  server/tmp-preview-route-test.mjs             NEW (deleted after the run).
+  server/tmp-connection-e2e-test.mjs            NEW (deleted after the run).
+  server/tmp-connection-repair-test.mjs         NEW (deleted after the run).
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED
+--------------------------------------------------------------------------------
+  - oxlint: client 0 warnings / 0 errors (86 files). Server: 11 warnings / 0
+    errors, ALL pre-existing (unused KEEP_FULL_TURNS, unused userId param, an
+    empty spread fallback, control-char regexes, unused vars in
+    providers/usage/scratch/terminal/workspace) — connectionCheck.js adds ZERO
+    warnings and none of the three agentService warnings are on changed lines.
+  - vite build: succeeds. node --check: passes on every changed server file.
+  - tmp-connection-check-test.mjs — 27/27. Against a fixture built to break:
+    repair intent matches the five phrasings and ignores a build task; the check
+    fails and names the root-absolute path plus the unstyled contact classes;
+    the message explains the /preview/<projectId>/ prefix; autofix rewrites
+    /css/style.css -> css/style.css, touches only index.html and is idempotent;
+    the coverage problem survives the autofix and clears once the CSS is
+    completed; a cross-page stylesheet mismatch, a link to a page that does not
+    exist, and an unbalanced stylesheet are each caught.
+  - tmp-preview-route-test.mjs — 21/21, driving the REAL controller and
+    middleware: text/css, text/javascript and text/html MIME types; a CSS
+    request returns 200 with Cache-Control no-store and nosniff and the real
+    bytes; a missing asset is a 404; no token -> 401; a query token authenticates
+    and sets `cm_preview_<id>; Path=/preview/<id>`; the cookie alone
+    authenticates sub-resources and is not re-issued; ANOTHER project's preview
+    rejects that cookie; injectReloadScript inserts before </body>.
+  - tmp-connection-e2e-test.mjs — 17/17. A scripted STREAMING (SSE) Groq
+    stand-in runs the real "Create a simple 3-page website: home, about,
+    contact." task. The scripted model emits index.html with href="/css/
+    style.css" and a contact.html using 4 classes the CSS does not define. The
+    server auto-fixes the href, reports the root-absolute path and the unstyled
+    classes back as tool-result text, the model answers with one edit_file that
+    completes the CSS, and the finished site passes connectionCheck. All three
+    pages then return 200 text/html through the preview controller, css/style.css
+    returns 200 text/css and js/main.js returns 200 text/javascript, both
+    no-store. Feed announces the autofix; the summary does not claim a failing
+    gate. Report: requests=4, tokens=7280, durationMs~500 (local mock).
+  - tmp-connection-repair-test.mjs — 14/14. "css not applied" on a project whose
+    only problem is the root-absolute href completes with ZERO model requests
+    (autofix + short-circuit), gateSkipped:true. "fix styling" on a project with
+    3 unstyled classes DOES call the model, the REPAIR ONLY prompt names the
+    exact class, the model edits only css/style.css, and the finished site passes
+    the check. A build task is not treated as a repair.
+  - HEADLESS CHROME (real layout, not jsdom): the generated contact.html computes
+    browser-default styles (unstyled); the repaired fixture computes the authored
+    tokens. Both runs and their exact numbers are in STEP 1 above.
+  - NO REGRESSION in the older suites: server/tmp-vanilla-gate-test.mjs is still
+    27/29 with the SAME two pre-existing failures ("compact tier is shorter than
+    full" — the vanilla compact prompt has always equalled full; "compact keeps
+    the section ids" — the test expects "SECTION IDS (exact)" while the prompt
+    says "SECTION IDS (use exactly)"). server/tmp-vanilla-agent-test.mjs is
+    still 9/24 for the SAME pre-existing reason documented in the previous entry:
+    its mock replies with a plain JSON body while providerClient always streams,
+    so the run receives empty responses (0 write results observed).
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED
+--------------------------------------------------------------------------------
+  - A LIVE model run and a live Socket.IO round-trip: no API key and no browser
+    session in the sandbox. The mock e2e exercises the real runAgent loop, the
+    real executeTool writes, the real per-write hooks and the real pre-finish
+    checks, but the model's own behaviour with the new prompt is unproven.
+  - The live /preview HTTP path with MongoDB: authorizeProject and
+    ensureWorkspace need a database, so the full middleware chain could not be
+    run. The controller and protectPreview were instead driven DIRECTLY (21/21)
+    against a real workspace on disk, which covers MIME, caching, 404 and the
+    cookie flow but not the DB-backed ownership guard.
+  - Real headless Chrome was driven with file:// URLs, not through
+    /preview/:projectId. Because a root-absolute path fails identically under
+    both (the browser resolves it against the origin root), the file:// run
+    faithfully reproduces the reported symptom, but it does not prove the 404
+    status code from the live server (the controller unit test covers the 404
+    for a missing file).
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - THE RULE: an asset path must be RELATIVE and must never start with "/". The
+    preview serves every project under /preview/<projectId>/, so a leading slash
+    points at the server root and the path-scoped auth cookie cannot cover it.
+    Any new checker must test the RAW attribute value for a leading slash BEFORE
+    it normalises the path — that is exactly the bug that hid this for so long.
+  - The connection check is deliberately stricter than the design gate, but it
+    allows a small number of unstyled classes/ids and systematically ignores
+    JS-mutated classes, association ids and structural-element ids. Add to the
+    allowlists in connectionCheck.js rather than raising the tolerances.
+  - autofixConnections ONLY rewrites an unambiguous wrong path. Do not make it
+    guess when two candidates could match — that is what the model repair round
+    is for.
+  - A repair run (detectRepairIntent) must NEVER run the design gate or
+    regenerate the site; it reports gateSkipped:true and gatePassed:false.
+  - Tunables: MAX_CONNECTION_ROUNDS in agentService.js;
+    UNSTYLED_CLASS_TOLERANCE / UNSTYLED_ID_TOLERANCE / SELECTOR_TOLERANCE /
+    CSS_MIN_LINES and the runtime allowlists in connectionCheck.js.
+    [UPDATED by "Preview CSS Not Applied Fix": SELECTOR_TOLERANCE went 1 -> 0.
+    JS selectors are compared against the UNION of every page's classes/ids, so
+    a selector used on only one page is still satisfied by that page; a selector
+    that exists on NO page is always a real bug. With a tolerance of 1, exactly
+    one dead selector in main.js was silently ignored.]
+
+
+================================================================================
+AI Code Editor — Preview CSS Not Applied Fix
+        (the sheet loaded but did not apply; a page vanished from disk)
+================================================================================
+
+STATUS: complete for the project on disk and for the preview layer. Verified
+        against the REAL Express app, the REAL /preview/:projectId route (cookie,
+        MIME, no-store, 401/404) and REAL headless Chrome loading the live
+        preview URL. NOT verified: a live model run (no API key) and the DB-backed
+        ownership guard (no MongoDB). See the verification section.
+
+--------------------------------------------------------------------------------
+STEP 1 — ROOT CAUSE, POINT BY POINT (measured on the real files, not guessed)
+--------------------------------------------------------------------------------
+Project under test: projectId scratch-6ab62726ce74736cedba9f08, container
+u-6ab62726ce74736cedba9f08, folderName "modern-static-website".
+
+  - WATCH OUT: the projectId and the CONTAINER folder are easy to confuse. The
+    projectId is scratch-<userId>; the container folder is u-<userId>; and the
+    workspace root is workspaces/<container>/<folderName>. Passing the container
+    name as the projectId makes every preview request 404 (this happened while
+    diagnosing and cost a cycle) — always resolve the root with
+    getWorkspacePath()/getWorkspaceRecord() instead of typing a path.
+
+a) IS css/style.css REAL? YES — and that was NOT the whole story.
+   The file was present and served with 200 text/css, had balanced braces and
+   real rules, so nothing about it looked broken. But it did not cover the
+   pages: 24 classes were used by contact.html and 14 had NO rule, and the
+   stylesheet had NO :root block while its rules referenced var(--...) tokens.
+   An UNDEFINED custom property makes every declaration that uses it INVALID AT
+   COMPUTED-VALUE TIME, so the browser drops each one and the page keeps
+   rendering with UA defaults even though the stylesheet loaded successfully.
+   THIS is why a correct relative href was still not enough.
+   Lesson: "the response was 200 and the link resolved" is not proof that styles
+   apply. The check now validates tokens, not just the URL.
+   After the fix: 824 lines / 13 439 bytes, 133 rule blocks, braces balanced
+   (133/133), :root present with 21 custom properties, 151 var() uses, and all
+   30 classes used by contact.html have a matching rule (0 uncovered).
+
+b) THE PREVIEW LAYER IS NOT AT FAULT. Driven through the real route:
+     GET /preview/<id>/contact.html?token=...  -> 200 text/html, len 8167
+     Set-Cookie: cm_preview_<id>=<jwt>; Path=/preview/<id>; HttpOnly; SameSite=Lax
+     GET /preview/<id>/css/style.css (cookie only, NO token)
+                                              -> 200 text/css len 13439
+     GET /preview/<id>/js/main.js (cookie only)-> 200 text/javascript len 5655
+     same two URLs with NO token and NO cookie -> 401
+     Cache-Control on every response: "no-store, max-age=0"
+     ?token=garbage -> 401   missing file -> 404   %2e%2e traversal -> 401
+   All three pages set the SAME cookie with Path=/preview/scratch-... (the real
+   projectId, not the container), and the browser sent it back for every
+   sub-resource on all three pages. Renaming the display folder does NOT break
+   it: the cookie is scoped by projectId and the file lookup goes through
+   resolveWorkspaceFile(projectId, ...), which reads container+folderName from
+   the registry, so it follows the rename.
+
+c) REAL HEADLESS CHROME, live /preview/<id>/ URLs (all three pages):
+     body          background rgb(11,16,32), font Roboto/Segoe UI/system-ui
+     .navbar       background rgb(19,26,46), position sticky, box 1262x66
+     .logo svg     28x28   .logo box 129x33
+     .page-hero    linear-gradient(140deg, rgb(19,26,46), rgb(11,16,32))
+     .contact-form input     border 1px rgb(36,49,79), radius 14px, bg rgb(26,36,64)
+     .contact-form textarea  border rgb(36,49,79), radius 14px
+     .contact-form button    bg rgb(79,124,255), radius 999px
+     stylesheets on every page: css/style.css with 115 parsed rules
+     network: 200 text/html + 200 text/css + 200 text/javascript + 200 font/woff2
+     console errors: NONE        uncaught exceptions: NONE
+     broken links: NONE (only the deliberate missing-file probe 404s)
+   The scroll-reveal (`.section` -> `.in-view` when IntersectionObserver fires)
+   was also confirmed on every page. A first run reported every section stuck at
+   opacity 0 on index.html; that was a HARNESS artefact (the page was still
+   readyState "loading" when measured), not a page bug — after waiting for
+   readyState=complete the hero and services sections carry .in-view. Do not
+   measure a preview page before the load event.
+
+d) WHO DELETED about.html? — CANNOT BE PROVEN, and there is no automatic
+   deleter. Evidence collected:
+     - about.html did not exist anywhere under server/workspaces/ (a full
+       find -name about.html returned only the copy this session created), so it
+       was not moved, renamed or duplicated.
+     - A tool-call history that would answer this does not exist: agent sessions
+       live in an in-memory Map (agentSessionService), so every tool call is lost
+       when the process restarts. There is no persisted agent log to read.
+     - Every code path that can remove a workspace file was enumerated, and NOT
+       ONE of them runs by itself:
+         agentService delete_file tool (model-initiated, always explicit)
+         agentService run_command (the model can run `rm`/`mv` in the workspace)
+         workspaceManager.deleteFromWorkspace (client Explorer/file-API delete)
+         workspaceManager.deleteWorkspaceFolder (project delete / clear)
+       There is no pruner, no "remove files that are not in the plan" pass, no
+       auto-cleanup and no rename-on-write.
+     - Most probable explanation, consistent with all of the above: the write of
+       about.html never landed on disk (validateWriteContent rejects stub or
+       placeholder HTML, and a rejected write leaves NO file and NO partial),
+       while the nav links to about.html had already been written from the plan —
+       which is exactly the dangling link the user saw. An agent-initiated
+       delete_file or a shell rm cannot be ruled out, but nothing in the code
+       does it automatically.
+   CONFIRMED FIXABLE PART: the page is restored AND the failure can no longer be
+   silent — with about.html removed, connectionCheck reports all five dangling
+   links with file and line, and vanillaGate independently fails the run.
+
+--------------------------------------------------------------------------------
+STEP 2 — WHAT CHANGED
+--------------------------------------------------------------------------------
+1. STYLESHEET REGENERATED from the classes the HTML actually uses
+   (workspaces/<container>/modern-static-website/css/style.css): :root design
+   tokens, then rules for every class in index/about/contact, including the
+   contact form (form-group, inputs, labels, textarea, submit), the info cards,
+   the map block and the nav/hamburger. No hardcoded colours — var(--token).
+2. index.html, about.html and contact.html restored/rewritten with the shared
+   header+footer, a relative href="css/style.css" and src="js/main.js" on every
+   page, and nav links to all three pages. js/main.js keeps aria-expanded in
+   sync (the gate caught that it was declared but never updated).
+3. connectionCheck.js (agent-quality layer) tightened — TWO real gaps found by
+   testing the failure modes, both fixed:
+     - a page whose ONLY stylesheet link was root-absolute also produced a
+       second, contradictory "does not link any stylesheet, add a <link>"
+       message, because the invalid href was skipped before the sheet was
+       recorded. The page now tracks whether it DECLARED a stylesheet at all, so
+       a broken path gets exactly one precise message.
+     - SELECTOR_TOLERANCE 1 -> 0 (see the [UPDATED] note above): a single dead
+       selector in main.js (e.g. getElementById('does-not-exist')) was silently
+       accepted. It is now reported.
+   Everything else in the check was already in place from the previous task and
+   was re-verified, not assumed (see point e of the brief / the wiring list in
+   "FILES TOUCHED").
+4. NO preview code was changed. preview.controller.js and protectPreview.js were
+   re-read and driven; they are correct as written, and the route never writes
+   to the workspace.
+
+--------------------------------------------------------------------------------
+CHECK RULES NOW ENFORCED (vanilla stack, zero model tokens on the happy path)
+--------------------------------------------------------------------------------
+  - every <link href>/<script src>/<a href=*.html>/<img src> resolves relative to
+    THAT page's own folder to a file that exists;
+  - a leading "/" is an error BEFORE any normalisation (the bug that hid this for
+    so long: the old code stripped the slash and then resolved the path fine);
+  - ".." escaping the project root is an error;
+  - every page links the shared stylesheet and script (missing link reported);
+  - every class used in the HTML has a rule in a LINKED stylesheet, and every id
+    is styled or is an obvious anchor/association/structural id;
+  - every class/id queried by the JS (querySelector/getElementById/etc.) exists
+    in the HTML; classes the script MUTATES (classList/className) are exempt;
+  - CSS braces balance, the file is not trivially small, and every var(--token)
+    is defined in a :root block.
+  Failures are sent back as ONE short, exact message (file, line, what is
+  missing) and the loop continues to a retry limit; the final summary may only
+  claim what passes.
+
+AUTO-FIX (no model tokens)
+  autofixConnections() rewrites only UNAMBIGUOUS wrong paths: a leading "/" to
+  the correct relative path, or a bare basename that matches exactly one file in
+  the project. It never guesses between candidates. Verified:
+    contact.html: "/css/style.css" -> "css/style.css"  (1 fix, 1 file changed)
+    -> re-check: ok, 0 problems
+
+REPAIR PATH ("css not applied" / "fix styling")
+  detectRepairIntent matches "css not applied", "fix styling" and "the styles
+  are broken" and does NOT match "add a new pricing page" or "make it blue". A
+  repair run runs the connection check first, fixes ONLY what it reports, skips
+  the design gate (gateSkipped:true, gatePassed:false) and short-circuits with
+  zero model requests when the project is already clean.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/agent/quality/connectionCheck.js   NEW (check + autofix + repair
+                                                intent + report); two fixes this
+                                                session (declaredSheet rule,
+                                                SELECTOR_TOLERANCE 1 -> 0)
+  server/src/services/agentService.js           per-write check + autofix hook,
+                                                pre-finish check, repair path,
+                                                resume guidance, gateSkipped
+  server/src/agent/quality/vanillaGate.js       root-absolute <link>/<img> are
+                                                gate failures (lines ~232, 306,
+                                                349)
+  server/src/agent/quality/quickCheck.js        cheap regex guard against a
+                                                leading slash (line ~170)
+  server/src/agent/prompts/stacks/vanilla.js    ONE path convention + per-page
+                                                class coverage rules
+  server/src/agent/quality/thresholds.js        coverage knobs
+  workspaces/<container>/modern-static-website/ index.html, about.html,
+                                                contact.html, css/style.css,
+                                                js/main.js (the project itself)
+  UNCHANGED: preview.controller.js, protectPreview.js, the socket layer.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output, not claims)
+--------------------------------------------------------------------------------
+  - connectionCheck on the real project: ok, 0 problems, 3 pages checked,
+    rootAbsolute/missingFiles/missingClasses/missingIds/missingSelectors/
+    unbalancedCss/undefinedVars all empty; vanillaGate ok; quickCheck ok.
+  - failure modes reproduced on a SCRATCH COPY (the real project untouched):
+      delete about.html        -> 5 dangling links reported (index.html lines
+                                  26/173/190, contact.html lines 26/134) and
+                                  vanillaGate ok:false with the same failures
+      href="/css/style.css"     -> rootAbsolute[contact.html line 10] reported,
+                                  autofix rewrote it, re-check ok
+      uncovered classes        -> 4 classes listed (values, cta + the 2 planted)
+      dead JS selector          -> missingSelectors ["#does-not-exist"]
+      unbalanced CSS            -> unbalancedCss ["css/style.css"]
+      1-line CSS                -> "only 1 line(s) — the stylesheet looks
+                                  incomplete" + 57 uncovered classes
+      var() with no :root       -> 6 undefined custom properties listed
+      healthy copy (control)    -> ok, 0 problems
+  - real preview route: the status/MIME/cookie/cache matrix in point b above.
+  - real headless Chrome: the computed-style and network output in point c above.
+  - Explorer listing for the real project now returns css/, js/, about.html,
+    contact.html, index.html — about.html is back in the tree.
+  - oxlint: connectionCheck.js 0 warnings / 0 errors; server/src 11 warnings
+    0 errors (all 11 pre-existing, none from the new file); client/src 0/0.
+  - vite build: OK (3.24s).
+  - node --check: OK on all 7 changed/new server files.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED
+--------------------------------------------------------------------------------
+  - A LIVE model run: no API key in the sandbox, so the agent loop was not
+    re-run end to end with a real model. The check, the autofix, the repair path
+    and the gate were exercised directly with real files instead.
+  - The DB-backed ownership step of the preview chain: authorizeProject returns
+    early when MongoDB is not connected, so the ownership check itself was not
+    exercised (the rest of the chain — protectPreview, validateProjectId,
+    ensureWorkspace, servePreviewFile — ran for real).
+  - WHO deleted about.html: there is no persisted tool-call history to read (see
+    point d) and nothing in the code deletes files automatically, so the cause is
+    stated as the most probable one, not as a proven one.
+
+--------------------------------------------------------------------------------
+NOTES FOR THE NEXT DEVELOPER / AI TOOL
+--------------------------------------------------------------------------------
+  - A STYLESHEET THAT LOADS IS NOT A STYLESHEET THAT APPLIES. 200 text/css plus
+    a resolved <link> proves the file was FOUND; it says nothing about coverage
+    or about var() tokens. If a user reports "unstyled", check the :root block
+    and the class coverage before touching the preview layer.
+  - Use getWorkspacePath()/getWorkspaceRecord() for paths. projectId is NOT the
+    folder name and is NOT the container name; typing one in by hand produces
+    convincing 404s.
+  - When measuring a preview page in headless Chrome, wait for
+    readyState === 'complete' (or the load event) before reading computed
+    styles, or you will "discover" bugs that do not exist.
+  - A renderer/agent summary must not claim a page exists until the file is on
+    disk: the nav links to a page come from the PLAN, so a completed-looking site
+    can still reference a page that was never written.
 

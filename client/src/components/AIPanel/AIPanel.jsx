@@ -22,6 +22,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Square,
   Terminal,
   Trash2,
   User,
@@ -37,6 +38,7 @@ import {
   setModelChoice,
   setProviderPreference,
   startAgentTask,
+  stopAgentTask,
 } from '../../features/aiSlice'
 import { openSettings } from '../../features/settingsSlice'
 import { openAuthModal } from '../../features/uiSlice'
@@ -322,6 +324,15 @@ function MeterBar({ label, meter }) {
 
 const MAX_TEXTAREA_HEIGHT = 120
 
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return ''
+  const total = Math.floor(ms / 1000)
+  if (total < 60) return `${total}s`
+  const minutes = Math.floor(total / 60)
+  if (minutes < 60) return `${minutes}m ${total % 60}s`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
 export default function AIPanel() {
   const dispatch = useDispatch()
   const guard = useAuthGuard()
@@ -335,6 +346,7 @@ export default function AIPanel() {
   // Guards against a rapid double Enter/click dispatching two runs before
   // `running` has re-rendered true.
   const sendingRef = useRef(false)
+  const [clock, setClock] = useState(() => Date.now())
 
   const {
     keys,
@@ -354,6 +366,7 @@ export default function AIPanel() {
     switchingTo,
     running,
     thinkingText,
+    startedAt,
     timeline,
   } = useSelector((state) => state.ai)
   const workspace = useSelector((state) => state.fileSystem.workspace)
@@ -361,6 +374,14 @@ export default function AIPanel() {
   const userId = useSelector((state) => state.auth.user?.id ?? null)
 
   const projectId = workspace.projectId
+
+  useEffect(() => {
+    if (!running || !startedAt) return undefined
+    const id = setInterval(() => setClock(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [running, startedAt])
+
+  const elapsedMs = running && startedAt ? Math.max(0, clock - startedAt) : 0
 
   const providerLabels = {}
   for (const entry of providers) providerLabels[entry.id] = entry.label
@@ -656,6 +677,9 @@ export default function AIPanel() {
                 </div>
                 <div className="ai-bubble">
                   <p className="ai-text">{entry.text}</p>
+                  {typeof entry.durationMs === 'number' && (
+                    <p className="ai-summary-meta">Took {formatDuration(entry.durationMs)}</p>
+                  )}
                 </div>
               </div>
             )
@@ -669,10 +693,16 @@ export default function AIPanel() {
                 <div className="ai-avatar">{entry.ok ? <Bot size={14} /> : <AlertTriangle size={14} />}</div>
                 <div className="ai-bubble">
                   <p className="ai-text">{entry.text}</p>
-                  {entry.ok && typeof entry.toolCalls === 'number' && (
+                  {typeof entry.durationMs === 'number' && (
                     <p className="ai-summary-meta">
-                      {entry.toolCalls} tool call{entry.toolCalls === 1 ? '' : 's'}
-                      {entry.durationMs ? ` · ${(entry.durationMs / 1000).toFixed(1)}s` : ''}
+                      {entry.stopped ? 'Stopped after' : entry.ok ? 'Finished in' : 'Failed after'}{' '}
+                      {formatDuration(entry.durationMs)}
+                      {typeof entry.requests === 'number'
+                        ? ` · ${entry.requests} request${entry.requests === 1 ? '' : 's'}`
+                        : ''}
+                      {typeof entry.totalTokens === 'number' && entry.totalTokens > 0
+                        ? ` · ${formatCompact(entry.totalTokens)} tokens`
+                        : ''}
                       {entry.limitReached ? ' · stopped at the tool limit' : ''}
                     </p>
                   )}
@@ -687,7 +717,10 @@ export default function AIPanel() {
             disappears the moment the run ends. */}
         {running && (
           <div className="ai-working" role="status" aria-live="polite">
-            <span className="ai-working-text">{thinkingText || 'Working'}</span>
+            <span className="ai-working-text">
+              {thinkingText || 'Working'}
+              {startedAt ? ` · ${formatDuration(elapsedMs)}` : ''}
+            </span>
             <span className="ai-working-dots" aria-hidden="true">
               <i />
               <i />
@@ -854,15 +887,27 @@ export default function AIPanel() {
                 }
               }}
             />
-            <button
-              type="submit"
-              className="ai-send"
-              title="Run task"
-              aria-label="Send task"
-              disabled={!draft.trim() || running}
-            >
-              <Send size={16} />
-            </button>
+            {running ? (
+              <button
+                type="button"
+                className="ai-send is-stop"
+                title="Stop the task"
+                aria-label="Stop task"
+                onClick={() => dispatch(stopAgentTask())}
+              >
+                <Square size={16} />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="ai-send"
+                title="Run task"
+                aria-label="Send task"
+                disabled={!draft.trim()}
+              >
+                <Send size={16} />
+              </button>
+            )}
           </form>
         </>
       )}

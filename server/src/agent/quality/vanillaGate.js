@@ -6,8 +6,10 @@ import { getWorkspacePath } from '../../utils/workspaceManager.js'
 import {
   CONTACT_FIELDS,
   GATE_MAX_REPAIR_ROUNDS,
+  MAX_MISSING_CLASS_RATIO,
   MIN_FAQ_ITEMS,
   MIN_MEDIA_RULES,
+  MIN_MISSING_CLASSES,
   MIN_REPEATED_ITEMS,
   REPEATED_SECTION_IDS,
   REQUIRED_JS_SNIPPETS,
@@ -224,20 +226,28 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       .map((_, element) => $(element).attr('href'))
       .get()
       .filter(Boolean)
+    const stylesheetRef = (href) => String(href).split('?')[0].split('#')[0]
     const linksStylesheet = stylesheets.some(
-      (href) => posixJoin(file, cleanRelative(String(href).split('?')[0].split('#')[0])) === REQUIRED_STYLESHEET,
+      (href) =>
+        !stylesheetRef(href).startsWith('/') &&
+        posixJoin(file, cleanRelative(stylesheetRef(href))) === REQUIRED_STYLESHEET,
     )
     if (!linksStylesheet)
-      failures.push(`${file}: link the shared stylesheet with <link rel="stylesheet" href="css/style.css">.`)
+      failures.push(
+        `${file}: link the shared stylesheet with <link rel="stylesheet" href="css/style.css"> — a valid, RELATIVE path with no leading "/".`,
+      )
 
     const scripts = $('script[src]')
       .map((_, element) => $(element).attr('src'))
       .get()
       .filter(Boolean)
     const linksScript = scripts.some(
-      (src) => posixJoin(file, cleanRelative(String(src).split('?')[0].split('#')[0])) === REQUIRED_SCRIPT,
+      (src) =>
+        !String(src).split('?')[0].split('#')[0].startsWith('/') &&
+        posixJoin(file, cleanRelative(String(src).split('?')[0].split('#')[0])) === REQUIRED_SCRIPT,
     )
-    if (!linksScript) failures.push(`${file}: include <script src="js/main.js" defer></script>.`)
+    if (!linksScript)
+      failures.push(`${file}: include <script src="js/main.js" defer></script> as a relative path with no leading "/".`)
 
     structureProblems += failures.length - before
   }
@@ -293,6 +303,14 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       }
       if (IGNORED_SCHEMES.test(raw) || REMOTE_PREFIXES.some((prefix) => raw.startsWith(prefix))) return
 
+      if (raw.startsWith('/')) {
+        failures.push(
+          `${page.file}: "${raw}" is a root-absolute path. The preview serves this project under /preview/<projectId>/, so it is fetched from the server root and 404s. Use a relative path with no leading "/" (for example "${raw.replace(/^\/+/, '')}").`,
+        )
+        linkProblems += 1
+        return
+      }
+
       const hashIndex = raw.indexOf('#')
       const fragment = hashIndex >= 0 ? raw.slice(hashIndex + 1) : ''
       const reference = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw
@@ -325,6 +343,13 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       const src = String(page.$(element).attr('src') ?? '').trim()
       if (REMOTE_PREFIXES.some((prefix) => src.startsWith(prefix))) {
         failures.push(`${page.file}: remote <img src="${src}"> will break — use an inline SVG or a CSS shape instead.`)
+        linkProblems += 1
+        return
+      }
+      if (src.startsWith('/')) {
+        failures.push(
+          `${page.file}: <img src="${src}"> is a root-absolute path and will 404 under /preview/<projectId>/. Use a relative path with no leading "/".`,
+        )
         linkProblems += 1
       }
     })
@@ -495,6 +520,29 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
     }
     if (HTTP_URL.test(stripped)) {
       failures.push(`${cssPath}: remote image URLs are not allowed — use gradients, shapes or inline SVG.`)
+      assetProblems += 1
+    }
+
+    const htmlClasses = new Set()
+    for (const page of pages) {
+      page.$('[class]').each((_, element) => {
+        const value = String(page.$(element).attr('class') ?? '')
+        for (const name of value.split(/\s+/)) if (name) htmlClasses.add(name)
+      })
+    }
+    const cssClasses = new Set()
+    for (const match of stripped.matchAll(/\.([A-Za-z_][\w-]*)/g)) cssClasses.add(match[1])
+    const missingClasses = [...htmlClasses].filter((name) => !cssClasses.has(name))
+    if (
+      htmlClasses.size > 0 &&
+      missingClasses.length >= MIN_MISSING_CLASSES &&
+      missingClasses.length / htmlClasses.size > MAX_MISSING_CLASS_RATIO
+    ) {
+      failures.push(
+        `${cssPath}: styles almost none of the classes used in the HTML (missing: ${missingClasses
+          .slice(0, 12)
+          .join(', ')}${missingClasses.length > 12 ? ', …' : ''}). Style the classes the HTML uses.`,
+      )
       assetProblems += 1
     }
   }

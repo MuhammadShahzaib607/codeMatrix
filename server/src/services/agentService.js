@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
 import { runWorkspaceCommand } from '../utils/terminalManager.js'
 import {
@@ -14,6 +15,13 @@ import {
 import { buildSystemPrompt, isVanillaFramework, resolveTier } from '../agent/prompts/index.js'
 import { formatGateReport, vanillaGate } from '../agent/quality/vanillaGate.js'
 import { formatQuickCheck, quickCheck } from '../agent/quality/quickCheck.js'
+import {
+  autofixConnections,
+  connectionCheck,
+  detectRepairIntent,
+  formatAutofixReport,
+  formatConnectionReport,
+} from '../agent/quality/connectionCheck.js'
 import { GATE_MAX_REPAIR_ROUNDS } from '../agent/quality/thresholds.js'
 import { clearAgentSession, getAgentSession, saveAgentSession } from './agentSessionService.js'
 import {
@@ -53,6 +61,8 @@ export const VANILLA_MAX_TOOL_CALLS = 25
 export const MAX_APPENDS_PER_FILE = 6
 // Repair rounds for the cheap automatic check (no model tokens on the happy path).
 export const MAX_QUICK_CHECK_ROUNDS = 2
+// Repair rounds for the html<->css<->js connection check (links, class coverage).
+export const MAX_CONNECTION_ROUNDS = 2
 // Soft per-task token budget. At 70% the agent is told to wrap up, at 100% the
 // run stops cleanly with a summary instead of silently burning another 300K.
 export const TASK_TOKEN_BUDGET = 150000
@@ -71,6 +81,12 @@ const DESIRED_MAX_COMPLETION = 2500
 const MIN_COMPLETION = 800
 const KEEP_RECENT_MESSAGES = 8
 const KEEP_FULL_TURNS = 4
+const MIN_HTML_LINES = 10
+const MAX_AUTO_CONTINUES = 5
+const MAX_SUMMARY_CONTINUES = 2
+const MAX_EMPTY_RETRIES = 2
+const DEBUG_AGENT = process.env.DEBUG_AGENT === '1'
+const CODE_COMPLETION_MODEL = /codestral/i
 const OLD_TOOL_RESULT_MAX = 300
 const MAX_READ_CHARS = 8000
 const MAX_LIST_CHARS = 2500
@@ -253,35 +269,80 @@ function appendGuidance(messages, text) {
   return false
 }
 
-function missingPlannedFiles(projectId, plannedPaths) {
+async function plannedFileIssues(projectId, plannedPaths) {
   if (!Array.isArray(plannedPaths) || plannedPaths.length === 0) return []
-  return plannedPaths.filter((file) => {
-    try {
-      return !existsInWorkspace(projectId, file)
-    } catch {
-      return false
+  const issues = []
+  for (const file of plannedPaths) {
+    const content = await readWorkspaceFileSafe(projectId, file)
+    if (content === null) {
+      issues.push({ path: file, kind: 'missing' })
+      continue
+    }
+    const lines = countLines(content)
+    if (!content.trim()) {
+      issues.push({ path: file, kind: 'empty' })
+      continue
+    }
+    if (looksLikePlaceholder(content)) {
+      issues.push({ path: file, kind: 'placeholder', lines })
+      continue
+    }
+    if (!/\.html?$/i.test(file)) continue
+    if (lines < MIN_HTML_LINES) {
+      issues.push({ path: file, kind: 'tooSmall', lines })
+      continue
+    }
+    const head = content.replace(/^\uFEFF/, '').trimStart()
+    if (!/^<!doctype\s+html/i.test(head)) {
+      issues.push({ path: file, kind: 'noDoctype', lines })
+      continue
+    }
+    if (!/<\/html>\s*$/i.test(content.trimEnd())) {
+      issues.push({ path: file, kind: 'noClosingHtml', lines })
+    }
+  }
+  return issues
+}
+
+function formatIssues(issues) {
+  return (issues ?? []).map((issue) => {
+    switch (issue.kind) {
+      case 'missing':
+        return `${issue.path} was not written`
+      case 'empty':
+        return `${issue.path} is empty`
+      case 'placeholder':
+        return `${issue.path} contains placeholder text instead of real content`
+      case 'tooSmall':
+        return `${issue.path} is only ${issue.lines} line(s) and looks incomplete`
+      case 'noDoctype':
+        return `${issue.path} does not start with <!DOCTYPE html>`
+      case 'noClosingHtml':
+        return `${issue.path} does not end with </html>`
+      default:
+        return `${issue.path} has a problem`
     }
   })
 }
 
-function nextPlannedPath(projectId, plannedPaths, exclude = null) {
-  const remaining = missingPlannedFiles(projectId, plannedPaths).filter((file) => file !== exclude)
+async function missingPlannedFiles(projectId, plannedPaths) {
+  const issues = await plannedFileIssues(projectId, plannedPaths)
+  return issues.map((issue) => issue.path)
+}
+
+async function nextPlannedPath(projectId, plannedPaths, exclude = null) {
+  const issues = await plannedFileIssues(projectId, plannedPaths)
+  const remaining = issues.filter((issue) => issue.path !== exclude)
   return remaining.length > 0
-    ? `write ${remaining[0]} (still missing: ${remaining.join(', ')}).`
+    ? `finish ${formatIssues(remaining).join('; ')}`
     : 'stop with your short summary.'
 }
 
-function buildProgressHint(projectId, plannedPaths, justWritten) {
+async function buildProgressHint(projectId, plannedPaths, justWritten) {
   if (!Array.isArray(plannedPaths) || plannedPaths.length === 0) return ''
-  const exists = (file) => {
-    try {
-      return existsInWorkspace(projectId, file)
-    } catch {
-      return false
-    }
-  }
-  const done = plannedPaths.filter(exists)
-  const remaining = plannedPaths.filter((file) => !done.includes(file))
+  const issues = await plannedFileIssues(projectId, plannedPaths)
+  const remaining = issues.map((issue) => issue.path)
+  const done = plannedPaths.filter((file) => !remaining.includes(file))
   const next = remaining.find((file) => file !== justWritten) ?? remaining[0] ?? null
   return `Progress ${done.length} of ${plannedPaths.length} planned files. Remaining: ${
     remaining.length > 0 ? remaining.join(', ') : 'none'
@@ -427,6 +488,66 @@ function countLines(text) {
   return value.split('\n').length
 }
 
+const PLACEHOLDER_PATTERNS = [
+  /^\s*\[(?:written|omitted|truncated|redacted|placeholder|content)/i,
+  /^\s*\[written:.*lines?\]\s*$/i,
+  /^\s*(?:\.\.\.|\u2026)\s*$/,
+  /^\s*(?:TODO|FIXME)\s*:?\s*content\b/i,
+  /^\s*<content omitted>\s*$/i,
+]
+
+function looksLikePlaceholder(content) {
+  const trimmed = String(content ?? '').trim()
+  if (!trimmed) return true
+  return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(trimmed))
+}
+
+function validateWriteContent(name, filePath, content) {
+  const text = typeof content === 'string' ? content : String(content ?? '')
+  const lines = countLines(text)
+  const isHtml = /\.html?$/i.test(String(filePath ?? ''))
+
+  if (!text.trim()) {
+    return `Error: the "content" for "${filePath}" was empty. Write the FULL file content in THIS call.`
+  }
+  if (looksLikePlaceholder(text)) {
+    return `Error: the "content" for "${filePath}" looks like a placeholder ("${truncate(
+      text.trim(),
+      40,
+    )}"), not file content. Write the FULL file content in THIS call.`
+  }
+  if (name === 'append_to_file') return null
+  if (!isHtml) return null
+
+  if (lines < MIN_HTML_LINES) {
+    return `Error: "${filePath}" was only ${lines} line(s) and an HTML page must be complete. Write the FULL page in THIS call: <!DOCTYPE html>, <head>, the shared <header>/<nav>, <main>, the shared <footer> and the closing </html>.`
+  }
+  const head = text.replace(/^\uFEFF/, '').trimStart()
+  if (!/^<!doctype\s+html/i.test(head)) {
+    return `Error: "${filePath}" must start with <!DOCTYPE html>. Write the FULL page in THIS call.`
+  }
+  return null
+}
+
+function workspaceStateText(writtenThisRun) {
+  if (!writtenThisRun || writtenThisRun.size === 0) return ''
+  const files = [...writtenThisRun.entries()].map(([file, info]) => `${file} (${info.lines} lines)`)
+  return `Files already written in this run: ${files.join(', ')}.`
+}
+
+async function readWorkspaceFileSafe(projectId, relativePath) {
+  const clean = String(relativePath ?? '')
+    .replace(/\\/g, '/')
+    .replace(/^\/?\.?\//, '')
+    .trim()
+  if (!clean || clean.split('/').includes('..')) return null
+  try {
+    return await fs.promises.readFile(path.join(getWorkspacePath(projectId), clean), 'utf8')
+  } catch {
+    return null
+  }
+}
+
 // One compact line per tool call, in the OpenCode/Freebuff style: the running
 // and the done text describe the SAME action, and the client collapses both
 // into one row, so "Writing index.html…" simply becomes "Wrote index.html".
@@ -454,6 +575,20 @@ function describeAction(name, args, { phase = 'running', lines = 0 } = {}) {
   }
 }
 
+function describeFailure(name, args) {
+  const filePath = args.path ?? 'file'
+  switch (name) {
+    case 'create_file':
+      return `Failed to write ${filePath} — the content was rejected`
+    case 'append_to_file':
+      return `Failed to extend ${filePath} — the content was rejected`
+    case 'edit_file':
+      return `Failed to edit ${filePath} — the content was rejected`
+    default:
+      return `Failed: ${name}`
+  }
+}
+
 function normalizeToolArgs(projectId, name, args) {
   if (name === 'run_command' || !args || typeof args.path !== 'string') return args
   const raw = args.path.replace(/\\/g, '/').replace(/^(\/|\.\/)+/, '')
@@ -477,6 +612,14 @@ function normalizeToolArgs(projectId, name, args) {
   return args
 }
 
+function debugToolCall(name, filePath, content, outcome) {
+  if (!DEBUG_AGENT) return
+  const head = String(content ?? '').slice(0, 40).replace(/\s+/g, ' ')
+  console.log(
+    `[agent] ${name} ${filePath} contentLen=${String(content ?? '').length} outcome=${outcome} head=${JSON.stringify(head)}`,
+  )
+}
+
 async function executeTool(name, rawArgs, projectId) {
   const args = normalizeToolArgs(projectId, name, rawArgs)
   switch (name) {
@@ -488,7 +631,13 @@ async function executeTool(name, rawArgs, projectId) {
       if (name === 'edit_file' && !existsInWorkspace(projectId, filePath)) {
         return { text: `Error: "${filePath}" does not exist (use create_file).` }
       }
+      const invalid = validateWriteContent(name, filePath, content)
+      if (invalid) {
+        debugToolCall(name, filePath, content, 'rejected')
+        return { text: invalid, rejected: true }
+      }
       const saved = writeFileToWorkspace(projectId, filePath, content)
+      debugToolCall(name, saved, content, 'written')
       const verb = name === 'create_file' ? 'Created' : 'Updated'
       return {
         text: `${verb} ${saved}`,
@@ -500,7 +649,13 @@ async function executeTool(name, rawArgs, projectId) {
       const filePath = String(args.path ?? '').trim()
       const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
       if (!filePath) return { text: 'Error: a "path" is required.' }
+      const invalid = validateWriteContent(name, filePath, content)
+      if (invalid) {
+        debugToolCall(name, filePath, content, 'rejected')
+        return { text: invalid, rejected: true }
+      }
       const saved = appendFileToWorkspace(projectId, filePath, content)
+      debugToolCall(name, saved, content, 'appended')
       return {
         text: `Appended to ${saved}`,
         modelText: `ok, ${countLines(content)} lines`,
@@ -592,20 +747,7 @@ async function buildTreeContext(projectId) {
   return lines.length ? lines.join('\n') : '(empty project)'
 }
 
-function stubWriteArguments(call, lines) {
-  let parsed = {}
-  try {
-    parsed = JSON.parse(call?.function?.arguments ?? '{}')
-  } catch {
-    parsed = {}
-  }
-  const stub = {}
-  if (parsed.path) stub.path = parsed.path
-  stub.content = `[written: ${lines} lines]`
-  if (call?.function) call.function.arguments = JSON.stringify(stub)
-}
-
-function condenseHistory(messages, keepRecent) {
+function condenseHistory(messages, keepRecent, workspaceSummary = '') {
   let cutoff = Math.max(2, messages.length - keepRecent)
   while (cutoff > 2 && messages[cutoff]?.role === 'tool') cutoff -= 1
   if (cutoff <= 2) return messages
@@ -613,10 +755,7 @@ function condenseHistory(messages, keepRecent) {
   const droppedToolIds = new Set()
   const result = []
   messages.forEach((message, index) => {
-    if (index >= cutoff) {
-      result.push(message)
-      return
-    }
+    if (index >= cutoff) return
     if (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length) {
       const labels = message.tool_calls.map((call) => {
         const name = call?.function?.name ?? 'tool'
@@ -630,16 +769,15 @@ function condenseHistory(messages, keepRecent) {
       result.push({ role: 'assistant', content: `[did: ${labels.join(', ')}]` })
       return
     }
-    if (message.role === 'tool') {
-      if (droppedToolIds.has(message.tool_call_id)) return
-      return
-    }
+    if (message.role === 'tool') return
     if (message.role === 'assistant') {
       result.push({ role: 'assistant', content: truncate(message.content ?? '', OLD_TOOL_RESULT_MAX) })
       return
     }
     result.push(message)
   })
+  if (workspaceSummary) result.push({ role: 'user', content: workspaceSummary })
+  for (const message of messages.slice(cutoff)) result.push(message)
   return result
 }
 
@@ -730,7 +868,7 @@ function preferredRank(candidate, preference) {
   return candidate.providerId === preference ? 0 : 1
 }
 
-function pickAutoCandidate(candidates, estimatedInput, cooling, preference) {
+function pickAutoCandidate(candidates, estimatedInput, cooling, preference, requestedModel = null) {
   const now = Date.now()
   const healthy = candidates.filter(
     (candidate) =>
@@ -742,12 +880,18 @@ function pickAutoCandidate(candidates, estimatedInput, cooling, preference) {
     (candidate) => remainingPerMinute(budgetKeyFor(candidate)) >= estimatedInput + MIN_COMPLETION,
   )
   const usable = viable.length > 0 ? viable : pool
+  const autoScore = (candidate) => {
+    let score = capabilityScore(candidate.providerId, candidate.model)
+    if (requestedModel && candidate.model === requestedModel) score += 1000
+    if (!requestedModel && CODE_COMPLETION_MODEL.test(candidate.model)) score -= 25
+    return score
+  }
   const sorted = [...usable].sort((a, b) => {
     const prefDiff = preferredRank(a, preference) - preferredRank(b, preference)
     if (prefDiff !== 0) return prefDiff
     const budgetDiff = remainingPerMinute(budgetKeyFor(b)) - remainingPerMinute(budgetKeyFor(a))
     if (budgetDiff !== 0) return budgetDiff
-    return capabilityScore(b.providerId, b.model) - capabilityScore(a.providerId, a.model)
+    return autoScore(b) - autoScore(a)
   })
   return sorted[0] ?? candidates[0]
 }
@@ -760,7 +904,7 @@ function pickCandidateForMode(
     estimatedInput > 0
       ? estimatedInput
       : estimateTokens([{ role: 'user', content: String(task ?? '') }], OPENAI_TOOLS)
-  const base = pickAutoCandidate(candidates, estimate, cooling, preference)
+  const base = pickAutoCandidate(candidates, estimate, cooling, preference, requestedModel)
   if (!base || !vanilla || String(requestedModel ?? '').trim()) return base
   const healthy = candidates.filter(
     (candidate) =>
@@ -769,9 +913,10 @@ function pickCandidateForMode(
       getKeyHealth(candidate.key?.id).status !== 'invalid',
   )
   const pool = healthy.length > 0 ? healthy : [base]
-  const strongest = [...pool].sort(
-    (a, b) => capabilityScore(b.providerId, b.model) - capabilityScore(a.providerId, a.model),
-  )[0]
+  const vanillaScore = (candidate) =>
+    capabilityScore(candidate.providerId, candidate.model) -
+    (CODE_COMPLETION_MODEL.test(candidate.model) ? 25 : 0)
+  const strongest = [...pool].sort((a, b) => vanillaScore(b) - vanillaScore(a))[0]
   return strongest ?? base
 }
 
@@ -791,13 +936,20 @@ export async function runAgent({
   providerPreference = null,
   taskId = null,
   resume = false,
+  shouldStop = null,
+  runStartedAt = null,
 }) {
-  const startedAt = Date.now()
+  const startedAt = Number.isFinite(runStartedAt) ? runStartedAt : Date.now()
   let toolCalls = 0
   let planReminders = 0
   let parseRetries = 0
   let quickCheckRounds = 0
+  let connectionRounds = 0
   let wrapUpNotified = false
+  let autoContinues = 0
+  let summaryContinues = 0
+  let emptyRetries = 0
+  let effectiveBudget = TASK_TOKEN_BUDGET
 
   const event = (type, description, details = {}) => {
     const { actionId, ...rest } = details
@@ -861,6 +1013,50 @@ export async function runAgent({
 
   const treeContext = await buildTreeContext(projectId)
   const vanillaMode = isVanillaFramework(framework)
+
+  const repairIntent = !resume && vanillaMode && detectRepairIntent(task)
+  let repairClean = false
+  let repairInfo = null
+  if (repairIntent) {
+    try {
+      const autofix = await autofixConnections({ projectId })
+      if (autofix.fixes.length > 0) {
+        event_('gate', `Auto-fixed ${autofix.fixes.length} broken asset link(s) on the server.`, {
+          status: 'done',
+          tool: 'gate',
+          passed: true,
+          autofixed: autofix.fixes.length,
+        })
+      }
+      const connection = await connectionCheck({ projectId })
+      if (connection.checked.length > 0) {
+        if (connection.ok) repairClean = true
+        else repairInfo = connection
+      }
+    } catch (error) {
+      console.warn(`[agent] repair precheck failed: ${error?.message ?? error}`)
+      repairInfo = null
+    }
+  }
+  const repairActive = Boolean(repairClean || repairInfo)
+  if (repairInfo && !repairInfo.ok) {
+    const problemFiles = (repairInfo.details?.problemFiles ?? []).filter(Boolean)
+    if (problemFiles.length > 0) {
+      plan = problemFiles
+      planDoc = {
+        projectName: null,
+        brand: null,
+        nav: [],
+        files: problemFiles.map((file) => ({ path: file, purpose: 'connection repair' })),
+        pages: [],
+        requirements: [],
+      }
+    }
+    task =
+      'REPAIR ONLY — the links and styles in this project are broken. The server found exactly these problems; fix ONLY these, do not regenerate the whole site:\n' +
+      repairInfo.problems.map((problem, index) => `${index + 1}. ${problem}`).join('\n')
+  }
+
   const tierCandidate = pickCandidateForMode(candidates, {
     task,
     cooling,
@@ -903,6 +1099,31 @@ export async function runAgent({
     requestedModel,
   })
   let model = active.model
+
+  if (repairClean) {
+    const message = 'Everything is connected — every page loads the shared stylesheet and script and a style rule exists for each class, so nothing needed fixing.'
+    event_('complete', message, {
+      status: 'done',
+      durationMs: Date.now() - startedAt,
+      toolCalls,
+      model,
+      provider: active.providerId,
+      gatePassed: false,
+      gateSkipped: true,
+      repaired: true,
+    })
+    clearAgentSession(projectId)
+    return {
+      message,
+      toolCalls,
+      durationMs: Date.now() - startedAt,
+      model,
+      provider: active.providerId,
+      gatePassed: false,
+      gateSkipped: true,
+      repaired: true,
+    }
+  }
 
   function moveTo(candidate) {
     if (!candidate || candidate === active) return false
@@ -947,6 +1168,16 @@ export async function runAgent({
       actionId,
       ...extra,
     })
+
+  if (resume && vanillaMode && !repairIntent) {
+    try {
+      const connection = await connectionCheck({ projectId })
+      if (!connection.ok && connection.checked.length > 0) {
+        appendGuidance(messages, formatConnectionReport(connection))
+        note(`Continue: ${connection.problems.length} link/style problem(s) to repair first.`)
+      }
+    } catch {}
+  }
 
   async function countdownWait(totalMs, actionId = null, extra = {}) {
     const id = actionId ?? crypto.randomUUID()
@@ -1051,7 +1282,7 @@ export async function runAgent({
   async function requestOnce(temperature, { shrinkLevel = 0 } = {}) {
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const keep = Math.max(2, KEEP_RECENT_MESSAGES - shrinkLevel * 2)
-      const wireMessages = condenseHistory(messages, keep)
+      const wireMessages = condenseHistory(messages, keep, workspaceStateText(writtenThisRun))
       const estimatedInput = estimateTokens(wireMessages, OPENAI_TOOLS)
       const decision = planRequest({
         key: budgetKeyFor(active),
@@ -1273,7 +1504,8 @@ export async function runAgent({
     }
   }
 
-  const toolCallCap = vanillaMode ? VANILLA_MAX_TOOL_CALLS : MAX_TOOL_CALLS
+  const toolCallCapBase = vanillaMode ? VANILLA_MAX_TOOL_CALLS : MAX_TOOL_CALLS
+  let toolCallCap = toolCallCapBase
 
   // ---- per-run guard state -------------------------------------------------
   // writtenThisRun: path -> { lines, calls } for every file THIS run wrote.
@@ -1286,17 +1518,55 @@ export async function runAgent({
   let writesWithoutNewFile = 0
   let stuckWarnings = 0
 
-  const wrapUpHint = (usedTokens) => {
-    const remaining = missingPlannedFiles(projectId, plan)
+  const wrapUpHint = async (usedTokens) => {
+    const remaining = await missingPlannedFiles(projectId, plan)
     return [
-      `TOKEN BUDGET: this task has used about ${Math.round(usedTokens / 1000)}K of its ~${Math.round(TASK_TOKEN_BUDGET / 1000)}K budget.`,
+      `TOKEN BUDGET: this task has used about ${Math.round(usedTokens / 1000)}K of its ~${Math.round(effectiveBudget / 1000)}K budget.`,
       remaining.length > 0
         ? `Wrap up now: finish only the remaining planned files (${remaining.join(', ')}) — one create_file call each — then stop and summarise.`
         : 'Wrap up now: stop writing files and finish with your short summary.',
     ].join(' ')
   }
 
+  const stopRequested = () => typeof shouldStop === 'function' && Boolean(shouldStop())
+
+  const finishStopped = () => {
+    const stopMessage = 'Stopped by the user.'
+    event_('complete', stopMessage, {
+      status: 'done',
+      stopped: true,
+      durationMs: Date.now() - startedAt,
+      toolCalls,
+      model,
+      provider: active.providerId,
+    })
+    persistSession('stopped')
+    return {
+      message: stopMessage,
+      stopped: true,
+      toolCalls,
+      durationMs: Date.now() - startedAt,
+      model,
+      provider: active.providerId,
+    }
+  }
+
+  const tryAutoContinue = (reason) => {
+    if (autoContinues >= MAX_AUTO_CONTINUES) return false
+    autoContinues += 1
+    toolCallCap += toolCallCapBase
+    effectiveBudget += TASK_TOKEN_BUDGET
+    wrapUpNotified = false
+    stuckWarnings = 0
+    writeStreak = 0
+    writesWithoutNewFile = 0
+    parseRetries = 0
+    note(`Continuing automatically (${autoContinues} of ${MAX_AUTO_CONTINUES}) — ${reason}.`)
+    return true
+  }
+
   for (;;) {
+    if (stopRequested()) return finishStopped()
     const baseTemperature = vanillaMode ? 0.3 : 0.2
     const temperature =
       parseRetries === 0 ? baseTemperature : Math.max(0, baseTemperature - parseRetries * 0.1)
@@ -1336,12 +1606,24 @@ export async function runAgent({
     // tells the model to wrap up, hitting 100% ends the run cleanly with a
     // summary instead of silently burning another 300K like the old loop did.
     const usedTokens = taskId ? (getTaskTotals(taskId)?.totalTokens ?? 0) : 0
-    if (usedTokens >= TASK_TOKEN_BUDGET) {
-      const missingNow = missingPlannedFiles(projectId, plan)
+    if (usedTokens >= effectiveBudget) {
+      const issuesNow = await plannedFileIssues(projectId, plan)
+      if (
+        issuesNow.length > 0 &&
+        tryAutoContinue('the token budget was spent before the files were finished')
+      ) {
+        appendGuidance(
+          messages,
+          `TOKEN BUDGET reached, but work remains: ${formatIssues(issuesNow).join(
+            '; ',
+          )}. Continue now — one create_file per file — then stop with your short summary.`,
+        )
+        continue
+      }
       const stopMessage =
-        `Stopped: this task reached its ~${Math.round(TASK_TOKEN_BUDGET / 1000)}K token budget. ` +
-        (missingNow.length > 0
-          ? `Still missing: ${missingNow.join(', ')}. Use Continue to finish them.`
+        `Stopped: this task reached its ~${Math.round(effectiveBudget / 1000)}K token budget. ` +
+        (issuesNow.length > 0
+          ? `Still incomplete: ${formatIssues(issuesNow).join('; ')}. Use Continue to finish them.`
           : 'Every planned file was written.')
       event_('complete', stopMessage, {
         status: 'done',
@@ -1351,7 +1633,7 @@ export async function runAgent({
         provider: active.providerId,
         budgetReached: true,
         plannedFiles: plan.length,
-        missingFiles: missingNow,
+        missingFiles: issuesNow.map((issue) => issue.path),
       })
       persistSession('budget')
       return {
@@ -1364,21 +1646,29 @@ export async function runAgent({
         provider: active.providerId,
       }
     }
-    if (!wrapUpNotified && usedTokens >= TASK_TOKEN_BUDGET * TASK_WRAP_UP_RATIO) {
+    if (!wrapUpNotified && usedTokens >= effectiveBudget * TASK_WRAP_UP_RATIO) {
       wrapUpNotified = true
-      appendGuidance(messages, wrapUpHint(usedTokens))
+      appendGuidance(messages, await wrapUpHint(usedTokens))
       note(
-        `Token budget at ${Math.round((usedTokens / TASK_TOKEN_BUDGET) * 100)}% — telling the agent to wrap up…`,
+        `Token budget at ${Math.round((usedTokens / effectiveBudget) * 100)}% — telling the agent to wrap up…`,
       )
     }
 
     const message = response?.choices?.[0]?.message
     if (!message) {
+      if (emptyRetries < MAX_EMPTY_RETRIES && autoContinues < MAX_AUTO_CONTINUES) {
+        emptyRetries += 1
+        autoContinues += 1
+        note('The provider returned an empty response — retrying automatically…')
+        appendGuidance(messages, 'Your previous reply was empty. Continue the task now.')
+        continue
+      }
       const error = new Error('The provider returned an empty response. Try again.')
       event_('error', error.message, { status: 'done' })
       persistSession('empty_response')
       throw error
     }
+    emptyRetries = 0
 
     if (plan.length === 0 && !planDoc && message.content) {
       const jsonPlan = parsePlanJson(message.content)
@@ -1425,15 +1715,18 @@ export async function runAgent({
 
     const calls = Array.isArray(message.tool_calls) ? message.tool_calls : []
     if (calls.length === 0) {
-      const missing = missingPlannedFiles(projectId, plan)
-      if (missing.length > 0 && planReminders < 3 && toolCalls < toolCallCap) {
+      const issues = await plannedFileIssues(projectId, plan)
+      const missing = issues.map((issue) => issue.path)
+      if (issues.length > 0 && planReminders < 3 && toolCalls < toolCallCap) {
         planReminders += 1
         messages.push(message)
         appendGuidance(
           messages,
-          `These planned files are still missing: ${missing.join(', ')}. Continue and create them.`,
+          `These planned files are not complete yet: ${formatIssues(issues).join(
+            '; ',
+          )}. Write each one completely in a single create_file call.`,
         )
-        note(`Verifying the plan — ${missing.length} file(s) still missing…`)
+        note(`Verifying the plan — ${issues.length} file(s) still incomplete…`)
         continue
       }
       // Cheap, token-free verification FIRST: a lost chunk, a page that does
@@ -1464,6 +1757,11 @@ export async function runAgent({
         continue
       }
       if (!quick.ok) {
+        if (tryAutoContinue('the automatic content check still found problems')) {
+          quickCheckRounds = 0
+          appendGuidance(messages, formatQuickCheck(quick))
+          continue
+        }
         gateFailure = { failures: quick.problems, checks: [] }
         event_('gate', `Automatic check still failing (${quick.problems.length} problem(s)).`, {
           status: 'done',
@@ -1473,7 +1771,64 @@ export async function runAgent({
         })
       }
 
-      if (vanillaMode && quick.ok) {
+      if (vanillaMode) {
+        try {
+          const autofix = await autofixConnections({ projectId })
+          if (autofix.fixes.length > 0) {
+            event_('gate', `Auto-fixed ${autofix.fixes.length} broken asset link(s) on the server.`, {
+              status: 'done',
+              tool: 'gate',
+              passed: true,
+              autofixed: autofix.fixes.length,
+            })
+          }
+        } catch {}
+
+        let connection = null
+        try {
+          connection = await connectionCheck({ projectId, files: plan.length > 0 ? plan : null })
+        } catch (error) {
+          connection = {
+            ok: false,
+            problems: [`The link/style check could not run: ${error.message}`],
+            checked: [],
+            details: {},
+          }
+        }
+        if (connection && !connection.ok && connection.checked.length > 0) {
+          if (connectionRounds < MAX_CONNECTION_ROUNDS && toolCalls < toolCallCap) {
+            connectionRounds += 1
+            event_(
+              'gate',
+              `Link/style check found ${connection.problems.length} problem(s) — repair round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}.`,
+              {
+                status: 'done',
+                tool: 'gate',
+                passed: false,
+                round: connectionRounds,
+                failures: connection.problems.slice(0, 12),
+              },
+            )
+            appendGuidance(messages, formatConnectionReport(connection))
+            note(`Repairing the link/style problems — round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}…`)
+            continue
+          }
+          if (tryAutoContinue('the link/style check still found problems')) {
+            connectionRounds = 0
+            appendGuidance(messages, formatConnectionReport(connection))
+            continue
+          }
+          gateFailure = gateFailure ?? { failures: connection.problems, checks: [] }
+          event_('gate', `Link/style check still failing (${connection.problems.length} problem(s)).`, {
+            status: 'done',
+            tool: 'gate',
+            passed: false,
+            failures: connection.problems.slice(0, 12),
+          })
+        }
+      }
+
+      if (vanillaMode && quick.ok && !repairActive) {
         let gate = null
         try {
           gate = await vanillaGate({ projectId, plan: planDoc, now: new Date() })
@@ -1505,6 +1860,11 @@ export async function runAgent({
           note(`Repair round ${gateRounds} of ${MAX_GATE_ROUNDS} — fixing the gate failures…`)
           continue
         } else {
+          if (tryAutoContinue('the quality gate still found problems')) {
+            gateRounds = 0
+            appendGuidance(messages, formatGateReport(gate, { maxRounds: MAX_GATE_ROUNDS }))
+            continue
+          }
           gateFailure = gate
           event_(
             'gate',
@@ -1520,6 +1880,18 @@ export async function runAgent({
         }
       }
 
+      const finishReason = response?.choices?.[0]?.finish_reason
+      if (finishReason === 'length' && summaryContinues < MAX_SUMMARY_CONTINUES) {
+        summaryContinues += 1
+        messages.push({ role: 'assistant', content: String(message.content ?? '') })
+        appendGuidance(
+          messages,
+          'Your last reply was cut off by the token limit. Finish your short summary now — at most two sentences — then stop.',
+        )
+        note('The final summary was cut off — asking the model to finish it…')
+        continue
+      }
+
       messages.push(message)
       const finalText = stripProjectNameLine(String(message.content ?? '').trim()) || 'Task complete.'
       const honestText = gateFailure
@@ -1527,6 +1899,8 @@ export async function runAgent({
             .map((failure, index) => `${index + 1}. ${failure}`)
             .join('\n')}`
         : finalText
+      const totals = taskId ? getTaskTotals(taskId) : null
+      const summaryTotals = { requests: totals?.requests ?? 0, totalTokens: totals?.totalTokens ?? 0 }
       event_('complete', honestText, {
         status: 'done',
         durationMs: Date.now() - startedAt,
@@ -1535,8 +1909,10 @@ export async function runAgent({
         provider: active.providerId,
         plannedFiles: plan.length,
         missingFiles: missing.length,
-        gatePassed: gateFailure ? false : vanillaMode,
+        gatePassed: gateFailure ? false : vanillaMode && !repairActive,
+        gateSkipped: repairActive || undefined,
         gateFailures: gateFailure?.failures ?? [],
+        ...summaryTotals,
       })
       clearAgentSession(projectId)
       return {
@@ -1546,7 +1922,9 @@ export async function runAgent({
         model,
         provider: active.providerId,
         suggestedName: extractProjectName(message.content) ?? planDoc?.projectName ?? null,
-        gatePassed: gateFailure ? false : vanillaMode,
+        gatePassed: gateFailure ? false : vanillaMode && !repairActive,
+        gateSkipped: repairActive || undefined,
+        ...summaryTotals,
       }
     }
 
@@ -1554,9 +1932,24 @@ export async function runAgent({
 
     event_('thinking', 'Working on it…', { status: 'thinking', provider: active.providerId })
 
+    let capReached = false
     for (const call of calls) {
       if (toolCalls >= toolCallCap) {
-        const limitMessage = `Stopped after ${toolCallCap} tool calls — the per-run limit for this stack. Use Continue to finish the remaining files.`
+        const issuesAtCap = await plannedFileIssues(projectId, plan)
+        if (
+          issuesAtCap.length > 0 &&
+          tryAutoContinue(`reached the per-run tool-call limit (${toolCallCap})`)
+        ) {
+          appendGuidance(
+            messages,
+            `Tool-call limit reached, but work remains: ${formatIssues(issuesAtCap).join(
+              '; ',
+            )}. Continue and finish them — one create_file per file — then stop with your short summary.`,
+          )
+          capReached = true
+          break
+        }
+        const limitMessage = `Stopped after ${toolCalls} tool calls — the per-run limit for this stack. Use Continue to finish the remaining files.`
         event_('complete', limitMessage, {
           status: 'done',
           limitReached: true,
@@ -1598,7 +1991,7 @@ export async function runAgent({
         const used = appendCallsByPath.get(filePath) ?? 0
         if (used >= MAX_APPENDS_PER_FILE) {
           rejection =
-            `Error: "${filePath}" has already been appended to ${used} times in this run — the per-file limit, and the file is long enough. Stop writing it and ${nextPlannedPath(projectId, plan, filePath)}`
+            `Error: "${filePath}" has already been appended to ${used} times in this run — the per-file limit, and the file is long enough. Stop writing it and ${await nextPlannedPath(projectId, plan, filePath)}`
         } else {
           appendCallsByPath.set(filePath, used + 1)
         }
@@ -1632,20 +2025,23 @@ export async function runAgent({
         }
       }
 
+      const failed = String(outcome.text ?? '').startsWith('Error')
       event_(
         TOOL_LABELS[name] ?? 'thinking',
-        describeAction(name, args, { phase: 'done', lines: outcome.lines ?? 0 }),
+        failed
+          ? describeFailure(name, args)
+          : describeAction(name, args, { phase: 'done', lines: outcome.lines ?? 0 }),
         {
           tool: name,
           args: { path: args.path, command: args.command },
-          status: 'done',
+          status: failed ? 'error' : 'done',
           actionId,
           result: truncate(outcome.text, 2000),
           ...(outcome.details ?? {}),
         },
       )
 
-      const writeSucceeded = WRITE_TOOLS.has(name) && !String(outcome.text ?? '').startsWith('Error')
+      const writeSucceeded = WRITE_TOOLS.has(name) && !failed
       let modelResult = outcome.modelText ?? truncate(outcome.text ?? '', MAX_TOOL_RESULT_CHARS)
 
       if (writeSucceeded) {
@@ -1659,7 +2055,7 @@ export async function runAgent({
           calls: (alreadyWritten?.calls ?? 0) + 1,
         })
 
-        const progress = buildProgressHint(projectId, plan, filePath)
+        const progress = await buildProgressHint(projectId, plan, filePath)
         if (progress) modelResult = `${modelResult}\n${progress}`
 
         // Every page is checked immediately: it must end with </html>, must not
@@ -1674,17 +2070,40 @@ export async function runAgent({
           } catch {}
         }
 
+        // The connection check runs after EVERY html/css/js write too: a
+        // root-absolute asset path and an unbalanced stylesheet are found the
+        // moment they are written, not three pages later.
+        if (vanillaMode && /\.(html?|css|js)$/i.test(filePath)) {
+          try {
+            const autofix = await autofixConnections({ projectId })
+            const fixText = formatAutofixReport(autofix)
+            if (fixText) modelResult = `${modelResult}\n\n${fixText}`
+            if (autofix.fixes.length > 0) {
+              event_('gate', `Auto-fixed ${autofix.fixes.length} broken asset link(s).`, {
+                status: 'done',
+                tool: 'gate',
+                passed: true,
+                autofixed: autofix.fixes.length,
+              })
+            }
+            const connection = await connectionCheck({ projectId, checkExistence: false })
+            const connectionText = formatConnectionReport(connection)
+            if (connectionText) modelResult = `${modelResult}\n\n${connectionText}`
+          } catch {}
+        }
+
         // ---- stuck-loop detection ------------------------------------------
         writeStreak = writeStreakPath === filePath ? writeStreak + 1 : 1
         writeStreakPath = filePath
         writesWithoutNewFile = isNewFile ? 0 : writesWithoutNewFile + 1
-        const remaining = missingPlannedFiles(projectId, plan)
+        const remaining = await missingPlannedFiles(projectId, plan)
         const stuck =
           remaining.length > 0 &&
           (writeStreak >= STUCK_SAME_PATH_STREAK || writesWithoutNewFile >= STUCK_WRITE_CALLS)
         if (stuck) {
-          if (stuckWarnings >= 2) {
-            const stopMessage = `Stopped: the agent kept repeating "${filePath}" without finishing. Still missing: ${remaining.join(', ')}. Use Continue to finish them.`
+          const issueText = formatIssues(await plannedFileIssues(projectId, plan)).join('; ')
+          if (stuckWarnings >= 2 && !tryAutoContinue(`the agent kept repeating "${filePath}"`)) {
+            const stopMessage = `Stopped: the agent kept repeating "${filePath}" without finishing. Still incomplete: ${issueText}. Use Continue to finish them.`
             event_('complete', stopMessage, {
               status: 'done',
               limitReached: true,
@@ -1707,7 +2126,7 @@ export async function runAgent({
           stuckWarnings += 1
           writeStreak = 0
           writesWithoutNewFile = 0
-          modelResult = `${modelResult}\n\nYou are repeating yourself: ${filePath} is long enough and is not the work that is left. Stop writing it, finish the remaining planned files (${remaining.join(', ')}) with one create_file call each, then summarise and stop.`
+          modelResult = `${modelResult}\n\nStop writing ${filePath}. Finish only these incomplete files: ${issueText}. One create_file call each, then summarise and stop.`
           note(`Stuck loop detected on ${filePath} — telling the agent to move on…`)
         }
       }
@@ -1717,11 +2136,8 @@ export async function runAgent({
         tool_call_id: call.id ?? call.function?.name ?? `call_${toolCalls}`,
         content: modelResult,
       })
-
-      if (writeSucceeded) {
-        stubWriteArguments(call, outcome.lines ?? 0)
-      }
     }
+    if (capReached) continue
   }
 }
 

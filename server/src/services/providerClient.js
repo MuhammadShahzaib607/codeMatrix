@@ -374,8 +374,43 @@ export async function providerChatStream({
 
   const content = []
   const toolCalls = new Map()
+  let lastToolKey = null
+  let toolCallSeq = 0
   let usage = null
   let finishReason = null
+
+  const absorbToolCall = (call) => {
+    const id = typeof call?.id === 'string' && call.id.trim() ? call.id.trim() : null
+    const name = typeof call?.function?.name === 'string' ? call.function.name : ''
+    const index = Number.isInteger(call?.index) ? call.index : null
+    let key = id ? `id:${id}` : index !== null ? `idx:${index}` : (lastToolKey ?? 'idx:0')
+    const existing = toolCalls.get(key)
+    if (name && existing?.function?.name) {
+      toolCallSeq += 1
+      key = `${key}#${toolCallSeq}`
+    }
+    const current = toolCalls.get(key) ?? {
+      id: null,
+      type: 'function',
+      function: { name: '', arguments: '' },
+    }
+    if (id) current.id = id
+    if (call?.type) current.type = call.type
+    if (name) {
+      if (!current.function.name) current.function.name = name
+      else if (current.function.name !== name && !current.function.name.endsWith(name)) {
+        current.function.name = name
+      }
+    }
+    const args = call?.function?.arguments
+    if (typeof args === 'string') {
+      current.function.arguments += args
+    } else if (args && typeof args === 'object') {
+      current.function.arguments = JSON.stringify(args)
+    }
+    toolCalls.set(key, current)
+    lastToolKey = key
+  }
 
   const absorb = (chunk) => {
     if (chunk?.usage) usage = chunk.usage
@@ -392,19 +427,7 @@ export async function providerChatStream({
       }
     }
     for (const call of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
-      const index = Number.isInteger(call?.index) ? call.index : 0
-      const current = toolCalls.get(index) ?? {
-        id: null,
-        type: 'function',
-        function: { name: '', arguments: '' },
-      }
-      if (call?.id) current.id = call.id
-      if (call?.type) current.type = call.type
-      if (call?.function?.name) current.function.name += call.function.name
-      if (typeof call?.function?.arguments === 'string') {
-        current.function.arguments += call.function.arguments
-      }
-      toolCalls.set(index, current)
+      absorbToolCall(call)
     }
   }
 
@@ -440,11 +463,10 @@ export async function providerChatStream({
     role: 'assistant',
     content: content.join(''),
   }
-  if (toolCalls.size > 0) {
-    message.tool_calls = [...toolCalls.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([, call]) => normalizeToolCall(call))
-  }
+  const finalized = [...toolCalls.values()].filter(
+    (call) => call?.function?.name || call?.function?.arguments,
+  )
+  if (finalized.length > 0) message.tool_calls = finalized.map(normalizeToolCall)
 
   return {
     choices: [{ index: 0, finish_reason: finishReason, message }],

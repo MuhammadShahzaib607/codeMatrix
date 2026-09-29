@@ -187,6 +187,18 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   pageFiles = [...new Set(pageFiles)]
   const pages = pageFiles.map(loadPage).filter(Boolean)
 
+  const usesPageStylesheets = pages.some((page) => {
+    const hrefs = page
+      .$('link[rel~="stylesheet"]')
+      .map((_, element) => page.$(element).attr('href'))
+      .get()
+      .filter(Boolean)
+    const own = pageStylesheetFor(page.file)
+    return hrefs.some(
+      (href) => posixJoin(page.file, cleanRelative(String(href).split('?')[0].split('#')[0])) === own,
+    )
+  })
+
   if (pages.length === 0) failures.push('No HTML page was created at the project root.')
 
   let fileProblems = 0
@@ -241,7 +253,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       failures.push(
         `${file}: link the shared stylesheet with <link rel="stylesheet" href="css/base.css"> (or css/style.css for a single-stylesheet project) — a valid, RELATIVE path with no leading "/".`,
       )
-    else if (sharedSheet === BASE_STYLESHEET) {
+    else if (sharedSheet === BASE_STYLESHEET && usesPageStylesheets) {
       const pageSheet = pageStylesheetFor(file)
       if (!resolvedSheets.includes(pageSheet))
         failures.push(

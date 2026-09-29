@@ -4,12 +4,14 @@ export const AGENT_MODELS = [
   {
     id: 'mistral:mistral-large-latest',
     label: 'Mistral Large',
+    hint: 'Recommended — best tool use for agent runs',
     provider: 'mistral',
     model: 'mistral-large-latest',
   },
   {
     id: 'mistral:codestral-latest',
-    label: 'Mistral Codestral',
+    label: 'Mistral Codestral (code only)',
+    hint: 'Code completion only — weak tool use, not recommended for agent runs',
     provider: 'mistral',
     model: 'codestral-latest',
   },

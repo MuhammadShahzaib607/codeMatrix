@@ -6313,3 +6313,398 @@ NOTES FOR THE NEXT DEVELOPER / AI TOOL
     readyState === 'complete': js/main.js is deferred and waits for the Google
     Fonts stylesheet, so a fixed sleep reads a page whose listeners are not
     attached yet (this cost a debugging cycle).
+
+
+================================================================================
+AI Code Editor — Tool-Call Accumulator Fix + Starter Kit Scaffold + Hard
+        Connection Check
+        (2026-09-28)
+================================================================================
+
+STATUS: complete and verified with scripted mock-provider runs that drive the
+        REAL runAgent loop, the REAL tools, REAL files on disk and REAL headless
+        Chrome (computed styles + PNG screenshots). NOT verified: a live Mistral
+        run (no API key in the sandbox) and anything MongoDB-backed. See the
+        verification section for the exact commands and raw output.
+
+--------------------------------------------------------------------------------
+TASK 1a — ROOT CAUSE OF "Failed to write file — a \"path\" is required"
+--------------------------------------------------------------------------------
+
+The streamed tool-call accumulator in server/src/services/providerClient.js
+keys chunks by `call.index` (default 0). Verified against a mock provider that
+streams the way Mistral actually does, the accumulator produced:
+
+  SCENARIO "merged" (two whole calls, both index 0):
+    raw chunks: {"tool_calls":[{"index":0,"id":"call_a",..."create_file",
+                "arguments":"{\"path\":\"index.html\",...}"}]}
+                {"tool_calls":[{"index":0,"id":"call_b",..."create_file",
+                "arguments":"{\"path\":\"about.html\",...}"}]}
+    OLD ASSEMBLED: 1 call -> name="create_filecreate_file",
+                arguments="{\"path\":\"index.html\",...}{\"path\":\"about.html\",...}"
+                JSON.parse fails -> args={} -> "a \"path\" is required"
+
+  SCENARIO "objectArgs" (arguments sent as an OBJECT, not a string):
+    OLD ASSEMBLED: arguments="" (the typeof-string guard dropped it)
+                JSON.parse('') fails -> args={} -> "a \"path\" is required"
+
+  SCENARIO "aliasNoPath" (file_path / filename aliases):
+    OLD ASSEMBLED: merged again, parse fails; even when parsed, executeTool only
+                read args.path, so file_path/filename produced no path.
+
+End-to-end reproduction through the real agent (mock provider, 5 turns, then
+stopped): every turn showed `[create_file] Failed to write file — a "path" is
+required.` and ZERO files were written — the exact loop in the report. A second
+variant showed `Failed: create_filecreate_file — unknown tool`.
+
+So the cause was (i) the accumulator merging parallel/whole calls, PLUS (ii)
+object-form arguments being dropped, PLUS (iv) argument-name aliases not being
+accepted. (iii) max_completion_tokens truncation was NOT involved: the merged
+JSON fails at a position past the end of the first object, not at a boundary.
+The non-streaming path did NOT have the merge bug — normalizeToolCall() there
+already stringified object arguments — only the streamed path was broken.
+
+--------------------------------------------------------------------------------
+TASK 1b — ACCUMULATOR RULES (provider-agnostic)
+--------------------------------------------------------------------------------
+
+providerChatStream now accumulates into a Map keyed by:
+  * `id:<call.id>` when the chunk carries an id,
+  * else `idx:<index>` when it carries an index,
+  * else the previous slot.
+A chunk that brings a `function.name` for a slot that ALREADY has a name starts
+a NEW call (providers only resend a name when a new call begins) — this is what
+defeats Mistral's repeated `index: 0`. A chunk with a new id is a new call by
+construction. `arguments` may arrive as a string (appended) or as an object
+(JSON.stringify'd in place). Calls are finalised only at the end of the stream,
+and empty entries are dropped. Two different calls are never merged.
+
+Malformed / truncated JSON is repaired in agentService by
+parseJsonLenient -> extractJsonFragment -> balanceJsonFragment: the first
+balanced JSON object is taken, a trailing partial token is dropped and open
+strings/brackets are closed before a final JSON.parse attempt.
+
+--------------------------------------------------------------------------------
+TASK 1b — ARGUMENT ALIASES (agentService.parseAndNormalizeToolArguments)
+--------------------------------------------------------------------------------
+
+path    <- path, file_path, filepath, filePath, filename, file_name, fileName,
+           name, file, target, target_path, pathname
+content <- content, contents, text, code, body, file_content, fileContent,
+           source, data
+command <- command, cmd, shell_command, shellCommand (run_command only)
+The alias key is deleted after mapping so the tool sees only the canonical key.
+
+ACTIONABLE ERRORS. "a \"path\" is required" is gone. The new message names the
+tool, lists the keys that actually arrived, lists the required keys, lists the
+accepted aliases, and ends with a one-line correct example, e.g.
+
+  Error: create_file needs a "path" — a workspace-relative file path such as
+  "index.html" or "css/base.css". It received these keys: content. Required
+  keys: path, content. Accepted aliases: path, file_path, ... Send it again like
+  this: create_file {"path":"index.html","content":"<!DOCTYPE html>…"}
+
+Unknown tools get the same treatment (the tool name, the keys received and the
+list of valid tools).
+
+--------------------------------------------------------------------------------
+TASK 1b — LOOP BREAKER
+--------------------------------------------------------------------------------
+
+State: `consecutiveFailures`, `failureEscalation`, `forceNonStreamOnce`,
+`lastFailureText`. A turn counts as a failure when EVERY tool call in it failed
+(and as a success when at least one worked, which resets the streak).
+
+When two turns in a row fail completely:
+  1. the next turn is re-requested in NON-STREAMING mode (forceNonStreamOnce
+     is consumed by requestOnce -> sendCompletion({ allowStream: false }));
+  2. still failing -> advanceCandidate() to the next tool-capable model/key in
+     the chain with the same history;
+  3. still failing -> ONE corrective message;
+  4. still failing -> the run FAILS FAST with
+     "Stopped: the agent's tool calls failed N turns in a row and no files were
+     written. Last error: …" instead of burning the token budget.
+
+Failed calls never count as progress (they do not touch writtenThisRun), and
+tryAutoContinue() returns false while `consecutiveFailures >= 2`, so the
+"continue automatically" budget/tool-cap path can never be triggered by a stuck
+failure loop.
+
+--------------------------------------------------------------------------------
+TASK 1b — MODEL CHOICE AND LABELS
+--------------------------------------------------------------------------------
+
+server/src/config/providers.js gained CODE_ONLY_MODELS = ['codestral-latest'],
+isCodeOnlyModel(), PREFERRED_AGENT_MODEL = { mistral:
+'mistral-large-latest', groq: 'openai/gpt-oss-120b' } and modelNote(). The auto
+scorer applies a 60-point penalty to code-only models (was 25) and a 120-point
+bonus to the provider's preferred agent model, both in pickAutoCandidate and in
+the vanilla strongest-model pick. Result: Mistral Auto resolves to
+mistral-large-latest, never codestral.
+
+client/src/utils/agentModels.js relabels the option "Mistral Codestral (code
+only)" with the hint "Code completion only — weak tool use, not recommended for
+agent runs", and Mistral Large gets "Recommended — best tool use for agent runs".
+codestral stays SELECTABLE, it is just no longer chosen automatically.
+
+Models a Mistral key can list (mirrored by the mock's /models):
+mistral-large-latest (recommended, full function calling), mistral-small-latest
+(full function calling, faster/weaker), codestral-latest (code-completion tuned,
+weak tool use — labelled "code only") and mistral-embed (filtered out by
+isExcludedModel/EXCLUDED_MODEL_PATTERNS, never offered).
+
+--------------------------------------------------------------------------------
+TASK 2a — THE SERVER-SIDE STARTER KIT
+--------------------------------------------------------------------------------
+
+server/src/templates/vanilla-kit/ (plain files, no comments in any .js):
+  css/base.css   ~950 lines. Reset, fluid clamp() type scale, 8px spacing scale,
+                 radius/shadow tokens, container + grid utilities, sticky
+                 translucent header with backdrop blur, hamburger + mobile panel,
+                 buttons (primary/secondary/ghost, sm/lg/block), hero with
+                 gradient background and blurred blob, page-hero, section header,
+                 cards with hover lift, stats strip, testimonials, pricing cards,
+                 process steps, FAQ accordion (grid-rows animation), CTA banner,
+                 forms with labels/focus/error/success states, contact info
+                 cards, CSS map block, story timeline, values, team, blog cards,
+                 multi-column footer with a labelled inline-SVG social row,
+                 back-to-top, reveal-on-scroll, breakpoints 640/900/1200, visible
+                 :focus-visible rings, and a prefers-reduced-motion block.
+  themes.js      6 presets as complete :root variable blocks + matching Google
+                 Fonts pairs: indigo-modern (Inter + Sora), emerald-fresh
+                 (Manrope + Fraunces), sunset-warm (Nunito Sans + Poppins),
+                 midnight-dark (Inter + Outfit), rose-elegant (Source Sans 3 +
+                 Playfair Display), slate-corporate (IBM Plex Sans).
+  js/main.js     mobile nav toggle (closes on link click, outside click, Escape),
+                 sticky header state, active nav link, smooth scroll with header
+                 offset, reveal-on-scroll (IntersectionObserver, reduced-motion
+                 aware), FAQ accordion, back-to-top, data-year, and form
+                 validation with inline errors plus an in-page success message.
+                 Every feature is guarded by element existence.
+  snippets.js    copy-ready HTML snippets with documented class names for all 17
+                 section types (hero, page-hero, services, features, stats,
+                 testimonials, pricing, process, faq, cta, contact-form,
+                 contact-info, about-story, team, values, mission, blogs).
+  scaffold.js    builds the page shell and the scaffold plan.
+  index.js       readKitAsset(), buildScaffoldPlan(), loadKitClasses().
+
+No external images anywhere: every icon and visual is inline SVG or CSS.
+
+--------------------------------------------------------------------------------
+TASK 2b — scaffold_site CONTRACT (server-side, zero model tokens)
+--------------------------------------------------------------------------------
+
+scaffold_site({ brand, tagline, palette, pages:[{file, title, nav_label,
+                sections:[...]}] })
+
+executes on the server and:
+  * writes css/base.css, js/main.js (verbatim kit files) and css/theme.css
+    (the chosen preset's :root block);
+  * writes one full HTML page per entry with an IDENTICAL header (brand, mobile
+    toggle, nav listing EVERY page, one nav CTA always pointing at the contact
+    page so the nav markup is byte-identical on every page), an IDENTICAL
+    multi-column footer (brand blurb, quick links, services, contact, 4 social
+    icons, year bar), correct RELATIVE links (css/base.css, css/theme.css,
+    js/main.js, the Google Fonts link for the preset), a unique <title>, a meta
+    description and a language attribute;
+  * turns every requested section into a labelled `<!-- SLOT:<name> -->` inside
+    <main>, in the order given;
+  * writes through writeFileToWorkspace(), so real-time explorer events
+    (queueAgentFsChange), validation and the connection check all apply;
+  * returns the created file list, the slot map and the theme it used as the
+    tool result, and registers every file in writtenThisRun so a later
+    create_file on a scaffolded path is rejected (use edit_file).
+Existing non-empty files are left untouched and reported as skipped, so a
+follow-up scaffold can never nuke a page that already has content.
+
+--------------------------------------------------------------------------------
+TASK 2c — NEW AGENT WORKFLOW (the prompt)
+--------------------------------------------------------------------------------
+
+server/src/agent/prompts/stacks/vanilla.js was rewritten (still COMPACT for every
+provider) to:
+
+  PLAN -> scaffold_site (once) -> edit_file per page, replacing every SLOT with
+  real copy using ONLY the kit classes -> optional css/<page>.css for genuinely
+  custom bits -> short summary.
+
+The prompt carries a compact catalog of ready-to-copy kit markup for every
+section type, the rule that nav_label must equal the plan's nav labels, the
+section-name list, the "exactly one h1" rule, and the instruction to never leave
+a slot marker and never write lorem ipsum. js/main.js, css/base.css and
+css/theme.css must never be written by the model. Follow-up tasks use the
+project snapshot and the same kit classes; new pages are copied from an existing
+page with read_file + edit_file and the nav link is added to every page.
+
+--------------------------------------------------------------------------------
+TASK 2d — OLD PROJECTS KEEP WORKING
+--------------------------------------------------------------------------------
+
+The per-page stylesheet convention is now chosen by PRESENCE, not assumed:
+  * css/style.css only                      -> single-stylesheet project, passes;
+  * css/base.css alone (the kit)            -> passes;
+  * css/base.css + css/<page>.css on at least
+    one page                                -> then EVERY page must link its own.
+The same rule was applied to BOTH the connection check and vanillaGate, which
+previously hard-required css/<page>.css whenever css/base.css existed and would
+have failed every kit project.
+
+--------------------------------------------------------------------------------
+TASK 2e — WHY THE OLD CHECK MISSED IT, AND THE NEW RULES
+--------------------------------------------------------------------------------
+
+Why it missed it: (a) the class-coverage branch is skipped entirely when no CSS
+file exists, so a project whose page stylesheets never got written had zero
+coverage checking; (b) UNSTYLED_CLASS_TOLERANCE was 2, so a few unstyled classes
+were silently allowed; (c) finishing was never blocked — after the repair rounds
+were spent the run emitted a `gate` event and then a `complete` event anyway.
+
+New rules in server/src/agent/quality/connectionCheck.js:
+  * UNSTYLED_CLASS_TOLERANCE and UNSTYLED_ID_TOLERANCE are 0;
+  * an HTML class with no rule in any LINKED stylesheet is a failure, except
+    kit-known classes (loadKitClasses() reads css/base.css + the snippets),
+    RUNTIME_CLASS_ALLOWLIST, classes the script mutates, and /^js-[\w-]+$/
+    hooks;
+  * a JS selector with no matching element is a failure, with the same kit /
+    js-hook exemptions;
+  * a link/script pointing at a missing file is a failure (unchanged);
+  * a page that links a missing page stylesheet is a failure (unchanged).
+
+HARD FAIL-ON-FINISH. agentService now has blockFinishing(label, failures,
+code): when the quick content check, the link/style check or the visual check
+still fails after every repair round AND tryAutoContinue() declines, the run
+emits an `error` event listing the problems and THROWS. It can no longer report
+success on a site with unwritten or broken files. quickCheck also fails on any
+remaining `<!-- SLOT:name -->` marker.
+
+VISUAL SANITY CHECK (server/src/agent/quality/visualSanity.js). Uses a real
+headless Chrome via --dump-dom (no dependency added). It finds the Chrome/Edge
+binary from CHROME_PATH or the usual locations and SKIPS GRACEFULLY when none is
+present. For each page it builds a temp copy with the linked CSS and JS INLINED
+(so nothing needs the network), injects a probe, and asserts on computed styles:
+links are not the default blue rgb(0,0,238), the header is sticky/fixed, a hero
+has >= 48px of vertical padding, cards have non-zero padding, the body font is
+not the browser default serif, and the page has no horizontal overflow. It also
+clicks .nav-toggle and .faq-item__toggle to prove the kit's JS is wired. Screens
+can be captured with captureScreenshots() at any width.
+
+--------------------------------------------------------------------------------
+SUPERSEDES (older statements in this file that are now WRONG)
+--------------------------------------------------------------------------------
+
+Old entries are left in place, but these claims no longer hold:
+
+  1. WRITE ORDER. "css base first, then HTML, then one css/<page>.css per page,
+     then js/main.js" is no longer the vanilla workflow. For HTML/CSS/JS sites
+     the write order is: plan JSON -> scaffold_site (which creates base.css,
+     theme.css and main.js server-side) -> edit_file per page. css/<page>.css is
+     now OPTIONAL and only for genuinely custom rules.
+  2. SINGLE-CSS CONVENTION. "A css/base.css project always needs css/<page>.css"
+     is no longer true. base.css + theme.css with no page sheet is a complete,
+     passing convention. The per-page sheet is required for every page only once
+     one page links its own.
+  3. "The server checks that every class and id used in the HTML has a rule in
+     the CSS linked from that page" — still true, but tolerance is now 0 and
+     kit-known classes / js-hooks are exempt, and failing it now BLOCKS the run
+     instead of only being reported.
+  4. Any earlier statement that a failing quality gate still lets the run end
+     normally applies only to the content-quality gate (vanillaGate). The
+     content check, the link/style check and the visual check are blocking.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output, not claims)
+--------------------------------------------------------------------------------
+
+Artifacts saved under tmp-acceptance/ (logs + PNG screenshots).
+
+Task 1 — accumulator diagnosis with a mock provider streaming Mistral-style
+chunks (tmp-acceptance/task1-accumulator-before-after.txt):
+  merged      -> 2 calls assembled (was 1), names correct, args parse cleanly.
+  objectArgs  -> 1 call, path=contact.html, contentLength=25 (was dropped).
+  aliasNoPath -> 2 calls, no parse error (was 1 merged, unparseable).
+
+Task 1 — end-to-end through the real runAgent (tmp-acceptance/task1-toolcall.txt):
+  8 requests / 19,600 tokens. One streamed turn carrying THREE whole create_file
+  calls with repeated index 0 wrote index.html, about.html AND css/base.css
+  separately; a file_path + text alias call wrote contact.html; two turns that
+  omitted path produced actionable errors, then "Two tool calls in a row failed —
+  retrying this turn without streaming…" and the non-streamed turn recovered
+  (notes.txt written). No loop.
+
+Task 1 — loop breaker on an unfixable failure (tmp-acceptance/task1-loopbreaker.txt):
+  6 requests / 18,420 tokens, then a clean fail-fast. Request #3 is non-streamed
+  (`#3 model=mistral-large-latest stream=false`), request #4 escalated to
+  `model=mistral-small-latest`, request #5 injected the corrective message, then
+  "Stopped: the agent's tool calls failed 5 turns in a row and no files were
+  written." (Before the fix the same input ran forever.)
+
+Task 2 — "simple 3-page website: home, about, contact for a web design agency"
+(tmp-acceptance/accept-indigo-modern.txt):
+  requests 6 (target <= 10), tokens 22,250 (target < 60K), duration 3.9s.
+  Tool calls: 1 scaffold_site + 3 edit_file. Files created: css/base.css,
+  css/theme.css, js/main.js, index.html (236 lines), about.html (164),
+  contact.html (161). Result: gatePassed=true, connection check ok=true,
+  visual check ok=true.
+  Computed styles reported per page, real headless Chrome:
+    index.html:   link=rgb(255,255,255) header=sticky heroPad=176 cardPad=64
+                  font=Inter,… mobileNav=true faq=true overflowX=false
+    about.html:   link=rgb(255,255,255) header=sticky heroPad=144 cardPad=0
+                  font=Inter,… mobileNav=true
+    contact.html: link=rgb(255,255,255) header=sticky heroPad=144 cardPad=64
+                  font=Inter,… mobileNav=true
+  Screenshots (full page, 1440px and 390px, for all 3 pages) in
+  tmp-acceptance/screenshots/indigo-modern/ — 6 PNGs, 118KB to 554KB each. A PNG
+  header/deflate analysis of the saved files confirms real rendered content, not
+  blank or error pages:
+    index-1440.png  1440x1400  554,186 bytes  ~2,266 distinct sampled colours
+    index-390.png    390x1400  228,414 bytes  ~1,421 distinct sampled colours
+    about-1440.png  1440x1400  293,758 bytes  ~2,357 distinct sampled colours
+  (a blank page compresses to a few kilobytes and a handful of colours). Visible
+  in them: the translucent sticky header with brand mark and nav CTA, the
+  gradient hero with eyebrow badge / clamp() headline with a gradient-highlighted
+  word / two CTAs / a proof stats row, the 3-card service grid, the 4-item stats
+  strip, 3 testimonial cards with 5-star rows and initials avatars, the FAQ
+  accordion, the gradient CTA banner, the 4-colour multi-column footer with the
+  social icon row, and (at 390px) the hamburger menu button with the other
+  columns stacked into one.
+
+Task 2 — theming proved on two more palettes: the same run against
+emerald-fresh and rose-elegant produced identical results (6 requests, 22,250
+tokens, all checks passing) with different fonts and colours:
+  emerald-fresh -> font="Manrope, …", heading Fraunces, primary #047857
+  rose-elegant  -> font="Source Sans 3, …", heading Playfair Display, primary #be185d
+  indigo-modern -> font="Inter, …", heading Sora, primary #4f46e5
+Screenshots for emerald-fresh are in tmp-acceptance/screenshots/emerald-fresh/.
+
+Regression proof for the check hardening: the first Task 2 run FAILED with
+  "css/base.css, css/theme.css do not style 1 class(es) used in the HTML:
+   footer-col". That was a REAL bug in the kit (a footer column class with no
+rule) which the previous tolerance would have swallowed. .footer-col was added
+to base.css and the run then passed.
+
+  - oxlint (client): 0 errors, 2 pre-existing warnings in settingsSlice.js
+    (control-char regex, unrelated).
+  - vite build: OK (2029 modules, 874ms).
+  - node --check: OK on every changed/new server file (14 files) plus a module
+    import smoke test of the kit, the checks and the prompt index.
+  - All temporary test files deleted afterwards (server/tmp/, the throwaway
+    e2e workspaces). tmp-acceptance/ is kept as evidence; delete it freely.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED
+--------------------------------------------------------------------------------
+
+  - A LIVE MISTRAL RUN: there is no provider key in this environment (server/.env
+    has no MISTRAL/GROQ key), so every run above used a scripted mock that drives
+    the real runAgent, the real tools and real files. The claim "Mistral Auto
+    picks mistral-large-latest for agent runs" is verified against the mock's
+    /models list and the real scoring code, not against a live key.
+  - Which models a real Mistral key can list is therefore reported from the
+    allowlist and the mock, not measured.
+  - The screenshots prove RENDERING (real PNG bytes, real computed styles) but
+    they were produced from the mock's canned copy, so they demonstrate that the
+    KIT looks modern and professional — not that a real model writes good copy.
+  - The visual check was run against the local file:// copies of the pages. A
+    sandbox without Chrome/Edge would silently skip it (by design); the
+    /preview/:projectId HTTP path was not re-tested here.
+  - MongoDB-backed paths were not exercised (no DB configured).

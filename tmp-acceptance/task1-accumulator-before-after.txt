@@ -1,0 +1,25 @@
+
+===== SCENARIO: merged =====
+RAW SSE chunks:
+  {"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"create_file","arguments":"{\"path\":\"index.html\",\"content\":\"<!DOCTYPE html><h1>A</h1>\"}"}}]}
+  {"tool_calls":[{"index":0,"id":"call_b","type":"function","function":{"name":"create_file","arguments":"{\"path\":\"about.html\",\"content\":\"<!DOCTYPE html><h1>B</h1>\"}"}}]}
+  {}
+ASSEMBLED tool_calls: 2
+  {"id":"call_a","name":"create_file","argsType":"string","argsLength":59,"argsHead":"{\"path\":\"index.html\",\"content\":\"<!DOCTYPE html><h1>A</h1>\"}","parseError":null,"keys":["path","content"],"path":"index.html","contentLength":25}
+  {"id":"call_b","name":"create_file","argsType":"string","argsLength":59,"argsHead":"{\"path\":\"about.html\",\"content\":\"<!DOCTYPE html><h1>B</h1>\"}","parseError":null,"keys":["path","content"],"path":"about.html","contentLength":25}
+
+===== SCENARIO: objectArgs =====
+RAW SSE chunks:
+  {"tool_calls":[{"index":0,"id":"call_c","type":"function","function":{"name":"create_file","arguments":{"path":"contact.html","content":"<!DOCTYPE html><h1>C</h1>"}}}]}
+  {}
+ASSEMBLED tool_calls: 1
+  {"id":"call_c","name":"create_file","argsType":"string","argsLength":61,"argsHead":"{\"path\":\"contact.html\",\"content\":\"<!DOCTYPE html><h1>C</h1>\"}","parseError":null,"keys":["path","content"],"path":"contact.html","contentLength":25}
+
+===== SCENARIO: aliasNoPath =====
+RAW SSE chunks:
+  {"tool_calls":[{"index":0,"id":"call_d","type":"function","function":{"name":"create_file","arguments":"{\"file_path\":\"services.html\",\"content\":\"<!DOCTYPE html><h1>D</h1>\"}"}}]}
+  {"tool_calls":[{"index":0,"id":"call_e","type":"function","function":{"name":"create_file","arguments":"{\"text\":\"body copy\",\"filename\":\"pricing.html\"}"}}]}
+  {}
+ASSEMBLED tool_calls: 2
+  {"id":"call_d","name":"create_file","argsType":"string","argsLength":67,"argsHead":"{\"file_path\":\"services.html\",\"content\":\"<!DOCTYPE html><h1>D</h1>\"}","parseError":null,"keys":["file_path","content"],"path":null,"contentLength":25}
+  {"id":"call_e","name":"create_file","argsType":"string","argsLength":46,"argsHead":"{\"text\":\"body copy\",\"filename\":\"pricing.html\"}","parseError":null,"keys":["text","filename"],"path":null,"contentLength":0}

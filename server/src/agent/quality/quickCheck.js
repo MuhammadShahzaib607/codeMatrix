@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getWorkspacePath } from '../../utils/workspaceManager.js'
+import { SLOT_PATTERN } from '../../templates/vanilla-kit/index.js'
 
 // ---------------------------------------------------------------------------
 // The CHEAP verification pass.
@@ -147,6 +148,15 @@ export async function quickCheck({
     if (!/\.html?$/i.test(file)) continue
     if (!/<\/html>\s*$/i.test(content.trimEnd())) {
       problems.push(`"${file}" does not end with </html>, so its tail is missing or a chunk overwrote it.`)
+    }
+
+    const leftoverSlots = [...content.matchAll(new RegExp(SLOT_PATTERN.source, 'g'))].map((match) => match[1])
+    if (leftoverSlots.length > 0) {
+      problems.push(
+        `"${file}" still has ${leftoverSlots.length} empty scaffold slot(s): ${leftoverSlots
+          .map((name) => `<!-- SLOT:${name} -->`)
+          .join(', ')}. Replace every slot with the real section markup and business-specific copy now.`,
+      )
     }
 
     if (/\bhref\s*=\s*(""|'')/i.test(content) || /\bhref\s*=\s*"#"/i.test(content)) {

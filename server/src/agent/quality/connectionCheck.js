@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getWorkspacePath } from '../../utils/workspaceManager.js'
+import { loadKitClasses } from '../../templates/vanilla-kit/index.js'
 
 const IGNORED_SCHEMES = /^(mailto:|tel:|sms:|data:|javascript:|blob:)/i
 const REMOTE = /^(https?:|\/\/)/i
@@ -15,8 +16,9 @@ const SKIP_DIRS = new Set([
 ])
 const MAX_WALK_FILES = 600
 const MAX_HTML_FILES = 48
-const UNSTYLED_CLASS_TOLERANCE = 2
-const UNSTYLED_ID_TOLERANCE = 1
+const UNSTYLED_CLASS_TOLERANCE = 0
+const UNSTYLED_ID_TOLERANCE = 0
+const JS_HOOK_CLASS = /^js-[\w-]+$/
 // Selectors are compared against the UNION of every page's classes/ids, so a
 // selector that is only used on one page is still satisfied by that page. A
 // selector that exists on no page at all is therefore always a real bug, and
@@ -506,17 +508,23 @@ export async function connectionCheck({
   // Projects that still use a single shared stylesheet are left alone.
   const baseSheet = cssAll.find((file) => /(^|\/)base\.css$/i.test(file))
   if (baseSheet && htmlFiles.length > 0) {
+    const pageSheets = new Map()
+    for (const file of htmlFiles) pageSheets.set(file, pageStylesheetName(file, baseSheet))
+    const usesPageSheets = htmlFiles.some((file) =>
+      (stylesheetTargets.get(file) ?? new Set()).has(pageSheets.get(file)),
+    )
     for (const file of htmlFiles) {
       const sheets = stylesheetTargets.get(file) ?? new Set()
       if (!sheets.has(baseSheet)) {
         problems.push(
-          `"${file}" does not link the shared "${baseSheet}". Every page links base.css first, then its own page stylesheet.`,
+          `"${file}" does not link the shared "${baseSheet}" that the other pages link. Every page must link the same shared stylesheet with the same relative path.`,
         )
         details.missingPageCss.push({ file, missing: baseSheet })
         problemFiles.add(file)
         continue
       }
-      const ownSheet = pageStylesheetName(file, baseSheet)
+      if (!usesPageSheets) continue
+      const ownSheet = pageSheets.get(file)
       if (!cssAll.includes(ownSheet)) {
         problems.push(
           `"${ownSheet}" is missing: every page needs its own page stylesheet (${ownSheet} for ${file}) with only the rules of that page's sections.`,
@@ -589,9 +597,7 @@ export async function connectionCheck({
     for (const match of cssText.matchAll(/#([A-Za-z_][\w-]*)/g)) cssIds.add(match[1])
 
     const js = jsReferences(jsText)
-    // Only classes the SCRIPT MUTATES at runtime (classList/className) are exempt
-    // from needing a CSS rule. A class the script merely QUERIES (.navbar) is a
-    // real styling target and must still be styled.
+    const kitClasses = await loadKitClasses()
     const allowClasses = new Set(js.mutations)
     const allowIds = new Set(js.ids)
 
@@ -619,7 +625,9 @@ export async function connectionCheck({
     const missingClasses = new Set()
     for (const set of htmlClasses.values()) {
       for (const name of set) {
-        if (cssClasses.has(name) || allowClasses.has(name) || RUNTIME_CLASS_ALLOWLIST.has(name)) continue
+        if (cssClasses.has(name)) continue
+        if (allowClasses.has(name) || RUNTIME_CLASS_ALLOWLIST.has(name)) continue
+        if (kitClasses.has(name) || JS_HOOK_CLASS.test(name)) continue
         missingClasses.add(name)
       }
     }
@@ -648,7 +656,10 @@ export async function connectionCheck({
     }
 
     const missingSelectors = []
-    for (const name of js.selectors) if (!unionClasses.has(name)) missingSelectors.push(`.${name}`)
+    for (const name of js.selectors) {
+      if (unionClasses.has(name) || kitClasses.has(name) || JS_HOOK_CLASS.test(name)) continue
+      missingSelectors.push(`.${name}`)
+    }
     for (const id of js.ids) if (!htmlIds.has(id)) missingSelectors.push(`#${id}`)
     if (missingSelectors.length > SELECTOR_TOLERANCE) {
       details.missingSelectors = missingSelectors

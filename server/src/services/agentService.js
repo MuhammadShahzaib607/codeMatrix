@@ -16,6 +16,7 @@ import { buildSystemPrompt, isVanillaFramework, resolveTier } from '../agent/pro
 import { buildProjectSnapshot } from '../agent/prompts/projectSnapshot.js'
 import { queueAgentFsChange } from './agentFsNotifier.js'
 import { findRuleBlock } from './strictRules.js'
+import { buildScaffoldPlan, sectionCatalog } from '../templates/vanilla-kit/index.js'
 import { formatGateReport, vanillaGate } from '../agent/quality/vanillaGate.js'
 import { formatQuickCheck, quickCheck } from '../agent/quality/quickCheck.js'
 import {
@@ -26,6 +27,7 @@ import {
   formatConnectionReport,
 } from '../agent/quality/connectionCheck.js'
 import { GATE_MAX_REPAIR_ROUNDS } from '../agent/quality/thresholds.js'
+import { formatVisualReport, visualSanityCheck } from '../agent/quality/visualSanity.js'
 import { clearAgentSession, getAgentSession, saveAgentSession } from './agentSessionService.js'
 import {
   clearTaskTotals,
@@ -41,7 +43,9 @@ import {
 } from './usageService.js'
 import {
   DEFAULT_PROVIDER_ORDER,
+  PREFERRED_AGENT_MODEL,
   isAllowedModel,
+  isCodeOnlyModel,
   modelCapability,
   modelLimits,
   providerLabel,
@@ -90,6 +94,7 @@ const MAX_SUMMARY_CONTINUES = 2
 const MAX_EMPTY_RETRIES = 2
 const DEBUG_AGENT = process.env.DEBUG_AGENT === '1'
 const CODE_COMPLETION_MODEL = /codestral/i
+const CODE_ONLY_PENALTY = 60
 const OLD_TOOL_RESULT_MAX = 300
 const MAX_READ_CHARS = 8000
 const MAX_LIST_CHARS = 2500
@@ -105,6 +110,15 @@ const TOOL_CALL_CORRECTION_NOTE =
 
 const CONTINUE_TASK_NOTE =
   'Continue the previous task. First call list_directory, then create the remaining files from the plan.'
+
+const TOOL_FAILURE_NON_STREAM_NOTE =
+  'Your last two tool calls failed, so this turn is being re-requested WITHOUT streaming. Send the SAME call again with a complete JSON object in one piece. Check that every key is spelled exactly like the tool schema (path, content) and that the JSON is closed.'
+
+const TOOL_FAILURE_ESCALATE_NOTE =
+  'Your tool calls keep failing. Send ONE simple, complete tool call now — a single create_file with a small valid path and content — and nothing else.'
+
+const TOOL_FAILURE_CORRECTIVE_NOTE =
+  'STOP. Do not send another failing tool call. If you cannot produce a valid create_file call, reply with plain text explaining exactly what you need instead of calling a tool.'
 
 const PLAN_NAME_PATTERN = /project[_\s-]*name\s*[:=]\s*([a-z0-9][a-z0-9-]*)/i
 const FILES_LINE_PATTERN = /(?:^|\n)\s*(?:files|plan)\s*[:=]\s*([^\n]+)/i
@@ -417,6 +431,44 @@ const OPENAI_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'scaffold_site',
+      description:
+        'Create the professional starter-kit shell for a vanilla site in ONE call (no CSS writing needed): copies css/base.css and js/main.js, writes css/theme.css for the chosen palette and one full HTML page per entry with an identical header, nav and footer. Each requested section becomes a <!-- SLOT:name --> marker you later replace with real copy.',
+      parameters: {
+        type: 'object',
+        properties: {
+          brand: { type: 'string', description: 'Brand name' },
+          tagline: { type: 'string', description: 'One short line about the business' },
+          palette: {
+            type: 'string',
+            description: 'Theme preset id: indigo-modern | emerald-fresh | sunset-warm | midnight-dark | rose-elegant | slate-corporate',
+          },
+          pages: {
+            type: 'array',
+            description: 'One entry per page, in nav order',
+            items: {
+              type: 'object',
+              properties: {
+                file: { type: 'string', description: 'Relative page path, e.g. index.html' },
+                title: { type: 'string', description: 'Unique <title>' },
+                nav_label: { type: 'string', description: 'Text shown in the nav' },
+                sections: {
+                  type: 'array',
+                  description: `kit section names, in order. Available: ${sectionCatalog()}`,
+                  items: { type: 'string' },
+                },
+              },
+              required: ['file', 'sections'],
+            },
+          },
+        },
+        required: ['brand', 'pages'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'read_file',
       description: 'Read a file before editing it.',
       parameters: {
@@ -471,6 +523,7 @@ const TOOL_LABELS = {
   create_file: 'create_file',
   append_to_file: 'append_to_file',
   edit_file: 'edit_file',
+  scaffold_site: 'scaffold_site',
   read_file: 'read_file',
   list_directory: 'list_directory',
   delete_file: 'delete_file',
@@ -573,6 +626,10 @@ function describeAction(name, args, { phase = 'running', lines = 0 } = {}) {
       return phase === 'running' ? `Extending ${filePath}…` : `Extended ${filePath} · +${lines} lines`
     case 'edit_file':
       return phase === 'running' ? `Editing ${filePath}…` : `Edited ${filePath} · ${lines} lines`
+    case 'scaffold_site':
+      return phase === 'running'
+        ? `Scaffolding ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) from the starter kit…`
+        : `Scaffolded ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) — ${lines} lines`
     case 'read_file':
       return `Read ${filePath}`
     case 'list_directory':
@@ -601,6 +658,8 @@ function describeFailure(name, args, outcome = null) {
       return reason ? `Failed to extend ${filePath} — ${reason}` : `Failed to extend ${filePath}`
     case 'edit_file':
       return reason ? `Failed to edit ${filePath} — ${reason}` : `Failed to edit ${filePath}`
+    case 'scaffold_site':
+      return reason ? `Failed to scaffold the site — ${reason}` : 'Failed to scaffold the site'
     default:
       return reason ? `Failed: ${name} — ${reason}` : `Failed: ${name}`
   }
@@ -668,6 +727,164 @@ function normalizeToolArgs(projectId, name, args) {
   return args
 }
 
+export const PATH_ARG_ALIASES = [
+  'path',
+  'file_path',
+  'filepath',
+  'filePath',
+  'filename',
+  'file_name',
+  'fileName',
+  'name',
+  'file',
+  'target',
+  'target_path',
+  'pathname',
+]
+
+export const CONTENT_ARG_ALIASES = [
+  'content',
+  'contents',
+  'text',
+  'code',
+  'body',
+  'file_content',
+  'fileContent',
+  'source',
+  'data',
+]
+
+export const COMMAND_ARG_ALIASES = ['command', 'cmd', 'shell_command', 'shellCommand']
+
+function pickArgumentAlias(args, aliases) {
+  for (const alias of aliases) {
+    const value = args?.[alias]
+    if (value === undefined || value === null) continue
+    if (typeof value === 'string' && value.trim() === '') continue
+    return { key: alias, value }
+  }
+  return null
+}
+
+function balanceJsonFragment(text) {
+  let inString = false
+  let escaped = false
+  const stack = []
+  for (const character of text) {
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') inString = true
+    else if (character === '{' || character === '[') stack.push(character)
+    else if (character === '}' || character === ']') stack.pop()
+  }
+  let repaired = text
+  if (inString) repaired += '"'
+  repaired = repaired.replace(/,\s*$/, '')
+  for (let index = stack.length - 1; index >= 0; index -= 1) {
+    repaired += stack[index] === '{' ? '}' : ']'
+  }
+  return repaired
+}
+
+function extractJsonFragment(text) {
+  const start = String(text ?? '').indexOf('{')
+  if (start === -1) return null
+  const source = String(text).slice(start)
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') {
+      inString = true
+      continue
+    }
+    if (character === '{') depth += 1
+    else if (character === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(0, index + 1)
+    }
+  }
+  return balanceJsonFragment(source)
+}
+
+function parseJsonLenient(raw) {
+  if (raw && typeof raw === 'object') return { value: raw, error: null }
+  const text = String(raw ?? '').trim()
+  if (!text) return { value: {}, error: 'the arguments were empty' }
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed === 'object') return { value: parsed, error: null }
+    return { value: {}, error: 'the arguments were not a JSON object' }
+  } catch (firstError) {
+    const fragment = extractJsonFragment(text)
+    if (fragment) {
+      try {
+        const parsed = JSON.parse(fragment)
+        if (parsed && typeof parsed === 'object') return { value: parsed, error: null }
+      } catch {}
+    }
+    return { value: {}, error: firstError.message }
+  }
+}
+
+export function parseAndNormalizeToolArguments(name, rawArguments) {
+  const { value, error } = parseJsonLenient(rawArguments)
+  const args = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
+  if (name !== 'run_command') {
+    const pathHit = pickArgumentAlias(args, PATH_ARG_ALIASES)
+    if (pathHit && typeof args.path !== 'string') {
+      args.path = String(pathHit.value)
+      if (pathHit.key !== 'path') delete args[pathHit.key]
+    }
+    const contentHit = pickArgumentAlias(args, CONTENT_ARG_ALIASES)
+    if (contentHit && typeof args.content !== 'string') {
+      args.content = typeof contentHit.value === 'string' ? contentHit.value : JSON.stringify(contentHit.value)
+      if (contentHit.key !== 'content') delete args[contentHit.key]
+    }
+  } else {
+    const commandHit = pickArgumentAlias(args, COMMAND_ARG_ALIASES)
+    if (commandHit && typeof args.command !== 'string') args.command = String(commandHit.value)
+  }
+  return { args, error }
+}
+
+function requiredPathMessage(name, args) {
+  const keys = Object.keys(args ?? {})
+  const received = keys.length > 0 ? keys.join(', ') : '(none)'
+  const examples = {
+    create_file: '{"path":"index.html","content":"<!DOCTYPE html>…"}',
+    append_to_file: '{"path":"css/base.css","content":"…the next block of rules…"}',
+    edit_file: '{"path":"index.html","content":"…the full new file content…"}',
+    read_file: '{"path":"index.html"}',
+    delete_file: '{"path":"old.html"}',
+  }
+  const example = examples[name] ?? '{"path":"index.html"}'
+  const needsContent = WRITE_TOOLS.has(name)
+  return (
+    `Error: ${name} needs a "path" — a workspace-relative file path such as "index.html" or "css/base.css". ` +
+    `It received these keys: ${received}. Required keys: path${needsContent ? ', content' : ''}. ` +
+    `Accepted aliases: ${PATH_ARG_ALIASES.join(', ')}. ` +
+    `Send it again like this: ${name} ${example}`
+  )
+}
+
+function unknownToolMessage(name, receivedKeys = []) {
+  const known = Object.keys(TOOL_LABELS).join(', ')
+  const received = receivedKeys.length > 0 ? ` (it received: ${receivedKeys.join(', ')})` : ''
+  return `Error: unknown tool "${name}"${received}. Use one of: ${known}.`
+}
+
 function debugToolCall(name, filePath, content, outcome) {
   if (!DEBUG_AGENT) return
   const head = String(content ?? '').slice(0, 40).replace(/\s+/g, ' ')
@@ -700,7 +917,7 @@ async function executeTool(name, rawArgs, projectId) {
     case 'edit_file': {
       const filePath = String(args.path ?? '').trim()
       const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
-      if (!filePath) return { text: 'Error: a "path" is required.' }
+      if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
       if (name === 'edit_file' && !existsInWorkspace(projectId, filePath)) {
         return { text: `Error: "${filePath}" does not exist (use create_file).` }
       }
@@ -742,7 +959,7 @@ async function executeTool(name, rawArgs, projectId) {
     case 'append_to_file': {
       const filePath = String(args.path ?? '').trim()
       const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
-      if (!filePath) return { text: 'Error: a "path" is required.' }
+      if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
       const invalid = validateWriteContent(name, filePath, content)
       if (invalid) {
         debugToolCall(name, filePath, content, 'rejected')
@@ -768,9 +985,69 @@ async function executeTool(name, rawArgs, projectId) {
         ],
       }
     }
+    case 'scaffold_site': {
+      let plan
+      try {
+        plan = await buildScaffoldPlan(args)
+      } catch (error) {
+        return { text: `Error: could not read the starter kit: ${error.message}`, rejected: true }
+      }
+      if (plan.files.length === 0) {
+        return {
+          text: `Error: scaffold_site needs at least one page. It received pages=${JSON.stringify(
+            Array.isArray(args.pages) ? args.pages.length : args.pages ?? null,
+          )}. Example: scaffold_site {"brand":"Acme","palette":"indigo-modern","pages":[{"file":"index.html","title":"Acme — home","nav_label":"Home","sections":["hero","services"]}]}`,
+          rejected: true,
+        }
+      }
+      const created = []
+      const skipped = []
+      const folders = new Set()
+      let totalLines = 0
+      for (const file of plan.files) {
+        const existing = existsInWorkspace(projectId, file.path)
+          ? await readWorkspaceFileSafe(projectId, file.path)
+          : null
+        if (existing !== null && existing.trim()) {
+          skipped.push(file.path)
+          continue
+        }
+        try {
+          writeFileToWorkspace(projectId, file.path, file.content)
+        } catch (error) {
+          return { text: `Error: could not write ${file.path}: ${error.message}`, rejected: true }
+        }
+        const segments = file.path.split('/')
+        for (let index = 1; index < segments.length; index += 1) {
+          folders.add(segments.slice(0, index).join('/'))
+        }
+        created.push({ path: file.path, lines: countLines(file.content) })
+        totalLines += countLines(file.content)
+      }
+      const slotSummary = plan.pages
+        .map((page) => `${page.file}[${page.sections.join(', ')}]`)
+        .join('; ')
+      const themeNote = `palette ${plan.theme.id} (${plan.theme.headingFont} + ${plan.theme.bodyFont})`
+      const parts = [
+        `Scaffolded ${created.length} file(s) with ${themeNote}${skipped.length > 0 ? ` (left ${skipped.length} existing file(s) untouched: ${skipped.join(', ')})` : ''}.`,
+        created.length > 0 ? `Created: ${created.map((file) => file.path).join(', ')}.` : '',
+        slotSummary ? `Content slots to fill next: ${slotSummary}.` : '',
+        'Replace each <!-- SLOT:name --> marker with the real section markup using ONLY the kit classes, one edit_file per page.',
+      ].filter(Boolean)
+      return {
+        text: parts.join(' '),
+        modelText: parts.join(' '),
+        lines: totalLines,
+        written: created,
+        fsChanges: [
+          ...[...folders].map((folder) => ({ path: folder, type: 'addDir' })),
+          ...created.map((file) => ({ path: file.path, type: 'add' })),
+        ],
+      }
+    }
     case 'read_file': {
       const filePath = String(args.path ?? '').trim()
-      if (!filePath) return { text: 'Error: a "path" is required.' }
+      if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
       const content = readFileFromWorkspace(projectId, filePath)
       return { text: truncate(content, MAX_READ_CHARS) }
     }
@@ -786,7 +1063,7 @@ async function executeTool(name, rawArgs, projectId) {
     }
     case 'delete_file': {
       const filePath = String(args.path ?? '').trim()
-      if (!filePath) return { text: 'Error: a "path" is required.' }
+      if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
       const deleted = await deleteFromWorkspace(projectId, filePath)
       return { text: `Deleted ${deleted}`, fsChanges: [{ path: deleted, type: 'unlink' }] }
     }
@@ -811,7 +1088,10 @@ async function executeTool(name, rawArgs, projectId) {
       }
     }
     default:
-      return { text: `Error: unknown tool "${name}".` }
+      return {
+        text: unknownToolMessage(name, rawArgs && typeof rawArgs === 'object' ? Object.keys(rawArgs) : []),
+        rejected: true,
+      }
   }
 }
 
@@ -986,10 +1266,12 @@ function pickAutoCandidate(candidates, estimatedInput, cooling, preference, requ
     (candidate) => remainingPerMinute(budgetKeyFor(candidate)) >= estimatedInput + MIN_COMPLETION,
   )
   const usable = viable.length > 0 ? viable : pool
+  const preferredStrong = requestedModel ? null : PREFERRED_AGENT_MODEL[preference]
   const autoScore = (candidate) => {
     let score = capabilityScore(candidate.providerId, candidate.model)
     if (requestedModel && candidate.model === requestedModel) score += 1000
-    if (!requestedModel && CODE_COMPLETION_MODEL.test(candidate.model)) score -= 25
+    if (preferredStrong && candidate.model === preferredStrong) score += 120
+    if (!requestedModel && CODE_COMPLETION_MODEL.test(candidate.model)) score -= CODE_ONLY_PENALTY
     return score
   }
   const sorted = [...usable].sort((a, b) => {
@@ -1019,9 +1301,11 @@ function pickCandidateForMode(
       getKeyHealth(candidate.key?.id).status !== 'invalid',
   )
   const pool = healthy.length > 0 ? healthy : [base]
+  const preferredStrong = requestedModel ? null : PREFERRED_AGENT_MODEL[base.providerId]
   const vanillaScore = (candidate) =>
     capabilityScore(candidate.providerId, candidate.model) -
-    (CODE_COMPLETION_MODEL.test(candidate.model) ? 25 : 0)
+    (isCodeOnlyModel(candidate.model) ? CODE_ONLY_PENALTY : 0) +
+    (preferredStrong && candidate.model === preferredStrong ? 120 : 0)
   const strongest = [...pool].sort((a, b) => vanillaScore(b) - vanillaScore(a))[0]
   return strongest ?? base
 }
@@ -1432,7 +1716,9 @@ export async function runAgent({
       const maxCompletionTokens = Math.max(MIN_COMPLETION, decision.maxCompletionTokens)
 
       try {
-        const response = await sendCompletion(wireMessages, maxCompletionTokens, temperature)
+        const allowStream = !forceNonStreamOnce
+        forceNonStreamOnce = false
+        const response = await sendCompletion(wireMessages, maxCompletionTokens, temperature, { allowStream })
         return { response, maxCompletionTokens, estimatedInput }
       } catch (error) {
         if (error.status === 413) {
@@ -1642,6 +1928,10 @@ export async function runAgent({
   let writeStreak = 0
   let writesWithoutNewFile = 0
   let stuckWarnings = 0
+  let consecutiveFailures = 0
+  let failureEscalation = 0
+  let forceNonStreamOnce = false
+  let lastFailureText = ''
 
   const wrapUpHint = async (usedTokens) => {
     const remaining = await missingPlannedFiles(projectId, plan)
@@ -1678,6 +1968,7 @@ export async function runAgent({
 
   const tryAutoContinue = (reason) => {
     if (autoContinues >= MAX_AUTO_CONTINUES) return false
+    if (consecutiveFailures >= 2) return false
     autoContinues += 1
     toolCallCap += toolCallCapBase
     effectiveBudget += TASK_TOKEN_BUDGET
@@ -1688,6 +1979,22 @@ export async function runAgent({
     parseRetries = 0
     note(`Continuing automatically (${autoContinues} of ${MAX_AUTO_CONTINUES}) — ${reason}.`)
     return true
+  }
+
+  const blockFinishing = (label, failures, code) => {
+    const list = (Array.isArray(failures) ? failures : []).filter(Boolean)
+    const message = `Stopped: ${label}. ${list.length} problem(s) are still unresolved after every repair round: ${list
+      .slice(0, 4)
+      .join(' ')}`
+    event_('error', message, {
+      status: 'done',
+      model,
+      provider: active.providerId,
+      tool: 'gate',
+      failures: list.slice(0, 12),
+    })
+    persistSession(code)
+    throw new Error(message)
   }
 
   for (;;) {
@@ -1887,7 +2194,6 @@ export async function runAgent({
           appendGuidance(messages, formatQuickCheck(quick))
           continue
         }
-        gateFailure = { failures: quick.problems, checks: [] }
         event_('gate', `Automatic check still failing (${quick.problems.length} problem(s)).`, {
           status: 'done',
           tool: 'gate',
@@ -1943,12 +2249,42 @@ export async function runAgent({
             appendGuidance(messages, formatConnectionReport(connection))
             continue
           }
-          gateFailure = gateFailure ?? { failures: connection.problems, checks: [] }
-          event_('gate', `Link/style check still failing (${connection.problems.length} problem(s)).`, {
+          blockFinishing('the link/style connection check still fails', connection.problems, 'connection_failed')
+        }
+
+        let visual = null
+        try {
+          visual = await visualSanityCheck({ projectId, files: plan.length > 0 ? plan : null })
+        } catch (error) {
+          visual = { skipped: true, reason: error.message }
+        }
+        if (visual && visual.skipped) {
+          note(`Visual check skipped: ${visual.reason}.`)
+        } else if (visual && !visual.ok) {
+          if (connectionRounds < MAX_CONNECTION_ROUNDS && toolCalls < toolCallCap) {
+            connectionRounds += 1
+            event_('gate', `Visual check found ${visual.problems.length} problem(s) — repair round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}.`, {
+              status: 'done',
+              tool: 'gate',
+              passed: false,
+              round: connectionRounds,
+              failures: visual.problems.slice(0, 12),
+            })
+            appendGuidance(messages, formatVisualReport(visual))
+            note(`Repairing the rendering problems — round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}…`)
+            continue
+          }
+          if (tryAutoContinue('the site still does not render like a styled site')) {
+            connectionRounds = 0
+            appendGuidance(messages, formatVisualReport(visual))
+            continue
+          }
+          blockFinishing('the visual check still fails', visual.problems, 'visual_failed')
+        } else if (visual) {
+          event_('gate', `Visual check passed in headless Chrome — ${visual.checked.length} page(s) render a styled, modern layout.`, {
             status: 'done',
             tool: 'gate',
-            passed: false,
-            failures: connection.problems.slice(0, 12),
+            passed: true,
           })
         }
       }
@@ -2058,6 +2394,8 @@ export async function runAgent({
     event_('thinking', 'Working on it…', { status: 'thinking', provider: active.providerId })
 
     let capReached = false
+    let batchCalls = 0
+    let batchFailures = 0
     for (const call of calls) {
       if (toolCalls >= toolCallCap) {
         const issuesAtCap = await plannedFileIssues(projectId, plan)
@@ -2095,14 +2433,9 @@ export async function runAgent({
       }
       toolCalls += 1
 
-      const name = call.function?.name ?? call.name ?? 'unknown'
-      let args = {}
-      try {
-        args = JSON.parse(call.function?.arguments ?? '{}')
-      } catch {
-        args = {}
-      }
-      args = normalizeToolArgs(projectId, name, args)
+      const name = String(call.function?.name ?? call.name ?? 'unknown').trim() || 'unknown'
+      const parsed = parseAndNormalizeToolArguments(name, call.function?.arguments)
+      let args = normalizeToolArgs(projectId, name, parsed.args)
 
       const actionId = crypto.randomUUID()
       const filePath = String(args.path ?? '')
@@ -2160,6 +2493,11 @@ export async function runAgent({
       }
 
       const failed = String(outcome.text ?? '').startsWith('Error')
+      batchCalls += 1
+      if (failed) {
+        batchFailures += 1
+        lastFailureText = String(outcome.text ?? '').slice(0, 240)
+      }
 
       // The Explorer must follow the agent in real time, so every successful
       // file operation pushes a direct change event to the project's room —
@@ -2193,19 +2531,32 @@ export async function runAgent({
         )
       }
 
-      const writeSucceeded = WRITE_TOOLS.has(name) && !failed
+      const batchWrites = Array.isArray(outcome.written) && outcome.written.length > 0 ? outcome.written : null
+      const writeSucceeded = (WRITE_TOOLS.has(name) || Boolean(batchWrites)) && !failed
       let modelResult = outcome.modelText ?? truncate(outcome.text ?? '', MAX_TOOL_RESULT_CHARS)
 
       if (writeSucceeded) {
-        const isNewFile = !alreadyWritten
-        const totalLines =
-          name === 'create_file'
-            ? (outcome.lines ?? 0)
-            : (alreadyWritten?.lines ?? 0) + (outcome.lines ?? 0)
-        writtenThisRun.set(filePath, {
-          lines: totalLines,
-          calls: (alreadyWritten?.calls ?? 0) + 1,
-        })
+        let isNewFile = !alreadyWritten
+        if (batchWrites) {
+          isNewFile = false
+          for (const item of batchWrites) {
+            const previous = writtenThisRun.get(item.path)
+            if (!previous) isNewFile = true
+            writtenThisRun.set(item.path, {
+              lines: item.lines,
+              calls: (previous?.calls ?? 0) + 1,
+            })
+          }
+        } else {
+          const totalLines =
+            name === 'create_file'
+              ? (outcome.lines ?? 0)
+              : (alreadyWritten?.lines ?? 0) + (outcome.lines ?? 0)
+          writtenThisRun.set(filePath, {
+            lines: totalLines,
+            calls: (alreadyWritten?.calls ?? 0) + 1,
+          })
+        }
 
         const progress = await buildProgressHint(projectId, plan, filePath)
         if (progress) modelResult = `${modelResult}\n${progress}`
@@ -2225,7 +2576,7 @@ export async function runAgent({
         // The connection check runs after EVERY html/css/js write too: a
         // root-absolute asset path and an unbalanced stylesheet are found the
         // moment they are written, not three pages later.
-        if (vanillaMode && /\.(html?|css|js)$/i.test(filePath)) {
+        if (vanillaMode && (batchWrites || /\.(html?|css|js)$/i.test(filePath))) {
           try {
             const autofix = await autofixConnections({ projectId, navLinks: vanillaMode })
             const fixText = formatAutofixReport(autofix)
@@ -2290,6 +2641,49 @@ export async function runAgent({
       })
     }
     if (capReached) continue
+
+    if (batchCalls > 0 && batchFailures === batchCalls) {
+      consecutiveFailures += 1
+    } else if (batchCalls > 0) {
+      consecutiveFailures = 0
+      failureEscalation = 0
+    }
+
+    if (consecutiveFailures >= 2) {
+      if (failureEscalation === 0) {
+        failureEscalation = 1
+        forceNonStreamOnce = true
+        appendGuidance(messages, TOOL_FAILURE_NON_STREAM_NOTE)
+        note('Two tool calls in a row failed — retrying this turn without streaming…')
+        continue
+      }
+      if (failureEscalation === 1) {
+        failureEscalation = 2
+        const previous = active
+        if (advanceCandidate()) {
+          event_('fallback', `Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, {
+            status: 'done',
+            model,
+            provider: active.providerId,
+            tool: 'fallback',
+          })
+          appendGuidance(messages, TOOL_FAILURE_ESCALATE_NOTE)
+          continue
+        }
+      }
+      if (failureEscalation === 2) {
+        failureEscalation = 3
+        appendGuidance(messages, TOOL_FAILURE_CORRECTIVE_NOTE)
+        note('One corrective message before giving up…')
+        continue
+      }
+      const failureError = new Error(
+        `Stopped: the agent's tool calls failed ${consecutiveFailures} turns in a row and no files were written. Last error: ${lastFailureText || 'unknown'}`,
+      )
+      event_('error', failureError.message, { status: 'done', model, toolFailures: consecutiveFailures })
+      persistSession('tool_failure')
+      throw failureError
+    }
   }
 }
 

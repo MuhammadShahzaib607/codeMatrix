@@ -126,6 +126,27 @@ export function providerBaseUrl(providerId) {
   return override || provider.baseUrl
 }
 
+export const CODE_ONLY_MODELS = ['codestral-latest']
+
+export function isCodeOnlyModel(modelId) {
+  return CODE_ONLY_MODELS.includes(String(modelId ?? '').trim())
+}
+
+export const PREFERRED_AGENT_MODEL = {
+  mistral: 'mistral-large-latest',
+  groq: 'openai/gpt-oss-120b',
+}
+
+export function modelNote(providerId, modelId) {
+  const id = String(modelId ?? '').trim()
+  if (!id) return ''
+  if (isCodeOnlyModel(id)) {
+    return 'code completion only — weak tool use and not recommended for agent runs'
+  }
+  if (id === PREFERRED_AGENT_MODEL[providerId]) return 'recommended for agent runs'
+  return ''
+}
+
 export function isAllowedModel(providerId, modelId) {
   const provider = getProvider(providerId)
   if (!provider) return false

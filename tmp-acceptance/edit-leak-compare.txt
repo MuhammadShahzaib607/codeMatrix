@@ -1,0 +1,77 @@
+=== STREAMING ASSEMBLY + DISPATCH: three builds, five chunk shapes (real providerChatStream) ===
+
+--- BEFORE-legacy (commit 24b8b62: name += name, index-keyed)
+  [A_name_field_carried_the_arguments_then_the_real_name] 1 assembled call(s)
+    call[0] name="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560;\"}edit_file"   <== TOOL NAME CONTAINS THE JSON ARGUMENTS
+    call[0] args="{\"path\": \"css/theme.css\", \"old_str\": \"--color-primary: #4361ee;\", \"new_str\": \"--color-primary: #e94560;\"}"
+    -> Error: unknown tool "{"path": "css/theme.css", "old_string": "--color-primary: #4361ee;", "new_string": "--color-primary: #e94560;"}edit_file".
+  [B_reported_shape_name_json_plus_edit_file] 1 assembled call(s)
+    call[0] name="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560;\"}edit_file"   <== TOOL NAME CONTAINS THE JSON ARGUMENTS
+    call[0] args="{\"path\": \"css/theme.css\", \"old_str\": \"--color-primary: #4361ee;\", \"new_str\": \"--color-primary: #e94560;\"}"
+    -> Error: unknown tool "{"path": "css/theme.css", "old_string": "--color-primary: #4361ee;", "new_string": "--color-primary: #e94560;"}edit_file".
+  [C_id_only_on_the_first_chunk] 1 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560
+    -> dispatch edit_file keys=[path, old_string, new_string]
+  [D_name_arrives_after_the_arguments_without_id] 1 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args="{\"path\": \"css/theme.css\", \"old_string\": \"a\", \"new_string\": \"b\"}"
+    -> dispatch edit_file keys=[path, old_string, new_string]
+  [E_tool_name_stuck_on_the_end_of_the_arguments] 1 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560   <== TOOL NAME STUCK ONTO THE ARGUMENTS
+    -> dispatch edit_file keys=[] PARSE-FAIL: Unexpected non-whitespace character after JSON at position 111 (line 1 column 112)
+
+--- BEFORE-HEAD (commit 9c89bf9: the build that produced the report)
+  [A_name_field_carried_the_arguments_then_the_real_name] 2 assembled call(s)
+    call[0] name="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560;\"}"   <== TOOL NAME CONTAINS THE JSON ARGUMENTS
+    call[0] args=""
+    -> Error: unknown tool "{"path": "css/theme.css", "old_string": "--color-primary: #4361ee;", "new_string": "--color-primary: #e94560;"}". Use one of: create_file, append_to_file, edit_file, ...
+    call[1] name="edit_file"
+    call[1] args="{\"path\": \"css/theme.css\", \"old_str\": \"--color-primary: #4361ee;\", \"new_str\": \"--color-primary: #e94560;\"}"
+    -> dispatch edit_file keys=[path, old_str, new_str]
+  [B_reported_shape_name_json_plus_edit_file] 1 assembled call(s)
+    call[0] name="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560;\"}edit_file"   <== TOOL NAME CONTAINS THE JSON ARGUMENTS
+    call[0] args="{\"path\": \"css/theme.css\", \"old_str\": \"--color-primary: #4361ee;\", \"new_str\": \"--color-primary: #e94560;\"}"
+    -> Error: unknown tool "{"path": "css/theme.css", "old_string": "--color-primary: #4361ee;", "new_string": "--color-primary: #e94560;"}edit_file" (it received: path, old_str, new_str). Use one of: create_file, append_to_file, edit_file, ...
+  [C_id_only_on_the_first_chunk] 2 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args=""
+    -> dispatch edit_file keys=[]
+    call[1] name=""
+    call[1] args="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560
+    -> Error: unknown tool "unknown" (it received: path, old_string, new_string). Use one of: create_file, append_to_file, edit_file, ...
+  [D_name_arrives_after_the_arguments_without_id] 2 assembled call(s)
+    call[0] name=""
+    call[0] args="{\"path\": \"css/theme.css\", \"old_string\": \"a\", \"new_string\": \"b\"}"
+    -> Error: unknown tool "unknown" (it received: path, old_string, new_string). Use one of: create_file, append_to_file, edit_file, ...
+    call[1] name="edit_file"
+    call[1] args=""
+    -> dispatch edit_file keys=[]
+  [E_tool_name_stuck_on_the_end_of_the_arguments] 1 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560   <== TOOL NAME STUCK ONTO THE ARGUMENTS
+    -> dispatch edit_file keys=[path, old_string, new_string]
+
+--- AFTER (current worktree)
+  [A_name_field_carried_the_arguments_then_the_real_name] 1 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560
+    -> dispatch edit_file keys=[path, old_string, new_string]
+  [B_reported_shape_name_json_plus_edit_file] 1 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args="{\"path\": \"css/theme.css\", \"old_str\": \"--color-primary: #4361ee;\", \"new_str\": \"--color-primary: #e94560;\"}"
+    -> dispatch edit_file keys=[path, old_string, new_string]
+  [C_id_only_on_the_first_chunk] 1 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560
+    -> dispatch edit_file keys=[path, old_string, new_string]
+  [D_name_arrives_after_the_arguments_without_id] 1 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args="{\"path\": \"css/theme.css\", \"old_string\": \"a\", \"new_string\": \"b\"}"
+    -> dispatch edit_file keys=[path, old_string, new_string]
+  [E_tool_name_stuck_on_the_end_of_the_arguments] 1 assembled call(s)
+    call[0] name="edit_file"
+    call[0] args="{\"path\": \"css/theme.css\", \"old_string\": \"--color-primary: #4361ee;\", \"new_string\": \"--color-primary: #e94560
+    -> dispatch edit_file keys=[path, old_string, new_string]
+

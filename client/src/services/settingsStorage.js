@@ -28,6 +28,10 @@ export const DEFAULT_SETTINGS = {
   },
   agent: {
     strictRules: [],
+    // Settings > General. OFF by default: the agent always WRITES its AGENT.md
+    // work log after a run, but its contents are only sent back to the model as
+    // context when the user turns this on.
+    projectHistory: false,
   },
 }
 
@@ -106,6 +110,7 @@ export function sanitizeSettings(raw) {
     },
     agent: {
       strictRules: sanitizeStrictRules(agent.strictRules),
+      projectHistory: agent.projectHistory === undefined ? false : Boolean(agent.projectHistory),
     },
   }
 }

@@ -1,0 +1,218 @@
+chrome=C:\Program Files\Google\Chrome\Application\chrome.exe
+kit=C:\Projects\CodeMatrix\tmp-acceptance\old-kit
+
+=== indigo-modern ===
+scaffold html: <header>=1 <footer>=1
+dom: headers=1 footers=1 mains=1 faqItems=3 openAfterClick=1
+faq open1=true aria1=true rows=24px height=24px | open2=true closedFirstWhenSecondOpened=true aria1Reset=false | open2AfterClose=false aria2AfterClose=false
+  nav-link CHANGED=true
+      rest  img:none color:rgb(91, 100, 120) border:rgb(91, 100, 120)
+      hover img:none color:rgb(67, 56, 202) border:rgb(67, 56, 202)
+  btn--primary CHANGED=false
+      rest  img:linear-gradient(135deg, rgb(79, 70, 229), rgb(67, 56, 202)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+      hover img:linear-gradient(135deg, rgb(79, 70, 229), rgb(67, 56, 202)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+  btn--secondary CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(15, 23, 42) border:rgb(226, 229, 239)
+      hover bg:rgb(255, 255, 255) color:rgb(15, 23, 42) border:rgb(79, 70, 229)
+  btn--ghost CHANGED=true
+      rest  img:none color:rgb(15, 23, 42) border:rgba(0, 0, 0, 0)
+      hover bg:rgb(238, 242, 255) color:rgb(79, 70, 229) border:rgba(0, 0, 0, 0)
+  service-card CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(15, 23, 42) border:rgb(226, 229, 239)
+      hover bg:rgb(255, 255, 255) color:rgb(15, 23, 42) border:color(srgb 0.626863 0.617451 0.919608)
+  faq-item CHANGED=false
+      rest  bg:rgb(255, 255, 255) color:rgb(15, 23, 42) border:rgb(226, 229, 239)
+      hover bg:rgb(255, 255, 255) color:rgb(15, 23, 42) border:rgb(226, 229, 239)
+  faq-toggle CHANGED=false
+      rest  img:none color:rgb(15, 23, 42) border:rgb(15, 23, 42)
+      hover img:none color:rgb(15, 23, 42) border:rgb(15, 23, 42)
+  social-link CHANGED=true
+      rest  img:none color:rgb(238, 242, 255) border:rgb(226, 229, 239)
+      hover img:none color:rgb(165, 180, 252) border:rgb(165, 180, 252)
+  link CHANGED=true
+      rest  img:none color:rgb(67, 56, 202) border:rgb(67, 56, 202)
+      hover img:none color:rgb(79, 70, 229) border:rgb(79, 70, 229)
+  breadcrumb-link: (not present)
+  form-input CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(15, 23, 42) border:rgb(226, 229, 239)
+      hover bg:rgb(255, 255, 255) color:rgb(15, 23, 42) border:color(srgb 0.626863 0.617451 0.919608)
+
+=== emerald-fresh ===
+scaffold html: <header>=1 <footer>=1
+dom: headers=1 footers=1 mains=1 faqItems=3 openAfterClick=1
+faq open1=true aria1=true rows=24px height=24px | open2=true closedFirstWhenSecondOpened=true aria1Reset=false | open2AfterClose=false aria2AfterClose=false
+  nav-link CHANGED=true
+      rest  img:none color:rgb(79, 99, 88) border:rgb(79, 99, 88)
+      hover img:none color:rgb(12, 31, 24) border:rgb(12, 31, 24)
+  btn--primary CHANGED=false
+      rest  img:linear-gradient(135deg, rgb(4, 120, 87), rgb(6, 95, 70)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+      hover img:linear-gradient(135deg, rgb(4, 120, 87), rgb(6, 95, 70)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+  btn--secondary CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(12, 31, 24) border:rgb(217, 232, 223)
+      hover bg:rgb(255, 255, 255) color:rgb(12, 31, 24) border:rgb(4, 120, 87)
+  btn--ghost CHANGED=true
+      rest  img:none color:rgb(12, 31, 24) border:rgba(0, 0, 0, 0)
+      hover bg:rgb(230, 244, 236) color:rgb(4, 120, 87) border:rgba(0, 0, 0, 0)
+  service-card CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(12, 31, 24) border:rgb(217, 232, 223)
+      hover bg:rgb(255, 255, 255) color:rgb(12, 31, 24) border:color(srgb 0.475098 0.712157 0.63451)
+  faq-item CHANGED=false
+      rest  bg:rgb(255, 255, 255) color:rgb(12, 31, 24) border:rgb(217, 232, 223)
+      hover bg:rgb(255, 255, 255) color:rgb(12, 31, 24) border:rgb(217, 232, 223)
+  faq-toggle CHANGED=false
+      rest  img:none color:rgb(12, 31, 24) border:rgb(12, 31, 24)
+      hover img:none color:rgb(12, 31, 24) border:rgb(12, 31, 24)
+  social-link CHANGED=true
+      rest  img:none color:rgb(231, 245, 238) border:rgb(217, 232, 223)
+      hover img:none color:rgb(134, 239, 172) border:rgb(134, 239, 172)
+  link CHANGED=true
+      rest  img:none color:rgb(6, 95, 70) border:rgb(6, 95, 70)
+      hover img:none color:rgb(4, 120, 87) border:rgb(4, 120, 87)
+  breadcrumb-link: (not present)
+  form-input CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(12, 31, 24) border:rgb(217, 232, 223)
+      hover bg:rgb(255, 255, 255) color:rgb(12, 31, 24) border:color(srgb 0.475098 0.712157 0.63451)
+
+=== sunset-warm ===
+scaffold html: <header>=1 <footer>=1
+dom: headers=1 footers=1 mains=1 faqItems=3 openAfterClick=1
+faq open1=true aria1=true rows=24px height=24px | open2=true closedFirstWhenSecondOpened=true aria1Reset=false | open2AfterClose=false aria2AfterClose=false
+  nav-link CHANGED=true
+      rest  img:none color:rgb(122, 99, 83) border:rgb(122, 99, 83)
+      hover img:none color:rgb(43, 28, 18) border:rgb(43, 28, 18)
+  btn--primary CHANGED=false
+      rest  img:linear-gradient(135deg, rgb(234, 88, 12), rgb(194, 65, 12)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+      hover img:linear-gradient(135deg, rgb(234, 88, 12), rgb(194, 65, 12)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+  btn--secondary CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(43, 28, 18) border:rgb(242, 223, 203)
+      hover bg:rgb(255, 255, 255) color:rgb(43, 28, 18) border:rgb(234, 88, 12)
+  btn--ghost CHANGED=true
+      rest  img:none color:rgb(43, 28, 18) border:rgba(0, 0, 0, 0)
+      hover bg:rgb(255, 241, 226) color:rgb(234, 88, 12) border:rgba(0, 0, 0, 0)
+  service-card CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(43, 28, 18) border:rgb(242, 223, 203)
+      hover bg:rgb(255, 255, 255) color:rgb(43, 28, 18) border:color(srgb 0.934902 0.636275 0.45902)
+  faq-item CHANGED=false
+      rest  bg:rgb(255, 255, 255) color:rgb(43, 28, 18) border:rgb(242, 223, 203)
+      hover bg:rgb(255, 255, 255) color:rgb(43, 28, 18) border:rgb(242, 223, 203)
+  faq-toggle CHANGED=false
+      rest  img:none color:rgb(43, 28, 18) border:rgb(43, 28, 18)
+      hover img:none color:rgb(43, 28, 18) border:rgb(43, 28, 18)
+  social-link CHANGED=true
+      rest  img:none color:rgb(255, 243, 230) border:rgb(242, 223, 203)
+      hover img:none color:rgb(253, 186, 116) border:rgb(253, 186, 116)
+  link CHANGED=true
+      rest  img:none color:rgb(194, 65, 12) border:rgb(194, 65, 12)
+      hover img:none color:rgb(234, 88, 12) border:rgb(234, 88, 12)
+  breadcrumb-link: (not present)
+  form-input CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(43, 28, 18) border:rgb(242, 223, 203)
+      hover bg:rgb(255, 255, 255) color:rgb(43, 28, 18) border:color(srgb 0.934902 0.636275 0.45902)
+
+=== midnight-dark ===
+scaffold html: <header>=1 <footer>=1
+dom: headers=1 footers=1 mains=1 faqItems=3 openAfterClick=1
+faq open1=true aria1=true rows=24px height=24px | open2=true closedFirstWhenSecondOpened=true aria1Reset=false | open2AfterClose=false aria2AfterClose=false
+  nav-link CHANGED=true
+      rest  img:none color:rgb(129, 140, 248) border:rgb(129, 140, 248)
+      hover img:none color:rgb(238, 242, 255) border:rgb(238, 242, 255)
+  btn--primary CHANGED=false
+      rest  img:linear-gradient(135deg, rgb(99, 102, 241), rgb(129, 140, 248)) color:rgb(11, 16, 32) border:rgba(0, 0, 0, 0)
+      hover img:linear-gradient(135deg, rgb(99, 102, 241), rgb(129, 140, 248)) color:rgb(11, 16, 32) border:rgba(0, 0, 0, 0)
+  btn--secondary CHANGED=true
+      rest  bg:rgb(19, 26, 47) color:rgb(238, 242, 255) border:rgb(39, 49, 79)
+      hover bg:rgb(19, 26, 47) color:rgb(238, 242, 255) border:rgb(99, 102, 241)
+  btn--ghost CHANGED=true
+      rest  img:none color:rgb(238, 242, 255) border:rgba(0, 0, 0, 0)
+      hover bg:rgb(27, 36, 64) color:rgb(99, 102, 241) border:rgba(0, 0, 0, 0)
+  service-card CHANGED=true
+      rest  bg:rgb(19, 26, 47) color:rgb(238, 242, 255) border:rgb(39, 49, 79)
+      hover bg:rgb(19, 26, 47) color:rgb(238, 242, 255) border:color(srgb 0.258824 0.285686 0.595686)
+  faq-item CHANGED=false
+      rest  bg:rgb(19, 26, 47) color:rgb(238, 242, 255) border:rgb(39, 49, 79)
+      hover bg:rgb(19, 26, 47) color:rgb(238, 242, 255) border:rgb(39, 49, 79)
+  faq-toggle CHANGED=false
+      rest  img:none color:rgb(238, 242, 255) border:rgb(238, 242, 255)
+      hover img:none color:rgb(238, 242, 255) border:rgb(238, 242, 255)
+  social-link CHANGED=true
+      rest  img:none color:rgb(230, 235, 255) border:rgb(39, 49, 79)
+      hover img:none color:rgb(34, 211, 238) border:rgb(34, 211, 238)
+  link CHANGED=true
+      rest  img:none color:rgb(129, 140, 248) border:rgb(129, 140, 248)
+      hover img:none color:rgb(99, 102, 241) border:rgb(99, 102, 241)
+  breadcrumb-link: (not present)
+  form-input CHANGED=true
+      rest  bg:rgb(19, 26, 47) color:rgb(238, 242, 255) border:rgb(39, 49, 79)
+      hover bg:rgb(19, 26, 47) color:rgb(238, 242, 255) border:color(srgb 0.258824 0.285686 0.595686)
+
+=== rose-elegant ===
+scaffold html: <header>=1 <footer>=1
+dom: headers=1 footers=1 mains=1 faqItems=3 openAfterClick=1
+faq open1=true aria1=true rows=24px height=24px | open2=true closedFirstWhenSecondOpened=true aria1Reset=false | open2AfterClose=false aria2AfterClose=false
+  nav-link CHANGED=false
+      rest  img:none color:rgb(157, 23, 77) border:rgb(157, 23, 77)
+      hover img:none color:rgb(157, 23, 77) border:rgb(157, 23, 77)
+  btn--primary CHANGED=false
+      rest  img:linear-gradient(135deg, rgb(190, 24, 93), rgb(157, 23, 77)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+      hover img:linear-gradient(135deg, rgb(190, 24, 93), rgb(157, 23, 77)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+  btn--secondary CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(42, 16, 32) border:rgb(240, 219, 228)
+      hover bg:rgb(255, 255, 255) color:rgb(42, 16, 32) border:rgb(190, 24, 93)
+  btn--ghost CHANGED=true
+      rest  img:none color:rgb(42, 16, 32) border:rgba(0, 0, 0, 0)
+      hover bg:rgb(251, 233, 240) color:rgb(190, 24, 93) border:rgba(0, 0, 0, 0)
+  service-card CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(42, 16, 32) border:rgb(240, 219, 228)
+      hover bg:rgb(255, 255, 255) color:rgb(42, 16, 32) border:color(srgb 0.852941 0.514706 0.655882)
+  faq-item CHANGED=false
+      rest  bg:rgb(255, 255, 255) color:rgb(42, 16, 32) border:rgb(240, 219, 228)
+      hover bg:rgb(255, 255, 255) color:rgb(42, 16, 32) border:rgb(240, 219, 228)
+  faq-toggle CHANGED=false
+      rest  img:none color:rgb(42, 16, 32) border:rgb(42, 16, 32)
+      hover img:none color:rgb(42, 16, 32) border:rgb(42, 16, 32)
+  social-link CHANGED=true
+      rest  img:none color:rgb(253, 238, 244) border:rgb(240, 219, 228)
+      hover img:none color:rgb(249, 168, 212) border:rgb(249, 168, 212)
+  link CHANGED=true
+      rest  img:none color:rgb(157, 23, 77) border:rgb(157, 23, 77)
+      hover img:none color:rgb(190, 24, 93) border:rgb(190, 24, 93)
+  breadcrumb-link: (not present)
+  form-input CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(42, 16, 32) border:rgb(240, 219, 228)
+      hover bg:rgb(255, 255, 255) color:rgb(42, 16, 32) border:color(srgb 0.852941 0.514706 0.655882)
+
+=== slate-corporate ===
+scaffold html: <header>=1 <footer>=1
+dom: headers=1 footers=1 mains=1 faqItems=3 openAfterClick=1
+faq open1=true aria1=true rows=24px height=24px | open2=true closedFirstWhenSecondOpened=true aria1Reset=false | open2AfterClose=false aria2AfterClose=false
+  nav-link CHANGED=true
+      rest  img:none color:rgb(85, 99, 122) border:rgb(85, 99, 122)
+      hover img:none color:rgb(22, 32, 46) border:rgb(22, 32, 46)
+  btn--primary CHANGED=false
+      rest  img:linear-gradient(135deg, rgb(29, 78, 216), rgb(30, 64, 175)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+      hover img:linear-gradient(135deg, rgb(29, 78, 216), rgb(30, 64, 175)) color:rgb(255, 255, 255) border:rgba(0, 0, 0, 0)
+  btn--secondary CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(22, 32, 46) border:rgb(219, 227, 237)
+      hover bg:rgb(255, 255, 255) color:rgb(22, 32, 46) border:rgb(29, 78, 216)
+  btn--ghost CHANGED=true
+      rest  img:none color:rgb(22, 32, 46) border:rgba(0, 0, 0, 0)
+      hover bg:rgb(233, 238, 245) color:rgb(29, 78, 216) border:rgba(0, 0, 0, 0)
+  service-card CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(22, 32, 46) border:rgb(219, 227, 237)
+      hover bg:rgb(255, 255, 255) color:rgb(22, 32, 46) border:color(srgb 0.523529 0.627255 0.892353)
+  faq-item CHANGED=false
+      rest  bg:rgb(255, 255, 255) color:rgb(22, 32, 46) border:rgb(219, 227, 237)
+      hover bg:rgb(255, 255, 255) color:rgb(22, 32, 46) border:rgb(219, 227, 237)
+  faq-toggle CHANGED=false
+      rest  img:none color:rgb(22, 32, 46) border:rgb(22, 32, 46)
+      hover img:none color:rgb(22, 32, 46) border:rgb(22, 32, 46)
+  social-link CHANGED=true
+      rest  img:none color:rgb(234, 240, 250) border:rgb(219, 227, 237)
+      hover img:none color:rgb(147, 197, 253) border:rgb(147, 197, 253)
+  link CHANGED=true
+      rest  img:none color:rgb(30, 64, 175) border:rgb(30, 64, 175)
+      hover img:none color:rgb(29, 78, 216) border:rgb(29, 78, 216)
+  breadcrumb-link: (not present)
+  form-input CHANGED=true
+      rest  bg:rgb(255, 255, 255) color:rgb(22, 32, 46) border:rgb(219, 227, 237)
+      hover bg:rgb(255, 255, 255) color:rgb(22, 32, 46) border:color(srgb 0.523529 0.627255 0.892353)

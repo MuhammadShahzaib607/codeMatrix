@@ -64,6 +64,7 @@ export function buildSystemPrompt({
   now = new Date(),
   projectStructure = null,
   projectSnapshot = null,
+  projectMemory = null,
   updateWorkflow = false,
   strictRules = [],
 } = {}) {
@@ -88,6 +89,15 @@ export function buildSystemPrompt({
     sections.push(projectSnapshot)
   } else if (projectStructure) {
     sections.push(`PROJECT STRUCTURE\n${projectStructure}`)
+  }
+
+  // The project's own work log, only when the user opted in. It sits AFTER the
+  // snapshot: the snapshot describes what the files ARE, the log describes what
+  // earlier runs DID and decided.
+  if (projectMemory) {
+    sections.push(
+      `PROJECT HISTORY (AGENT.md — earlier runs in this project, newest last; treat it as context, not as truth about the current files):\n${projectMemory}`,
+    )
   }
 
   return sections.join('\n\n')

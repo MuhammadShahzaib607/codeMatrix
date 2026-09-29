@@ -1,0 +1,331 @@
+{
+  "mode": "broken",
+  "port": 4999,
+  "projectId": "harness-broken-4999",
+  "durationMs": 632,
+  "requests": 11,
+  "totals": {
+    "taskId": "task-harness-broken-4999",
+    "promptTokens": 105688,
+    "completionTokens": 2938,
+    "totalTokens": 108626,
+    "requests": 11
+  },
+  "result": null,
+  "thrown": {
+    "message": "Stopped: the automatic content check still fails. 12 problem(s) are still unresolved after every repair round: \"index.html\" does not end with </html>, so its tail is missing or a chunk overwrote it. \"index.html\" has no <footer> landmark — the page is incomplete without its footer. \"index.html\" must contain exactly one <h1> (found 0). \"index.html\" is missing the planned <section id=\"hero\"> — write that section with real copy now, it is part of the page the plan promised."
+  },
+  "events": [
+    {
+      "type": "thinking",
+      "description": "Starting the agent…"
+    },
+    {
+      "type": "plan",
+      "description": "TYPE: site — Planned 5 file(s): index.html, services.html, about.html, blogs.html, contact.html"
+    },
+    {
+      "type": "note",
+      "description": "Verifying the plan — 5 file(s) still incomplete…"
+    },
+    {
+      "type": "thinking",
+      "description": "Working on it…"
+    },
+    {
+      "type": "scaffold_site",
+      "description": "Scaffolding 5 page(s) from the starter kit…"
+    },
+    {
+      "type": "scaffold_site",
+      "description": "Scaffolded 5 page(s) — 2483 lines"
+    },
+    {
+      "type": "thinking",
+      "description": "Working on it…"
+    },
+    {
+      "type": "edit_file",
+      "description": "Editing index.html…"
+    },
+    {
+      "type": "edit_file",
+      "description": "Edited index.html · 38 lines"
+    },
+    {
+      "type": "thinking",
+      "description": "Working on it…"
+    },
+    {
+      "type": "edit_file",
+      "description": "Editing index.html…"
+    },
+    {
+      "type": "edit_file",
+      "description": "Failed to edit index.html — \"index.html\" must start with <!DOCTYPE html>. Write the FULL page in THIS call."
+    },
+    {
+      "type": "thinking",
+      "description": "Working on it…"
+    },
+    {
+      "type": "edit_file",
+      "description": "Editing index.html…"
+    },
+    {
+      "type": "edit_file",
+      "description": "Failed to edit index.html — \"index.html\" must start with <!DOCTYPE html>. Write the FULL page in THIS call."
+    },
+    {
+      "type": "note",
+      "description": "Two tool calls in a row failed — retrying this turn without streaming…"
+    },
+    {
+      "type": "thinking",
+      "description": "Working on it…"
+    },
+    {
+      "type": "edit_file",
+      "description": "Editing index.html…"
+    },
+    {
+      "type": "edit_file",
+      "description": "Failed to edit index.html — \"index.html\" must start with <!DOCTYPE html>. Write the FULL page in THIS call."
+    },
+    {
+      "type": "note",
+      "description": "One corrective message before giving up…"
+    },
+    {
+      "type": "note",
+      "description": "Verifying the plan — 23 file(s) still incomplete…"
+    },
+    {
+      "type": "note",
+      "description": "Verifying the plan — 23 file(s) still incomplete…"
+    },
+    {
+      "type": "gate",
+      "description": "Automatic check found 12 problem(s) — repair round 1 of 2."
+    },
+    {
+      "type": "note",
+      "description": "Fixing the automatic check failures — round 1…"
+    },
+    {
+      "type": "gate",
+      "description": "Automatic check found 12 problem(s) — repair round 2 of 2."
+    },
+    {
+      "type": "note",
+      "description": "Fixing the automatic check failures — round 2…"
+    },
+    {
+      "type": "error",
+      "description": "Stopped: the automatic content check still fails. 12 problem(s) are still unresolved after every repair round: \"index.html\" does not end with </html>, so its tail is missing or a chunk overwrote it. \"index.html\" has no <footer> landmark — the page is incomplete without its footer. \"index.html\" must contain exactly one <h1> (found 0). \"index.html\" is missing the planned <section id=\"hero\"> — write that section with real copy now, it is part of the page the plan promised."
+    }
+  ],
+  "toolLog": [
+    {
+      "step": 0,
+      "action": "text",
+      "promptTokens": 7606,
+      "completionTokens": 517
+    },
+    {
+      "step": 1,
+      "action": "scaffold_site",
+      "promptTokens": 8389,
+      "completionTokens": 275
+    },
+    {
+      "step": 2,
+      "action": "edit_file",
+      "promptTokens": 8852,
+      "completionTokens": 634
+    },
+    {
+      "step": 3,
+      "action": "edit_file",
+      "promptTokens": 9747,
+      "completionTokens": 484
+    },
+    {
+      "step": 4,
+      "action": "edit_file",
+      "promptTokens": 10205,
+      "completionTokens": 484
+    },
+    {
+      "step": 5,
+      "action": "edit_file",
+      "promptTokens": 10358,
+      "completionTokens": 484
+    },
+    {
+      "step": 6,
+      "action": "text",
+      "promptTokens": 10405,
+      "completionTokens": 12
+    },
+    {
+      "step": 7,
+      "action": "text",
+      "promptTokens": 9988,
+      "completionTokens": 12
+    },
+    {
+      "step": 8,
+      "action": "text",
+      "promptTokens": 10008,
+      "completionTokens": 12
+    },
+    {
+      "step": 9,
+      "action": "text",
+      "promptTokens": 10217,
+      "completionTokens": 12
+    },
+    {
+      "step": 10,
+      "action": "text",
+      "promptTokens": 9913,
+      "completionTokens": 12
+    }
+  ],
+  "files": {
+    "index.html": {
+      "exists": true,
+      "lines": 38,
+      "bytes": 1994,
+      "header": 1,
+      "footer": 0,
+      "h1": 0,
+      "slotsLeft": 0,
+      "sections": [
+        {
+          "id": "hero",
+          "chars": 0
+        },
+        {
+          "id": "services",
+          "chars": 0
+        },
+        {
+          "id": "testimonials",
+          "chars": 0
+        },
+        {
+          "id": "faq",
+          "chars": 0
+        },
+        {
+          "id": "cta",
+          "chars": 0
+        }
+      ],
+      "words": 20
+    },
+    "services.html": {
+      "exists": true,
+      "lines": 102,
+      "bytes": 6762,
+      "header": 1,
+      "footer": 1,
+      "h1": 0,
+      "slotsLeft": 3,
+      "sections": [
+        {
+          "id": "page-hero",
+          "chars": 0
+        },
+        {
+          "id": "services",
+          "chars": 0
+        },
+        {
+          "id": "cta",
+          "chars": 0
+        }
+      ],
+      "words": 72
+    },
+    "about.html": {
+      "exists": true,
+      "lines": 103,
+      "bytes": 6792,
+      "header": 1,
+      "footer": 1,
+      "h1": 0,
+      "slotsLeft": 4,
+      "sections": [
+        {
+          "id": "page-hero",
+          "chars": 0
+        },
+        {
+          "id": "about-story",
+          "chars": 0
+        },
+        {
+          "id": "team",
+          "chars": 0
+        },
+        {
+          "id": "cta",
+          "chars": 0
+        }
+      ],
+      "words": 75
+    },
+    "blogs.html": {
+      "exists": true,
+      "lines": 102,
+      "bytes": 6757,
+      "header": 1,
+      "footer": 1,
+      "h1": 0,
+      "slotsLeft": 3,
+      "sections": [
+        {
+          "id": "page-hero",
+          "chars": 0
+        },
+        {
+          "id": "blogs",
+          "chars": 0
+        },
+        {
+          "id": "cta",
+          "chars": 0
+        }
+      ],
+      "words": 73
+    },
+    "contact.html": {
+      "exists": true,
+      "lines": 102,
+      "bytes": 6781,
+      "header": 1,
+      "footer": 1,
+      "h1": 0,
+      "slotsLeft": 3,
+      "sections": [
+        {
+          "id": "page-hero",
+          "chars": 0
+        },
+        {
+          "id": "contact-form",
+          "chars": 0
+        },
+        {
+          "id": "contact-info",
+          "chars": 0
+        }
+      ],
+      "words": 74
+    }
+  },
+  "projectDir": "C:\\Projects\\CodeMatrix\\tmp-harness\\workspaces\\harness-broken-4999"
+}

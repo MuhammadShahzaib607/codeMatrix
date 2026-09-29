@@ -1,0 +1,146 @@
+==============================================================================
+ROOT CAUSE: repeated "Continue" pauses + near-empty landing page
+Raw evidence from real runAgent() runs against a mock OpenAI-compatible provider
+==============================================================================
+
+HOW THIS WAS REPRODUCED
+  A local mock provider (OpenAI-compatible /models + /chat/completions, SSE and
+  non-stream) was driven through the REAL runAgent() loop with the real vanilla
+  system prompt, the real starter kit and the real quality checks. Task text:
+  "build a landing page" (framework: html, provider: mistral, model:
+  mistral-large-latest). Per-request tokens are the mock provider's real
+  prompt/completion counts (chars/4 over the exact payload it received).
+
+  No provider API key exists in server/.env and no network provider is reachable,
+  so a real-provider run was NOT possible. The loop control flow, the prompts,
+  the kit and every check are the production code paths.
+
+==============================================================================
+BEFORE THE FIX
+==============================================================================
+
+SCENARIO A - "model stops early, leaving a thin page" (thin-page)
+  requests=27 tokens={prompt:307083 completion:909 total:307992}
+  outcome={limitReached:false gatePassed:false toolCalls:2}
+  final index.html = 28 lines, header=1 footer=0 nav=1 sections=1
+  final message   = "The landing page is complete. Open index.html to view it."
+                    + 12 gate failures (no footer, no h1, sections missing)
+  canContinue(Continue button) = false
+  -> The run reported SUCCESS for a near-empty page. Cheap validation did NOT
+     stop it: quickCheck passed because the page had no leftover SLOT marker and
+     ended with </html>, and the whole vanilla gate was skipped (it only runs
+     when quick.ok is true). 5 auto-continues x 3 gate repair rounds burned
+     307,992 tokens (99.7% of them re-sent context) on a 2-tool-call page.
+
+SCENARIO B - "model keeps rewriting the same page" (churn)
+  requests=16 tokens={prompt:146123 completion:4579 total:150702}
+  outcome={limitReached:true budgetReached:true}
+  message = "Stopped: this task reached its ~150K token budget.
+             Every planned file was written."
+  canContinue(Continue button) = true
+  final index.html = 28 lines, header=1 footer=0 nav=1 sections=1
+  -> The soft budget (TASK_TOKEN_BUDGET=150000) hard-stopped the run. The budget
+     branch only auto-continues when plannedFileIssues() reports work remaining,
+     and plannedFileIssues() only checked that the planned FILE exists. Once
+     scaffold_site had written index.html, the plan looked "complete", so the
+     stop message claimed "Every planned file was written" while the page had no
+     footer, no h1 and 5 of its 6 planned sections missing.
+
+SCENARIO C - "Continue" is clicked (churn-resume)
+  attempt 1        requests=16 total=150702 limitReached=true  index.html=28 lines
+  attempt 2 resume requests=13 total=150132 limitReached=true  index.html=28 lines
+  -> The resumed run reproduced the IDENTICAL stop at the IDENTICAL budget with
+     the SAME 28-line page. Each click burned another ~150K tokens and the page
+     never grew.
+
+WHAT THE FEED SHOWED DURING THOSE RUNS (raw, from the run)
+  [plan] TYPE: site - Planned 1 file(s): index.html
+  [note] Verifying the plan - 1 file(s) still incomplete...
+  [scaffold_site] Scaffolded 1 page(s) - 2067 lines
+  [edit_file] Edited index.html - 28 lines
+  [scaffold result] "Scaffolded 4 file(s) ... Content slots to fill next:
+      index.html[hero, services, features, testimonials, faq, cta]."
+  [tool result] "ok, 28 lines\nProgress 1 of 1 planned files. Remaining: none.
+      Next: finish with your short summary"
+  -> The PLAN was correct (site, 6 sections). The failure was that once the
+     scaffold wrote the file, the loop told the model "Remaining: none" and the
+     budget stop asserted "Every planned file was written".
+
+ROOT CAUSE (evidenced, not guessed)
+  1. Plan completeness was FILE-EXISTENCE, not CONTENT. plannedFileIssues()
+     never looked for the scaffold's unfilled <!-- SLOT:x --> markers or for the
+     plan's declared <section id="..."> blocks. A scaffolded-but-empty page
+     counted as done, so every "remaining work" signal (progress hint, plan
+     reminder, wrap-up hint, budget auto-continue, tool-cap auto-continue) was
+     wrong.
+  2. The soft token budget therefore became the stop condition: with no issues
+     reported it hard-stopped at ~150K cumulative tokens with limitReached=true
+     -> the "Continue" button, and the false message "Every planned file was
+     written."
+  3. A failing quickCheck did not block completion: it skipped the whole vanilla
+     gate and fell through to a SUCCESS result.
+  4. The budget's auto-continue added a FULL 150K each time (5x150K = up to 900K
+     on one task) and the stuck-loop counter was reset by it, so a looping model
+     could burn the entire budget.
+
+==============================================================================
+AFTER THE FIX
+==============================================================================
+
+SCENARIO: "build a landing page", run 3x in a row (good)
+  run 1: requests=4 tokens=43840 (prompt 37998 / completion 5842) durationMs=10781
+  run 2: requests=4 tokens=43840 (prompt 37998 / completion 5842) durationMs=4745
+  run 3: requests=4 tokens=43840 (prompt 37998 / completion 5842) durationMs=4706
+  every run: limitReached=false budgetReached=false gatePassed=true
+             pauses/Continue required = 0
+             index.html = 257 lines, header=1 footer=1 main=1 h1=1,
+             sections=7, leftoverSlots=0
+  files: css/base.css (1627L, kit), css/theme.css (24L), js/main.js (319L, kit),
+         index.html (257L)
+  measured baseline for the budget: a complete one-page landing page = 43,840
+  cumulative tokens -> TASK_TOKEN_BUDGET = 44,000 x 4 = 176,000.
+
+  Rendered DOM proof (headless Chrome, --dump-dom on the run-3 workspace):
+    title: Northwind Studio - web design agency
+    header: 1  footer: 1  main: 1  h1: 1
+    nav links: Home -> index.html | Start a project -> index.html
+    #hero        357 chars : "Independent design studio Websites that win work
+                             Northwind Studio designs and builds fast,..."
+    #services    945 chars : "Services What we do best Three focused services..."
+    #features   1206 chars : "Why Northwind Built to last, easy to run..."
+    #testimonials 579 chars: "Testimonials Clients who stayed..."
+    #faq         991 chars : "FAQ Questions we hear often..."
+    #cta         298 chars : "Ready to win more work? Tell us about your..."
+    #process     922 chars : "How it works A calm, three-step project..."
+    faq buttons with aria-expanded: 5
+    footer text: "NS Northwind Studio Websites that win work. We design and build
+      websites that turn visitors into customers. Explore Home Services Web
+      design Development SEO and content Contact hello@northwindstudio.com
+      +44 20 7946 0123"
+    lorem ipsum / TODO / coming soon present: false
+  screenshot: tmp-acceptance/screenshots/task3/landing-1440.png (1440px wide)
+
+SCENARIO: thin-page AFTER the fix
+  requests=23 tokens=231518 outcome=THREW
+  "Stopped: the automatic content check still fails. 7 problem(s) are still
+   unresolved ...: \"index.html\" has no <footer> landmark ...; \"index.html\"
+   must contain exactly one <h1> (found 0).; \"index.html\" is missing the
+   planned <section id=\"services\"> ..."
+  canContinue = true
+  -> No false success any more. The feed now shows
+     "[note] Verifying the plan - 5 file(s) still incomplete..." right after the
+     thin write, and the run stops with the real problems listed.
+
+SCENARIO: churn AFTER the fix
+  requests=17 tokens=166476 outcome={limitReached:true stuck:true budgetReached:false}
+  "Stopped: the agent kept repeating \"index.html\" without finishing. Still
+   incomplete: index.html is missing the planned section <section id=\"services\">; ..."
+  -> Bounded and honest; no longer claims the plan is finished.
+
+SCENARIO: resume AFTER the fix (good-resume)
+  attempt 1        requests=4  tokens=43840 gatePassed=true index.html=257 lines
+  attempt 2 resume requests=2  tokens=33017 gatePassed=true index.html=279 lines
+  -> The resumed run restored the plan from the saved session (no re-plan, no
+     re-scaffold), made one edit and PASSED the gate with 0 pauses.
+
+==============================================================================

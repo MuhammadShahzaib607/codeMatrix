@@ -230,6 +230,61 @@
   border-color: var(--accent);
 }
 
+/* Sibling-project expansion: the project row is a click target of its own, so
+   the chevron is a real (icon-only, tooltipped) button that sits inside it. */
+.container-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.tree-chevron-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.tree-chevron-btn:hover {
+  color: var(--accent);
+}
+
+/* The files of a NON-active project, listed inline under its top-level row so
+   they are usable directly — opening one makes that project active. */
+.sibling-project {
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  margin-left: 7px;
+}
+
+.sibling-node {
+  display: flex;
+  flex-direction: column;
+}
+
+.tree-row.is-sibling {
+  height: 20px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.tree-row.is-sibling:hover {
+  color: var(--text-strong);
+}
+
+.sibling-empty {
+  padding: 2px 0 4px 24px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
 /* Soft flash used when search/quick-open jumps to a row. */
 .tree-row.is-revealed {
   animation: tree-reveal 1.5s ease-out;

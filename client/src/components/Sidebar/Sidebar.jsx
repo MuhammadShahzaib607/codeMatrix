@@ -4,8 +4,12 @@ import { useDispatch, useSelector } from 'react-redux'
 import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
 import { recordExplorerAction } from '../../features/explorerHistorySlice'
 import { deleteExplorerEntry } from '../../features/explorerHistoryThunks'
-import { collapseAll, setFolderOpen } from '../../features/fileSystemSlice'
-import { fetchRecentProjects, openRecentProject } from '../../features/projectsSlice'
+import { addTab, collapseAll, setActiveFile, setFolderOpen } from '../../features/fileSystemSlice'
+import {
+  fetchProjectTree,
+  fetchRecentProjects,
+  openRecentProject,
+} from '../../features/projectsSlice'
 import {
   closeDeleteProjectModal,
   openDeleteProjectModal,
@@ -41,6 +45,7 @@ export default function Sidebar() {
   const tree = useSelector((state) => state.fileSystem.tree)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const containerRawEntries = useSelector((state) => state.fileSystem.container.entries)
+  const projectTrees = useSelector((state) => state.projects.trees)
   const clipboard = useSelector((state) => state.clipboard)
   const isDeleteProjectOpen = useSelector((state) => state.ui.isDeleteProjectModalOpen)
   // A scratch workspace counts as an active workspace: everything below treats
@@ -75,6 +80,11 @@ export default function Sidebar() {
    */
   const containerEntries = containerSiblings(containerRawEntries, workspace.projectId)
   const showContainer = hasProject
+  // Sibling projects are expanded by DEFAULT, so every project's files are
+  // directly visible and clickable the moment the app opens — no "select
+  // project" step. This list only records the ones the user collapsed.
+  const [collapsedProjects, setCollapsedProjects] = useState([])
+  const requestedTreesRef = useRef(new Set())
   const [isPreparing, setIsPreparing] = useState(false)
   // Node awaiting confirmation from the delete modal (file or folder).
   const [pendingDelete, setPendingDelete] = useState(null)
@@ -106,6 +116,20 @@ export default function Sidebar() {
     if (!hasProject) return
     dispatch(loadContainer())
   }, [dispatch, hasProject, workspace.source, workspace.projectId, workspace.name])
+
+  // Fetch every sibling project's tree ONCE, in the background, so the top level
+  // can show each project's files inline. A failed fetch is remembered in the
+  // ref and never retried in a loop, so an unreachable project cannot spin.
+  useEffect(() => {
+    if (!showContainer) return
+    for (const entry of containerEntries) {
+      const projectId = entry?.projectId
+      if (!projectId || entry.type !== 'folder') continue
+      if (projectTrees[projectId] || requestedTreesRef.current.has(projectId)) continue
+      requestedTreesRef.current.add(projectId)
+      dispatch(fetchProjectTree({ projectId }))
+    }
+  }, [containerEntries, projectTrees, dispatch, showContainer])
 
   // Clicking the tree's empty area (or pressing Escape) drops the selection, so
   // the next New File / New Folder goes to the workspace ROOT again.
@@ -307,6 +331,19 @@ export default function Sidebar() {
     [guard],
   )
 
+  /** A top-level FILE belongs to no project — say so instead of faking an open. */
+  const handleInspectContainerFile = useCallback(
+    (entry) => {
+      dispatch(
+        showToast({
+          message: `${entry.name} is at the top level, beside your projects — open it from the terminal.`,
+          type: 'info',
+        }),
+      )
+    },
+    [dispatch],
+  )
+
   /**
    * A top-level FOLDER is another project: opening it makes it the active
    * workspace, so the terminal, preview, export, search and the agent all follow
@@ -315,6 +352,7 @@ export default function Sidebar() {
   const handleOpenContainerProject = useCallback(
     (entry) => {
       if (!entry?.projectId) return
+      setCollapsedProjects((list) => list.filter((id) => id !== entry.projectId))
       if (entry.projectId === projectIdRef.current) return
       guard(async () => {
         try {
@@ -331,17 +369,49 @@ export default function Sidebar() {
     [dispatch, guard, reportError],
   )
 
-  /** A top-level FILE belongs to no project — say so instead of faking an open. */
-  const handleInspectContainerFile = useCallback(
-    (entry) => {
-      dispatch(
-        showToast({
-          message: `${entry.name} is at the top level, beside your projects — open it from the terminal.`,
-          type: 'info',
-        }),
-      )
+  /**
+   * Collapse / expand a sibling project's inline file list. This is pure
+   * browsing: it deliberately does NOT change the active project, so files from
+   * several projects can stay visible at once and any one of them can be opened
+   * with a single click.
+   */
+  const handleToggleContainerProject = useCallback((entry) => {
+    if (!entry?.projectId) return
+    setCollapsedProjects((list) =>
+      list.includes(entry.projectId)
+        ? list.filter((id) => id !== entry.projectId)
+        : [...list, entry.projectId],
+    )
+  }, [])
+
+  /**
+   * Opens a file that lives inside a SIBLING project: that project becomes the
+   * active one (terminal cwd, agent runs, preview, export and search follow it)
+   * and the file opens as a tab — one click, with no separate "activate" step.
+   */
+  const handleOpenContainerFile = useCallback(
+    (entry, file) => {
+      if (!entry?.projectId || !file) return
+      const filePath = file.path ?? file.id
+      if (!filePath) return
+      guard(async () => {
+        if (entry.projectId !== projectIdRef.current) {
+          try {
+            await dispatch(
+              openRecentProject({ projectId: entry.projectId, name: entry.name }),
+            ).unwrap()
+          } catch (error) {
+            reportError(`Could not open ${entry.name}: ${error.message}`)
+            return
+          }
+        }
+        setSelectedId(filePath)
+        dispatch(addTab(filePath))
+        dispatch(setActiveFile(filePath))
+        dispatch(showToast({ message: `Opened ${file.name} in ${entry.name}`, type: 'success' }))
+      }, 'Please sign in to open a project file')
     },
-    [dispatch],
+    [dispatch, guard, reportError],
   )
 
   const handleCopyPath = useCallback(async (node) => {
@@ -568,6 +638,10 @@ export default function Sidebar() {
           showContainer={showContainer}
           onOpenContainerProject={handleOpenContainerProject}
           onInspectContainerFile={handleInspectContainerFile}
+          projectTrees={projectTrees}
+          collapsedProjects={collapsedProjects}
+          onToggleContainerProject={handleToggleContainerProject}
+          onOpenContainerFile={handleOpenContainerFile}
         />
       </div>
 

@@ -14,6 +14,7 @@ import Topbar from './components/Topbar/Topbar'
 import { fetchCurrentUser } from './features/authSlice'
 import { fetchApiKeys, fetchKeyUsage } from './features/aiSlice'
 import { clearExplorerHistory } from './features/explorerHistorySlice'
+import { clearProjectTrees } from './features/projectsSlice'
 import { clearWorkspace } from './features/fileSystemSlice'
 import { fetchAvailableShells, resetTerminals } from './features/terminalSlice'
 import { clearTsConfig } from './features/tsconfigSlice'
@@ -132,6 +133,7 @@ export default function App() {
   useEffect(() => {
     if (isAuthenticated) return
     dispatch(clearWorkspace())
+    dispatch(clearProjectTrees())
     dispatch(resetTerminals())
     clearWorkspaceRef()
     clearFileContentCache()

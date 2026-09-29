@@ -10,6 +10,11 @@ import { adoptScratchProject } from '../services/scratchProjectService.js'
 import { sanitizeStrictRules } from '../services/strictRules.js'
 import { ensureScratchWorkspace, isScratchProjectId } from '../utils/workspaceManager.js'
 import { registerAgentFsEmitter, unregisterAgentFsEmitter } from '../services/agentFsNotifier.js'
+import {
+  AGENT_MEMORY_FILENAME,
+  appendAgentMemoryEntry,
+  buildRunMemoryEntry,
+} from '../services/agentMemory.js'
 import { roomFor } from './workspaceSocket.js'
 
 // ---------------------------------------------------------------------------
@@ -158,6 +163,9 @@ export default function registerAgentSocket(io) {
 
         const wantsResume = payload?.resume === true
         const strictRules = sanitizeStrictRules(payload?.strictRules)
+        // Settings > General: send the project's AGENT.md history to the model.
+        // OFF by default; the file is written after every run either way.
+        const projectHistory = payload?.projectHistory === true
         if (wantsResume && !hasResumableSession(projectId)) {
           ack({
             ok: false,
@@ -186,7 +194,25 @@ export default function registerAgentSocket(io) {
         // operation is batched here (~150ms) and pushed to the project's room,
         // so files and folders appear while the agent works instead of waiting
         // for chokidar (which is slower and can miss same-process writes).
+        //
+        // The same feed is accumulated for this run so the AGENT.md entry can
+        // list exactly what was added, edited and deleted — no extra walk of
+        // the workspace is needed for the log.
+        const runChanges = new Map()
+        const mergeChangeType = (previous, next) => {
+          if (!previous) return next
+          if (previous === 'add' && next === 'change') return 'add'
+          if (previous === 'unlink' || next === 'unlink') return 'unlink'
+          if (previous === 'unlinkDir' || next === 'unlinkDir') return 'unlinkDir'
+          if (previous === 'addDir' && next === 'addDir') return 'addDir'
+          return next
+        }
         registerAgentFsEmitter(projectId, (payload) => {
+          for (const change of payload?.changes ?? []) {
+            const file = String(change?.path ?? '').replace(/\\/g, '/').replace(/^\/+/, '')
+            if (!file) continue
+            runChanges.set(file, mergeChangeType(runChanges.get(file), change?.type))
+          }
           io.to(roomFor(projectId)).emit('workspace:fsChanged', payload)
         })
 
@@ -237,6 +263,7 @@ export default function registerAgentSocket(io) {
         // onProjectName) or, when the plan omits it, from the framework.
         await adopt(null)
 
+        let runOutcome = null
         try {
           const result = await runAgent({
             projectId,
@@ -256,7 +283,9 @@ export default function registerAgentSocket(io) {
             shouldStop: () => stopRequests.has(userId),
             onProjectName: (name) => adopt(name),
             strictRules,
+            projectHistory,
           })
+          runOutcome = { ok: true, result }
           room.emit('agent:done', {
             ok: true,
             message: result.message,
@@ -271,6 +300,7 @@ export default function registerAgentSocket(io) {
             provider: result.provider ?? null,
           })
         } catch (error) {
+          runOutcome = { ok: false, error }
           room.emit('agent:done', {
             ok: false,
             message: error.message,
@@ -282,6 +312,28 @@ export default function registerAgentSocket(io) {
           // still give the scratch workspace a real name derived from the task.
           if (scratchRun && !scratchAdopted) await adopt(null)
           unregisterAgentFsEmitter(projectId)
+
+          // AGENT.md work log: one short entry after EVERY finished run —
+          // success, partial or error. It is a normal project file the user
+          // owns; it is never linked from a page and never scaffolded.
+          try {
+            await appendAgentMemoryEntry(
+              projectId,
+              buildRunMemoryEntry({
+                at: new Date(startedAt),
+                task,
+                changes: [...runChanges.entries()].map(([file, type]) => ({
+                  path: file,
+                  type,
+                })),
+                framework: payload?.framework ?? null,
+                outcome: runOutcome,
+              }),
+            )
+          } catch (error) {
+            console.warn(`[agent] ${AGENT_MEMORY_FILENAME} log failed: ${error?.message ?? error}`)
+          }
+
           active = false
           activeRuns.delete(userId)
           stopRequests.delete(userId)

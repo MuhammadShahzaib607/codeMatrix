@@ -147,13 +147,23 @@ function navLinkLabel(link) {
   return `${link.href}${label && label !== link.href ? ` (${label})` : ''}`
 }
 
-const UPDATE_WORKFLOW_SECTION = `UPDATE WORKFLOW (this project already exists — extend it, never rebuild it):
-1. The PROJECT SNAPSHOT below is the source of truth. Never recreate a file that is listed in it.
-2. A new page copies the header/nav and footer markup EXACTLY as the snapshot shows them, changing only the active link (class="active" / aria-current="page") and the page content.
-3. After adding pages, add the new links to the nav of EVERY existing page and to the footer link lists where they belong, with small edit_file calls.
-4. New pages link the SAME shared stylesheet(s) and script as the existing pages (relative paths, never a leading "/") and get their own page CSS; add only new rules, never rewrite rules that already exist.
-5. Reuse the existing class names and the :root variables. Do not restyle anything the user did not mention.
-6. Finish with the connection check: every page must be reachable from the nav of every other page.`
+const UPDATE_WORKFLOW_SECTION = `UPDATE WORKFLOW (this project already exists — extend it, never rebuild it).
+
+READ FIRST, THEN PLAN, THEN WRITE. This is mandatory for EVERY request that is not an empty project — including a one-line follow-up such as "add a dark mode toggle", "add a pricing page", "navbar ko theek karo" or any other vague instruction. Before you write a single byte:
+R1. Read the file tree (the PROJECT SNAPSHOT below lists every file; use list_directory only if it looks truncated).
+R2. Read the key files the change touches, with read_file, when the snapshot does not already show their content: the main page (index.html or equivalent), the shared stylesheet(s) (css/base.css, css/theme.css), the shared script (js/main.js) and any file you are about to edit.
+R3. Read AGENT.md if a PROJECT HISTORY section is present below: it records what earlier runs were asked for, what they changed and which decisions (palette, structure) they made. Reuse those decisions instead of inventing new ones.
+R4. Only then write your plan, as EDITS to what already exists: which existing file gets which change, which classes and tokens you reuse, which new file (if any) is genuinely required. Put the concrete change list in the plan's requirements array so the user can see immediately that you understood.
+NEVER assume the project from scratch and NEVER rebuild it because the request was vague. A vague request is a reason to read MORE, not to start over. "Purana design rakhna hai" ("keep the existing design") means: change only what was asked and reuse everything else.
+
+The PROJECT SNAPSHOT below is the source of truth for what exists right now. Never recreate a file that is listed in it.
+1. A new page copies the header/nav and footer markup EXACTLY as the snapshot shows them, changing only the active link (class="active" / aria-current="page") and the page content.
+2. After adding pages, add the new links to the nav of EVERY existing page and to the footer link lists where they belong, with small edit_file calls.
+3. New pages link the SAME shared stylesheet(s) and script as the existing pages (relative paths, never a leading "/") and get their own page CSS; add only new rules, never rewrite rules that already exist.
+4. Reuse the existing class names and the :root variables. Do not restyle anything the user did not mention.
+5. Every page still has exactly ONE <header>, ONE <main> and ONE <footer>: a new section joins the existing sections inside the single <main> of the page it belongs to. Never insert a second footer or a document tail.
+6. AGENT.md is the project's own work log, not a page: never link it from a page, never add it to the nav, never include it in a stylesheet, and never rewrite it yourself — the server appends to it after the run.
+7. Finish with the connection check: every page must be reachable from the nav of every other page.`
 
 export { UPDATE_WORKFLOW_SECTION }
 

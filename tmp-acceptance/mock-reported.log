@@ -1,0 +1,9 @@
+[mock] #0 stream=true  text at 09:49:23
+[mock] #1 stream=true  scaffold_site at 09:49:23
+[mock] #2 stream=true reported-shape {"path":"css/theme.css","old_str":"--primary: #4f46e5;","new_str":"--primary: #e94560;"}edit_file at 09:49:23
+[mock] #3 stream=true  edit_file at 09:49:23
+[mock] #4 stream=true  edit_file at 09:49:23
+[mock] #5 stream=true  edit_file at 09:49:24
+[mock] #6 stream=true  edit_file at 09:49:24
+[mock] #7 stream=true  edit_file at 09:49:24
+[mock] #8 stream=true  text at 09:49:24

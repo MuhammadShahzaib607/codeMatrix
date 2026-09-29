@@ -16,6 +16,23 @@
     var backToTop = document.querySelector('.back-to-top')
     var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
+    function syncHeaderOffset() {
+      var bar = document.querySelector('.site-header, .app-bar, header')
+      if (!bar || !document.body) return
+      var box = bar.getBoundingClientRect()
+      var height = Math.round(box.height)
+      if (height > 0) document.documentElement.style.setProperty('--header-offset', height + 'px')
+      var position = window.getComputedStyle(bar).position
+      var outOfFlow = (position === 'fixed' || position === 'absolute') && box.top <= 1
+      document.body.classList.toggle('has-fixed-header', outOfFlow)
+    }
+
+    syncHeaderOffset()
+    window.addEventListener('resize', syncHeaderOffset)
+    if (document.fonts && document.fonts.ready && typeof document.fonts.ready.then === 'function') {
+      document.fonts.ready.then(syncHeaderOffset)
+    }
+
     function closeNav() {
       if (!siteNav) return
       siteNav.classList.remove('is-open')
@@ -110,25 +127,100 @@
       }
     }
 
-    var faqItems = document.querySelectorAll('.faq-item')
-    Array.prototype.forEach.call(faqItems, function (item) {
+    var faqCounter = 0
+
+    function faqContainerOf(item) {
+      var cursor = item.parentElement
+      while (cursor && cursor !== document.body) {
+        if (cursor.classList && cursor.classList.contains('faq')) return cursor
+        cursor = cursor.parentElement
+      }
+      return item.parentElement
+    }
+
+    function syncFaqItem(item) {
       var toggle = item.querySelector('.faq-item__toggle')
-      if (!toggle) return
-      var expanded = item.classList.contains('is-open')
-      toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false')
-      toggle.addEventListener('click', function () {
-        var willOpen = !item.classList.contains('is-open')
-        Array.prototype.forEach.call(faqItems, function (other) {
-          other.classList.remove('is-open')
-          var otherToggle = other.querySelector('.faq-item__toggle')
-          if (otherToggle) otherToggle.setAttribute('aria-expanded', 'false')
-        })
-        if (willOpen) {
-          item.classList.add('is-open')
-          toggle.setAttribute('aria-expanded', 'true')
+      if (!toggle) return null
+      var panel = item.querySelector('.faq-item__panel')
+      if (panel) {
+        var id = panel.getAttribute('id')
+        if (!id || document.querySelectorAll('[id="' + id + '"]').length > 1) {
+          faqCounter += 1
+          id = 'faq-panel-' + faqCounter
+          panel.setAttribute('id', id)
         }
+        toggle.setAttribute('aria-controls', id)
+        if (!toggle.getAttribute('aria-labelledby') && !toggle.getAttribute('aria-label')) {
+          var question = item.querySelector('.faq-item__question')
+          if (question && !question.getAttribute('id')) {
+            question.setAttribute('id', id + '-label')
+            toggle.setAttribute('aria-labelledby', id + '-label')
+          }
+        }
+        var open = item.classList.contains('is-open')
+        if (open) panel.removeAttribute('aria-hidden')
+        else panel.setAttribute('aria-hidden', 'true')
+      }
+      toggle.setAttribute('aria-expanded', item.classList.contains('is-open') ? 'true' : 'false')
+      return toggle
+    }
+
+    function syncFaq() {
+      var items = document.querySelectorAll('.faq-item')
+      Array.prototype.forEach.call(items, function (item) {
+        syncFaqItem(item)
       })
+    }
+
+    function toggleFaq(item) {
+      var container = faqContainerOf(item)
+      var willOpen = !item.classList.contains('is-open')
+      var items = container ? container.querySelectorAll('.faq-item') : [item]
+      Array.prototype.forEach.call(items, function (other) {
+        other.classList.remove('is-open')
+        var otherToggle = other.querySelector('.faq-item__toggle')
+        if (otherToggle) otherToggle.setAttribute('aria-expanded', 'false')
+        var otherPanel = other.querySelector('.faq-item__panel')
+        if (otherPanel) otherPanel.setAttribute('aria-hidden', 'true')
+      })
+      if (willOpen) {
+        item.classList.add('is-open')
+        var toggle = item.querySelector('.faq-item__toggle')
+        if (toggle) toggle.setAttribute('aria-expanded', 'true')
+        var panel = item.querySelector('.faq-item__panel')
+        if (panel) panel.removeAttribute('aria-hidden')
+      }
+    }
+
+    document.addEventListener('click', function (event) {
+      var target = event.target
+      if (!target || typeof target.closest !== 'function') return
+      var toggle = target.closest('.faq-item__toggle')
+      if (!toggle) return
+      var item = toggle.closest('.faq-item')
+      if (!item) return
+      event.preventDefault()
+      toggleFaq(item)
     })
+
+    syncFaq()
+    if (typeof MutationObserver === 'function') {
+      var faqObserver = new MutationObserver(function (records) {
+        records.forEach(function (record) {
+          Array.prototype.forEach.call(record.addedNodes, function (node) {
+            if (node.nodeType !== 1) return
+            if (node.classList && node.classList.contains('faq-item')) {
+              syncFaqItem(node)
+            } else if (node.querySelector && node.querySelector('.faq-item')) {
+              Array.prototype.forEach.call(node.querySelectorAll('.faq-item'), function (item) {
+                syncFaqItem(item)
+              })
+            }
+          })
+        })
+      })
+      faqObserver.observe(document.body, { childList: true, subtree: true })
+    }
 
     if (backToTop) {
       backToTop.addEventListener('click', function () {

@@ -6470,11 +6470,16 @@ server/src/templates/vanilla-kit/ (plain files, no comments in any .js):
                  multi-column footer with a labelled inline-SVG social row,
                  back-to-top, reveal-on-scroll, breakpoints 640/900/1200, visible
                  :focus-visible rings, and a prefers-reduced-motion block.
-  themes.js      6 presets as complete :root variable blocks + matching Google
-                 Fonts pairs: indigo-modern (Inter + Sora), emerald-fresh
-                 (Manrope + Fraunces), sunset-warm (Nunito Sans + Poppins),
-                 midnight-dark (Inter + Outfit), rose-elegant (Source Sans 3 +
-                 Playfair Display), slate-corporate (IBM Plex Sans).
+  themes.js      presets as complete :root variable blocks + matching Google
+                 Fonts pairs. NINE now (was six): indigo-modern (Inter + Sora),
+                 emerald-fresh (Manrope + Fraunces), sunset-warm (Nunito Sans +
+                 Poppins), midnight-dark (Inter + Outfit), rose-elegant (Source
+                 Sans 3 + Playfair Display), slate-corporate (IBM Plex Sans),
+                 plus — added by "Domain-Aware Theming" below — gallery-ivory
+                 (Karla + Cormorant Garamond, warm ivory art/gallery look),
+                 playful-pop (Nunito + Baloo 2, bright kids/education) and
+                 clinic-calm (Figtree, clean teal health/wellness). Every preset
+                 also defines --hover-overlay and --primary-hover.
   js/main.js     mobile nav toggle (closes on link click, outside click, Escape),
                  sticky header state, active nav link, smooth scroll with header
                  offset, reveal-on-scroll (IntersectionObserver, reduced-motion
@@ -6708,3 +6713,379 @@ WHAT COULD NOT BE VERIFIED
     sandbox without Chrome/Edge would silently skip it (by design); the
     /preview/:projectId HTTP path was not re-tested here.
   - MongoDB-backed paths were not exercised (no DB configured).
+
+================================================================================
+FEATURE: Starter Kit Fixes (Footer/Hover/FAQ) + Implicit Multi-Project Access +
+AGENT.md Project Memory   [documented late: the code landed in the working tree
+earlier; this entry was written in the next round to keep the summary complete]
+================================================================================
+
+ROOT CAUSES FOUND THEN
+  1. Footer repeated per section: the model re-emitted a whole "page tail"
+     (</main><footer>…</footer></body></html>) after every section slot, so a
+     single-page site ended up with four footers and four document closers.
+  2. Invisible hover states: hover backgrounds resolved to the element's own
+     resting surface (or a colour indistinguishable from it) in several of the
+     six presets, so hovering a button/card/nav link changed nothing visible.
+  3. FAQ accordion never opened: the handler bound only on DOMContentLoaded and
+     looked for class/attribute names that did not match the scaffold output, so
+     sections filled after scaffold time had no working toggle.
+  4. Multi-project access needed an explicit "select project" click before the
+     terminal/agent/preview followed a sibling project.
+  5. "Update my existing project" requests jumped straight to writing without
+     reading what was already on disk, and there was no running project memory.
+
+WHAT CHANGED (already in the tree)
+  * scaffold.js page shell now carries ONE header and ONE footer with the slot
+    markers between them, plus the in-file comment that says so; connectionCheck
+    and vanillaGate count <header>/<footer>/<main>/</body> per file and fail the
+    run on a repeat (the check existed before; the messages and the counts are
+    what this round hardened).
+  * base.css gained derived hover tokens (--hover-overlay, --surface-hover,
+    --surface-2-hover, --primary-hover) and every preset defines its own pair,
+    so a hover can never equal the resting surface. Verified by measuring
+    computed colours for every hover rule in all six presets (60/60 changed).
+  * js/main.js FAQ handling is now event delegation on document with a
+    MutationObserver that re-syncs dynamically added .faq-item nodes, closes
+    siblings, and toggles aria-expanded/aria-hidden. visualSanity clicks a
+    toggle in headless Chrome and fails when it does not open.
+  * Implicit active project: projectsSlice derives the active project from
+    whichever file/folder the user last touched; FileTree expands sibling
+    top-level projects and their files are clickable directly, so no separate
+    "activate" step exists.
+  * NEW server/src/services/agentMemory.js appends a dated AGENT.md entry after
+    every run (requested, added/edited/deleted, key decisions, status, note for
+    the next run). Reading it is opt-in: the settings toggle "Give the agent
+    project history (AGENT.md)" (OFF by default) is stored per user and sent
+    with agent:run; when OFF the file is still written but its content is never
+    injected into the prompt. Verified with a mock provider: 28,558 prompt
+    characters with the toggle off (no PROJECT HISTORY section) versus 29,466
+    with it on, and two entries appended to AGENT.md after two runs.
+  * The Roman Urdu / mixed-language rule was added to the base prompt and the
+    update workflow in projectSnapshot.js / stacks/vanilla.js.
+
+================================================================================
+FEATURE: Fixed-Header Offset Fix + App-vs-Site Classification + Domain-Aware
+Theming + Navbar/Footer Link Rules
+================================================================================
+
+TASK 1 — FIXED HEADER COVERED THE PAGE
+
+  1a ROOT CAUSE: the kit header is position: sticky (it reserves its own space),
+     so the bug only appears when a header is taken OUT of the flow — the model
+     wrote its own header with position: fixed (or an absolute bar) and nothing
+     replaced the space it used to hold. <body>/<main> had no top offset at all,
+     and the offset token that existed (--header-h: 72px) was a GUESS used for
+     scroll-padding only, so a header that wrapped to two lines desynced from it.
+
+     MEASURED BEFORE (real headless Chrome, real page, original js/main.js):
+       viewport 1422px: header 73px tall, bottom edge 73px, first content top
+       0px, body padding-top 0px  ->  73px of content covered, and the check
+       said PASS (it never looked at the geometry at all).
+       viewport  390px: identical, 73px covered, check PASS.
+
+  1b FIX: (a) the kit keeps position: sticky as the default and documents why;
+     (b) --header-offset is a NEW token (default var(--header-h)) that every
+     offset uses, so --header-h stays the design minimum used by min-height;
+     (c) js/main.js (site) and js/app.js (app) MEASURE the real rendered header
+     height on load, on resize and after document.fonts.ready, write it into
+     --header-offset, and toggle body.has-fixed-header when the header's
+     computed position is fixed/absolute with top <= 1px — base.css then
+     applies padding-top: var(--header-offset). No guessed pixel value, and no
+     feedback loop, because the measured value is never fed back into
+     min-height; (d) visualSanity measures the header box against the first
+     visible block inside <main> and fails the run with the exact numbers and
+     the exact fix.
+
+     MEASURED AFTER (same page, NEW js/main.js):
+       1422px: header 73px, content top 73px, body padding-top 73px, overlap 0
+       390px with the header WRAPPED TO TWO LINES: header 119px (not 72px),
+       content top 119px, body padding-top 119px, overlap 0 -> resizing the
+       header no longer reintroduces the overlap.
+     And the broken page (no offset, no guard) is now caught: FAIL with
+     "hides content under the header at 1422px/390px… 73px of it is covered".
+
+     The narrow pass is a real 390 CSS-pixel viewport: Chrome clamps a desktop
+     window to ~500px, so the page is loaded inside a 390px-wide iframe wrapper
+     and the inner report is copied to the outer document (needs
+     --allow-file-access-from-files, which the check already passed).
+
+TASK 2 — AN APP IS NOT A MARKETING SITE
+
+  2a/2c: the plan JSON now has `type: "app" | "site"` as its FIRST field and
+     `direction` as its second. base.js defines the rule with examples (app:
+     calculator, todo list, timer, converter, quiz, notes, snake/tic-tac-toe/
+     memory game; site: business/portfolio/blog/restaurant/SaaS landing/event),
+     and normalizePlanType() reads type/project_type/kind from the model's JSON.
+     The plan event's feed line is now "TYPE: app — Planned 2 file(s): …" (and
+     "TYPE: site — …"), with projectType/direction in event.details.
+
+  2b: NEW TOOL scaffold_app (tools: title, brand, description, palette) plus a
+     NEW kit module server/src/templates/vanilla-kit/app-kit.js:
+       css/theme.css — the preset tokens (unchanged)
+       css/app.css   — the SHARED token block extracted from css/base.css
+                       between the /* kit-tokens:start|end */ markers, then a
+                       lean app layer: box-sizing/margin/font base, app bar
+                       (sticky) + app bar inner/mark/title/meta, body
+                       .has-fixed-header padding, app-shell, app-head, panel,
+                       app-grid, toolbar, btn (primary/ghost/block), icon-btn,
+                       field/label/input/textarea/select/hint/error, list and
+                       list__item, chip, readout, notice, muted, sr-only,
+                       3 media queries and a prefers-reduced-motion block.
+       js/app.js     — window.CMApp helpers (ready/one/all/on/clamp/
+                       formatNumber/save/load) plus the same measured
+                       header-offset guard.
+       index.html    — app bar with the page's single <h1>, ONE <main
+                       class="app-shell" id="app"> and ONE <!-- SLOT:app -->.
+                       NO nav, NO hero, NO footer, NO brand/social blurb.
+     The kit is written through the same writeFileToWorkspace path as
+     scaffold_site, so explorer events, validation and the checks all apply.
+
+     The gate and the checks learned the difference:
+       * vanillaGate reads plan.type (falling back to "css/app.css exists and
+         css/base.css does not" so a REPAIR run with no plan is still judged by
+         the app rules) and for an app skips header/nav/hamburger/footer/
+         page-stylesheet/FAQ/contact-form/footer-year duties while still
+         requiring doctype, lang, charset, viewport, description, title, exactly
+         one h1, one <main>, a real stylesheet (css/app.css), a real script
+         (js/app.js), :root tokens, >=2 media queries, prefers-reduced-motion, a
+         compiling script with addEventListener, and no placeholder copy. It
+         actively FAILS an app that has a <nav>, a <footer> or hero/FAQ/pricing/
+         testimonial markup.
+       * thresholds.js: SHARED_STYLESHEETS += css/app.css, APP_SCRIPT,
+         APP_REQUIRED_JS_SNIPPETS (addEventListener only), APP_MIN_LINE_COUNTS
+         (index.html 30 so a single-screen tool is not judged like a landing
+         page), css/theme.css exempted from the 80-line CSS minimum, and
+         SECONDARY_PAGE for legal pages.
+       * connectionCheck detects an app project by css/app.css + no css/base.css
+         and stops excusing marketing-kit class names there.
+
+TASK 3 — THE VISUAL DIRECTION FOLLOWS THE DOMAIN
+
+  3a/3b: stacks/vanilla.js gained "CHOOSE THE VISUAL DIRECTION FOR THE
+     REQUEST — NEVER DEFAULT TO ONE LOOK" with the domain → mood pairings:
+     art/gallery/creative → gallery-ivory (warm ivory, serif display font,
+     generous whitespace); tech/SaaS → indigo-modern or midnight-dark;
+     finance/legal/corporate → slate-corporate; food/restaurant → sunset-warm;
+     kids/education → playful-pop; health/clinic/wellness → clinic-calm (or
+     emerald-fresh); fashion/beauty/luxury → rose-elegant. The plan's
+     "direction" line must name the choice and why, and it is echoed in the
+     plan event.
+
+  3c: three presets were added (see themes.js above): gallery-ivory,
+     playful-pop, clinic-calm — nine in total.
+
+     VERIFIED: "make an art gallery portfolio website" → gallery-ivory
+     (primary #9a6b3f, accent #c2a878, bg #faf7f2, Karla + Cormorant Garamond)
+     versus "make a SaaS landing page" → indigo-modern (primary #4f46e5,
+     accent #06b6d4, bg #f7f8fc, Inter + Sora). Both single-page sites pass the
+     link/style check and the visual check and render at 1440 and 390.
+
+TASK 4 — NAVBAR LINKS vs FOOTER LINKS
+
+  4a: rule added to stacks/vanilla.js: the navbar holds ONLY the primary
+     navigation the visitor browses (pages or in-page anchors); the footer holds
+     the brand blurb, social icons, contact details, a convenience copy of the
+     quick links AND the secondary/legal links (Privacy Policy, Terms &
+     Conditions, Cookie Policy, Sitemap, Disclaimer) in the footer legal row.
+     A requested privacy/terms link must be a REAL page linked from the footer.
+
+  4b: scaffold.js splits the plan's pages into primary and legal (LEGAL_PAGE
+     regex over file name and nav label): the nav and the footer "Explore"
+     column list only primary pages, and the legal pages are rendered as links
+     in a new .footer-legal row inside .site-footer__bottom (base.css styles
+     it). connectionCheck raises a hard failure when "privacy"/"terms"/
+     "cookie"/"sitemap" text or an href with those words appears inside a
+     <nav>, and exempts SECONDARY_PAGE files from the "every page must be
+     reachable from the nav" rule so a footer-only legal page is legal.
+
+     VERIFIED: a 2-page project (index.html + privacy.html) scaffolds with
+     nav "Home" only, the footer legal row linking privacy.html, and the check
+     PASSES; moving those links into the header nav makes it FAIL with
+     "index.html, terms.html place a legal/secondary link … inside the header
+     <nav>".
+
+FILE MAP (this round)
+  server/src/templates/vanilla-kit/app-kit.js        NEW (app kit, tokens reuse)
+  server/src/templates/vanilla-kit/scaffold.js       legal-row split, initialMark export
+  server/src/templates/vanilla-kit/index.js          buildScaffoldAppPlan + new exports
+  server/src/templates/vanilla-kit/themes.js         +gallery-ivory, playful-pop, clinic-calm
+  server/src/templates/vanilla-kit/css/base.css      kit-tokens markers, --header-offset,
+                                                     --app-width, body.has-fixed-header,
+                                                     .footer-legal, scroll-padding fix
+  server/src/templates/vanilla-kit/js/main.js        measured header offset guard
+  server/src/agent/prompts/base.js                   plan schema type/direction + classify rule
+  server/src/agent/prompts/stacks/vanilla.js         app vs site, domain -> mood, nav/footer,
+                                                     header offset, follow-up rules
+  server/src/services/agentService.js                scaffold_app tool + handler, type/direction
+                                                     parsing, "TYPE: …" feed line
+  server/src/agent/quality/vanillaGate.js            app rulebook
+  server/src/agent/quality/connectionCheck.js        app detection, legal-in-nav check,
+                                                     reachability exemption, js-hook ids
+  server/src/agent/quality/thresholds.js             app thresholds, SECONDARY_PAGE
+  server/src/agent/quality/visualSanity.js           header-overlap check, 390px iframe pass,
+                                                     quoted UA-serif fix, JS-hook ids
+
+VERIFICATION (real output, kept in tmp-acceptance/)
+  * oxlint (client): 0 errors, 2 pre-existing warnings. vite build: OK.
+  * node --check: 16 changed/new server files, 0 failures, plus a module import
+    smoke test (kit, prompts, all checks, agent service) and a prompt assembly
+    check (25,956 characters, all new rules present).
+  * task2-4-acceptance.txt: calculator / todo / snake app projects — gate PASS,
+    visual PASS, link/style PASS, nav=0 footer=0 hero=false faq=false h1=1,
+    "NONE (no Home link)"; art-gallery vs saas sites — both PASS with different
+    palettes and fonts; the legal-page project PASSES while the injected
+    legal-in-nav defect FAILS; the header scenarios with the measured numbers.
+  * plan-type-acceptance.txt: mock-provider runs of "make me a calculator" and
+    "make a SaaS landing page" produced feed lines "TYPE: app — Planned 1
+    file(s): index.html" and "TYPE: site — …", executed scaffold_app / 
+    scaffold_site respectively, and left index.html with nav=0 footer=0 for the
+    app and nav=1 footer=1 for the site.
+  * screenshots/task2-4/: calculator, todo, snake, art-gallery and saas at 1440
+    and 390 pixels (real PNG bytes from headless Chrome).
+
+COULD NOT VERIFY
+  * No live provider key exists in this environment, so every agent run used a
+    scripted mock that drives the REAL runAgent, the REAL tools, the REAL gate
+    and the real files. The claim "the model classifies correctly" is therefore
+    demonstrated against the prompt rules it is given, not against Mistral.
+  * The gate's copy requirements (200+ characters per section, 5 FAQ items,
+    contact fields) were exercised only indirectly: the app fixtures passed it
+    in full, the two site fixtures were checked structurally and visually
+    (their canned copy is shorter than the site gate wants).
+  * Screenshots come from the local file:// pages; the /preview/:projectId
+    HTTP path was not re-tested. MongoDB-backed paths were not exercised.
+
+STATEMENTS THIS ROUND MAKES WRONG / SUPERSEDES
+  * "the starter kit has 6 presets" → there are 9.
+  * "every generated page needs the full kit" → only a TYPE: site page does; a
+    TYPE: app page must NOT have the nav, hero or footer, and the gate now
+    fails it if it does.
+  * "--header-h is the header height used for offsets" → --header-h is the
+    design minimum (min-height); --header-offset is the measured height and is
+    what every offset uses.
+  * "the visual check runs at one viewport" → it now runs at 1440 and at a real
+    390 CSS-pixel viewport (iframe wrapper, because Chrome clamps small
+    windows).
+  * "every class in an app page may be a marketing-kit class" → connectionCheck
+    no longer excuses kit class names in an app project.
+
+
+================================================================================
+AI Code Editor — Root-Caused Repeated Pause/Incomplete Output Bug
+================================================================================
+
+STATUS: fixed, and MEASURED. This entry replaces the earlier guesswork with a
+reproduction of the real failure: "build a landing page" stopping with a
+Continue button over and over and producing a near-empty page.
+
+HOW IT WAS FOUND (raw evidence, not a claim)
+  A local mock OpenAI-compatible provider was driven through the REAL runAgent()
+  loop with the real vanilla system prompt, the real starter kit and the real
+  quality checks. No provider key exists in server/.env and no provider is
+  reachable from this environment, so a real-provider run was impossible — every
+  number below comes from the production control flow. Full raw numbers:
+  tmp-acceptance/root-cause-pause-incomplete.txt
+
+  Reproduced stop #1 (model keeps rewriting one page): 16 requests, 150,702
+  tokens (146,123 prompt / 4,579 completion), limitReached=true, message
+  "Stopped: this task reached its ~150K token budget. Every planned file was
+  written." → the Continue button, on a 28-line index.html with no footer, no h1
+  and 5 of its 6 planned sections missing.
+  Reproduced stop #2 (Continue clicked): the resumed run stopped at the
+  IDENTICAL ~150K budget (150,132 tokens) with the IDENTICAL message and the
+  IDENTICAL 28-line page. Every click then burned another ~150K tokens.
+  Reproduced false success (model stops early after the scaffold): 27 requests,
+  307,992 tokens, reports "The landing page is complete." with
+  limitReached=false (so no Continue) while the gate listed 12 real failures.
+
+THE ACTUAL ROOT CAUSE (proven by the runs above)
+  * Plan completeness was FILE EXISTENCE, not content. plannedFileIssues() only
+    checked that index.html existed and ended with </html>; it never looked for
+    the starter kit's unfilled <!-- SLOT:x --> markers or the plan's declared
+    <section id="..."> blocks. Once scaffold_site wrote the file, the loop told
+    the model "Progress 1 of 1 planned files. Remaining: none. Next: finish with
+    your short summary", and the budget stop asserted "Every planned file was
+    written."
+  * With no issues reported, the soft token budget became the stop condition and
+    hard-stopped the run at ~150K cumulative tokens with limitReached=true.
+  * A failing quickCheck did NOT block completion: it emitted a gate event,
+    SKIPPED the entire vanilla gate (guarded by `quick.ok`), and fell through to
+    a SUCCESS result.
+  * The budget auto-continue added a FULL 150K per continuation (5 x 150K), so a
+    "per-task" budget was silently reset, and the stuck-loop counter was reset
+    by it too.
+
+WHICH EARLIER CLAIMS TURNED OUT WRONG (corrections)
+  * "Auto-continue must not end the run" — tryAutoContinue() exists, but it was
+    NOT wired into the budget stop or the tool-call stop when the plan looked
+    complete, which is exactly the landing-page case. Those stops still produced
+    the Continue button.
+  * "Token budget" — documented as a clean per-task cap, but it (a) stopped a
+    normal task once content was mis-reported as complete, and (b) was reset to
+    a fresh 150K by every internal auto-continue.
+  * "Write validation / connection check accept nothing broken" — connectionCheck
+    is fine, but the cheap content check (quickCheck) and the gate could both be
+    walked past: a failed quickCheck skipped the gate and the run reported
+    success. An unfilled scaffold, a missing footer and a page with no <h1> all
+    shipped as "complete".
+  * NOT the cause: the plan/classification. The plan was correct ("TYPE: site —
+    Planned 1 file(s): index.html" with hero/services/features/testimonials/faq/
+    cta). The failure was verification, not planning.
+
+WHAT CHANGED (structural — loop control, budget, validation)
+  1. server/src/services/agentService.js — plannedFileIssues(projectId, paths,
+     planDoc) now reports CONTENT incompleteness: a page with unfilled
+     <!-- SLOT:x --> markers, or missing a <section id="..."> the plan declared,
+     is an error (new kinds 'slots' / 'missingSection'). planDoc is threaded
+     through every caller (wrap-up hint, progress hint, plan reminder, budget
+     auto-continue, tool-cap auto-continue, stuck detection, append limit).
+  2. server/src/agent/quality/quickCheck.js — the cheap check now also fails a
+     page with no <header>, no <footer>, no/!=1 <h1>, or a plan-declared section
+     that is missing. This is the "obviously incomplete page" gate.
+  3. agentService.js — a still-failing quickCheck after its repair rounds now
+     calls blockFinishing() instead of falling through to success, and a
+     still-failing vanilla gate does the same. The run keeps working or stops
+     honestly (Continue); it never reports success on a broken page.
+  4. agentService.js — the budget is now per task and measured:
+     MEASURED_LANDING_PAGE_TOKENS = 44000 (a complete one-page landing page =
+     4 requests / 43,840 tokens, measured below); TASK_TOKEN_BUDGET = 4 x that =
+     176,000; and an auto-continue tops it up by a bounded +34%, capped at 2.5x,
+     instead of resetting it to a fresh 150K.
+  5. agentService.js — the stuck-loop counter is cumulative (MAX_STUCK_WARNINGS=3)
+     and is no longer reset by auto-continue, and an identical unchanged
+     quickCheck failure is only auto-continued MAX_STALLED_CONTINUES=1 time, so a
+     looping model is bounded instead of burning the budget.
+  6. client/src/features/settingsSlice.js — two control-character regex literals
+     replaced with an equivalent helper so oxlint is back to 0 warnings / 0
+     errors (those warnings came from the uncommitted strict-rules work).
+
+PROOF (the same "build a landing page" task, 3 runs in a row)
+  run 1: 4 requests, 43,840 tokens (37,998 prompt / 5,842 completion), 10.8s, 0 pauses
+  run 2: 4 requests, 43,840 tokens (37,998 prompt / 5,842 completion),  4.7s, 0 pauses
+  run 3: 4 requests, 43,840 tokens (37,998 prompt / 5,842 completion),  4.7s, 0 pauses
+  every run: limitReached=false, gatePassed=true, index.html = 257 lines with
+  header=1 footer=1 main=1 h1=1 sections=7 leftoverSlots=0.
+  Rendered DOM (headless Chrome, run 3): hero 357 chars, services 945, features
+  1206, testimonials 579, faq 991 (5 accordion buttons), cta 298, process 922; a
+  footer with brand blurb, quick links and real contact details; no lorem ipsum /
+  TODO / coming soon.
+  Screenshot: tmp-acceptance/screenshots/task3/landing-1440.png (dumped DOM
+  beside it).
+
+  AFTER-FIX behaviour of the two broken scenarios:
+   * thin-page: no false success — it throws "Stopped: the automatic content
+     check still fails" listing the missing footer / h1 / sections, and the feed
+     shows "Verifying the plan — 5 file(s) still incomplete" right after the
+     thin write.
+   * churn: bounded, honest stop — 17 requests / 166,476 tokens,
+     limitReached=true, "Stopped: the agent kept repeating index.html without
+     finishing."
+   * resume: attempt 2 restored the plan from the saved session and FINISHED
+     (2 requests / 33,017 tokens, gate passed); it no longer repeats the failure.
+
+COULD NOT VERIFY
+  * No real provider key and no reachable provider here, so the three-run proof
+    and the before/after comparisons drive the real loop with a scripted mock
+    model. The loop, validation and prompt behaviour are real; the model's own
+    wording is not.

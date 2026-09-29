@@ -1,7 +1,14 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildScaffoldFiles, normalizeScaffoldInput, sectionCatalog } from './scaffold.js'
+import {
+  LEGAL_LINK,
+  LEGAL_PAGE,
+  buildScaffoldFiles,
+  normalizeScaffoldInput,
+  sectionCatalog,
+} from './scaffold.js'
+import { APP_CSS, APP_JS, appStylesheet, buildAppFiles, extractKitTokens } from './app-kit.js'
 import { SECTION_SNIPPETS, SECTION_TYPES, SLOT_PATTERN } from './snippets.js'
 import { DEFAULT_THEME_ID, THEME_PRESETS, getThemePreset, themePresetIds } from './themes.js'
 
@@ -17,6 +24,18 @@ export async function buildScaffoldPlan(input) {
   const plan = buildScaffoldFiles(input)
   for (const file of plan.files) {
     if (file.content === null) file.content = await readKitAsset(file.path)
+  }
+  return plan
+}
+
+// The utility-app kit. It reuses the SAME token block as the marketing kit
+// (extracted from css/base.css between the kit-tokens markers) so an app and a
+// site share one spacing/type/hover scale, then adds the app-only layer.
+export async function buildScaffoldAppPlan(input) {
+  const plan = buildAppFiles(input)
+  const tokens = extractKitTokens(await readKitAsset('css/base.css'))
+  for (const file of plan.files) {
+    if (file.path === 'css/app.css') file.content = appStylesheet(tokens)
   }
   return plan
 }
@@ -57,11 +76,16 @@ export function kitClassList() {
 }
 
 export {
+  APP_CSS,
+  APP_JS,
   DEFAULT_THEME_ID,
+  LEGAL_LINK,
+  LEGAL_PAGE,
   SECTION_SNIPPETS,
   SECTION_TYPES,
   SLOT_PATTERN,
   THEME_PRESETS,
+  buildAppFiles,
   buildScaffoldFiles,
   getThemePreset,
   normalizeScaffoldInput,

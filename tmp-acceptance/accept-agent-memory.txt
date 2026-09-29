@@ -1,0 +1,123 @@
+mock provider listening on 8787
+
+=== run with the toggle OFF (default) ===
+{
+  "label": "history-off",
+  "requests": 26,
+  "outcome": "run finished",
+  "gatePassed": false,
+  "promptChars": 28558,
+  "includesSnapshot": true,
+  "includesUpdateWorkflow": true,
+  "includesAgentMdHistory": false,
+  "firstTaskText": "ismai dark mode add karo navbar mai, purana design rakhna hai bas ye feature add karna hai",
+  "planParsed": true,
+  "gateMessages": 43,
+  "events": [
+    "thinking: Starting the agent…",
+    "plan: Planned 2 file(s): index.html, js/dark-mode.js",
+    "note: Verifying the plan — 1 file(s) still incomplete…",
+    "thinking: Working on it…",
+    "create_file: Writing js/dark-mode.js…",
+    "create_file: Wrote js/dark-mode.js · 10 lines",
+    "gate: Visual check passed in headless Chrome — 1 page(s) render a styled, modern layout.",
+    "gate: Quality gate found 1 problem(s) — repair round 1 of 3.",
+    "note: Repair round 1 of 3 — fixing the gate failures…",
+    "gate: Visual check passed in headless Chrome — 1 page(s) render a styled, modern layout."
+  ],
+  "loggedChanges": [
+    {
+      "path": "js/dark-mode.js",
+      "type": "add"
+    }
+  ],
+  "agentMdFile": {
+    "path": "AGENT.md",
+    "chars": 751
+  },
+  "agentMdStatus": "completed with quality-gate warnings"
+}
+
+=== AGENT.md written after that run (the toggle only affects READING) ===
+# Project history — written by the CodeMatrix agent
+
+This file is the project's own work log. After every agent run it gets one
+short entry: what was asked, what changed, the key decisions, and anything the
+next run should know. You can edit or delete it freely — the agent appends to
+whatever it finds here.
+
+## 2026-09-29 — ismai dark mode add karo navbar mai, purana design rakhna hai bas ye feature add karna hai
+- Requested: ismai dark mode add karo navbar mai, purana design rakhna hai bas ye feature add karna hai
+- Added: js/dark-mode.js
+- Edited: none
+- Deleted: none
+- Key decisions: stack html, palette indigo-modern
+- Status: completed with quality-gate warnings
+- Note for the next run: Added the dark mode toggle to the existing design.
+
+
+=== run with the toggle ON ===
+{
+  "label": "history-on",
+  "requests": 25,
+  "outcome": "run finished",
+  "gatePassed": false,
+  "promptChars": 29466,
+  "includesSnapshot": true,
+  "includesUpdateWorkflow": true,
+  "includesAgentMdHistory": true,
+  "firstTaskText": "ismai dark mode add karo navbar mai, purana design rakhna hai bas ye feature add karna hai",
+  "planParsed": true,
+  "gateMessages": 43,
+  "events": [
+    "thinking: Starting the agent…",
+    "plan: Planned 2 file(s): index.html, js/dark-mode.js",
+    "gate: Visual check passed in headless Chrome — 1 page(s) render a styled, modern layout.",
+    "gate: Quality gate found 1 problem(s) — repair round 1 of 3.",
+    "note: Repair round 1 of 3 — fixing the gate failures…",
+    "thinking: Working on it…",
+    "create_file: Writing js/dark-mode.js…",
+    "create_file: Failed to write js/dark-mode.js — \"js/dark-mode.js\" already exists (10 lines) and is complete, so create_file would thro",
+    "gate: Visual check passed in headless Chrome — 1 page(s) render a styled, modern layout.",
+    "gate: Quality gate found 1 problem(s) — repair round 2 of 3."
+  ],
+  "loggedChanges": [],
+  "agentMdFile": {
+    "path": "AGENT.md",
+    "chars": 1182
+  },
+  "agentMdStatus": "completed with quality-gate warnings"
+}
+
+=== AGENT.md content injected? ===
+readAgentMemory chars=1181
+off.includesAgentMdHistory=false
+on.includesAgentMdHistory=true
+
+=== AGENT.md after BOTH runs (two entries appended) ===
+# Project history — written by the CodeMatrix agent
+
+This file is the project's own work log. After every agent run it gets one
+short entry: what was asked, what changed, the key decisions, and anything the
+next run should know. You can edit or delete it freely — the agent appends to
+whatever it finds here.
+
+## 2026-09-29 — ismai dark mode add karo navbar mai, purana design rakhna hai bas ye feature add karna hai
+- Requested: ismai dark mode add karo navbar mai, purana design rakhna hai bas ye feature add karna hai
+- Added: js/dark-mode.js
+- Edited: none
+- Deleted: none
+- Key decisions: stack html, palette indigo-modern
+- Status: completed with quality-gate warnings
+- Note for the next run: Added the dark mode toggle to the existing design.
+
+## 2026-09-29 — ismai dark mode add karo navbar mai, purana design rakhna hai bas ye feature add karna hai
+- Requested: ismai dark mode add karo navbar mai, purana design rakhna hai bas ye feature add karna hai
+- Added: none
+- Edited: none
+- Deleted: none
+- Key decisions: stack html, palette indigo-modern
+- Status: completed with quality-gate warnings
+- Note for the next run: Added the dark mode toggle to the existing design.
+
+entries=2

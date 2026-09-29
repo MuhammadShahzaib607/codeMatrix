@@ -1,0 +1,101 @@
+{
+  "mode": "recover3",
+  "durationMs": 4119,
+  "requests": 12,
+  "result": {
+    "message": "The Northwind Studio site is complete: index.html with the planned sections, the theme recoloured, and every slot filled.",
+    "toolCalls": 10,
+    "limitReached": false
+  },
+  "thrown": null,
+  "notesAndFallbacks": [
+    "note: Verifying the plan — 1 file(s) still incomplete…",
+    "note: Two tool calls in a row failed — retrying this turn without streaming…",
+    "note: Still failing — sending the exact argument names for that tool and retrying…",
+    "gate: Visual check passed in headless Chrome — 1 page(s) render a styled, modern layout.",
+    "gate: Quality gate passed — 7 check group(s) verified.",
+    "complete: The Northwind Studio site is complete: index.html with the planned sections, the theme recoloured, and every slot filled."
+  ],
+  "toolLog": [
+    {
+      "request": 0,
+      "stream": true,
+      "action": "text",
+      "malformed": false
+    },
+    {
+      "request": 1,
+      "stream": true,
+      "action": "scaffold_site",
+      "malformed": false
+    },
+    {
+      "request": 2,
+      "stream": true,
+      "action": "edit_file",
+      "malformed": true
+    },
+    {
+      "request": 3,
+      "stream": true,
+      "action": "edit_file",
+      "malformed": true
+    },
+    {
+      "request": 4,
+      "stream": false,
+      "action": "edit_file",
+      "malformed": true
+    },
+    {
+      "request": 5,
+      "stream": false,
+      "action": "edit_file",
+      "malformed": false
+    },
+    {
+      "request": 6,
+      "stream": true,
+      "action": "edit_file",
+      "malformed": false
+    },
+    {
+      "request": 7,
+      "stream": true,
+      "action": "edit_file",
+      "malformed": false
+    },
+    {
+      "request": 8,
+      "stream": true,
+      "action": "edit_file",
+      "malformed": false
+    },
+    {
+      "request": 9,
+      "stream": true,
+      "action": "edit_file",
+      "malformed": false
+    },
+    {
+      "request": 10,
+      "stream": true,
+      "action": "edit_file",
+      "malformed": false
+    },
+    {
+      "request": 11,
+      "stream": true,
+      "action": "text",
+      "malformed": false
+    }
+  ],
+  "themePrimaryRedone": true,
+  "index": {
+    "lines": 222,
+    "slotsLeft": 0,
+    "header": 1,
+    "h1": 1
+  },
+  "projectDir": "C:\\Projects\\CodeMatrix\\tmp-acceptance\\edit-workspaces\\editfix-recover3-4842"
+}

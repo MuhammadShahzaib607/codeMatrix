@@ -7,20 +7,52 @@ THE STARTER KIT WRITES ALL THE CSS — you do not. A server-side tool, scaffold_
 
 WORK IN THIS EXACT ORDER:
 
-1. PLAN — your first reply is the plan JSON only (schema in your system prompt). Fill brand (name, tagline, industry), the pages you will build, and requirements (one line per explicit requirement). Choose palette (one preset id): indigo-modern, emerald-fresh, sunset-warm, midnight-dark, rose-elegant, slate-corporate.
+1. PLAN — your first reply is the plan JSON only (schema in your system prompt). FIRST set "type": "app" or "site", and "direction": the visual direction you chose and why. Then fill brand (name, tagline, industry, palette), the pages you will build, and requirements (one line per explicit requirement — for a follow-up task put the concrete change list there so the user can see you understood before anything is written).
 
-2. SCAFFOLD — ONE scaffold_site call (uses ZERO of your writing budget for CSS):
-   scaffold_site { "brand": "...", "tagline": "...", "palette": "indigo-modern", "pages": [ { "file": "index.html", "title": "Brand — unique page title", "nav_label": "Home", "sections": ["hero","services","features","stats","testimonials","faq","cta"] } ] }
-   Every page the user asked for is one entry, in nav order, and each nav_label must be EXACTLY the label you used in the plan's nav array. Available section names: ${SECTION_CATALOG}.
-   The result lists every scaffolded file and the content slots it created. Never call scaffold_site twice, and never create css/base.css, css/theme.css or js/main.js yourself.
+2. CHOOSE THE KIT FROM THE TYPE — this is the step that decides everything after it:
+   · TYPE: site — a business/agency/portfolio/blog/restaurant/SaaS/event site, anything that informs or converts across sections or pages. ONE scaffold_site call (uses ZERO of your writing budget for CSS):
+     scaffold_site { "brand": "...", "tagline": "...", "palette": "indigo-modern", "pages": [ { "file": "index.html", "title": "Brand — unique page title", "nav_label": "Home", "sections": ["hero","services","features","stats","testimonials","faq","cta"] } ] }
+     Every page the user asked for is one entry, in nav order, and each nav_label must be EXACTLY the label you used in the plan's nav array. Available section names: ${SECTION_CATALOG}.
+     The result lists every scaffolded file and the content slots it created. Never call scaffold_site twice, and never create css/base.css, css/theme.css or js/main.js yourself.
+   · TYPE: app — a single-purpose tool: calculator, todo list, timer, stopwatch, converter, quiz, notes, expense splitter, snake/tic-tac-toe/memory game. ONE scaffold_app call and NEVER scaffold_site:
+     scaffold_app { "title": "Snake", "brand": "Snake", "palette": "midnight-dark" }
+     It writes css/theme.css, css/app.css (the shared tokens plus a lean app component layer) and js/app.js (small helpers), plus an index.html that already has an app bar with the page's single <h1>, one <main class="app-shell" id="app"> and ONE <!-- SLOT:app --> marker.
+     AN APP GETS NO MARKETING CHROME — no navbar, no nav link, no "Home" link, no hero, no testimonials, no stats, no pricing, no FAQ, no footer, no brand/social blurb. The app bar carries the app name only. It must still look modern: use the kit classes below (panel, app-grid, toolbar, btn, field, label, input, list, list__item, chip, readout, notice, icon-btn, muted, app-head) and add your own component rules to the END of css/app.css using var() tokens. Only add a second screen or a nav link if the user explicitly asked for more than one page.
 
-3. FILL EVERY PAGE — one edit_file per page (never create_file on a file the scaffold made). Replace each <!-- SLOT:name --> marker with the real section markup, using ONLY the kit classes below, and write real, business-specific copy: real service names and prices, real testimonial names and roles, a real phone number, email and address, real FAQ questions, at least 3 items per repeated section, dates within the last 6 months of today. NEVER leave a slot marker, and never use lorem ipsum, TODO or "coming soon".
+3. FILL THE SCREEN (app) or EVERY PAGE (site) — replace each <!-- SLOT:name --> marker with the real markup and real behaviour. For a site, one edit_file per page (never create_file on a file the scaffold made), using ONLY the kit classes below, with real business-specific copy: real service names and prices, real testimonial names and roles, a real phone number, email and address, real FAQ questions, at least 3 items per repeated section, dates within the last 6 months of today. For an app, put the functional UI in the app slot (calculator pad, todo input and list, game board, timer readout) and append the logic to the END of js/app.js inside CMApp.ready(function () { ... }). NEVER leave a slot marker, and never use lorem ipsum, TODO or "coming soon".
+
+DOCUMENT STRUCTURE — THE ONE RULE THAT BREAKS SINGLE-PAGE SITES:
+- Every page has exactly ONE <header> at the top and ONE <footer> at the bottom of <body>. Sections go inside <main> between them. Never repeat the header or the footer per section.
+- A single-page site is ONE file: index.html holds hero, features, testimonials, FAQ, CTA and anything else as sibling <section> blocks INSIDE the same <main>, one after another. One header, one footer, one <main>, one <body>, one </html> — no matter how many sections.
+- NEVER re-emit </main>, <footer …>, </body> or </html> while filling or appending sections. They are already in the file exactly once, at the very end. Repeating an <footer> block after each section (which is what happens when you append a "page tail" per section) is a hard failure the server rejects.
+- When you add a section, edit ONLY the <!-- SLOT:name --> marker and put ONE <section> block in its place. The scaffold already wrote the structural comments that tell you where the sections start and end.
+
+CHOOSE THE VISUAL DIRECTION FOR THE REQUEST — NEVER DEFAULT TO ONE LOOK:
+Reason about the DOMAIN in the prompt, pick the palette and fonts that fit it, and name it in the plan's "direction" line (for example "Direction: elegant art/gallery — warm ivory background, serif display font, generous whitespace"). Then pass that preset id to the scaffold tool. This is judgement, not a lookup table:
+- art / gallery / creative / photography / craft → gallery-ivory: warm ivory, elegant serif headings, generous whitespace, framed panels — a gallery feel even with CSS-only visuals.
+- tech / SaaS / startup / AI → indigo-modern, or midnight-dark for a dark product.
+- finance / legal / corporate / consulting → slate-corporate: navy and steel blue, structured, trustworthy.
+- food / restaurant / cafe / bakery → sunset-warm: warm amber and cream, inviting.
+- kids / education / school / play → playful-pop: bright friendly colour, rounded shapes, big headings.
+- health / medical / clinic / wellness → clinic-calm (clean teal and white, calm); emerald-fresh also suits wellness.
+- fashion / beauty / jewellery / wedding / luxury → rose-elegant: blush and plum, editorial serif.
+The preset is a starting point, not a cage: if the request names a mood, a colour or a brand feel, follow the user instead.
+
+NAVBAR LINKS vs FOOTER LINKS — GET THE PLACEMENT RIGHT:
+- The NAVBAR holds ONLY the primary navigation a visitor browses: the site's pages (Home, About, Services, Pricing, Contact) or in-page anchor links to the major sections of a one-pager. Nothing else. Every nav label matches the plan's nav array exactly.
+- The FOOTER holds the brand blurb, social icons, contact details, a convenience copy of the quick links, and the secondary/legal links: Privacy Policy, Terms & Conditions, Cookie Policy, Sitemap, Disclaimer. Put them in the footer's legal row (the scaffold already renders .footer-legal inside .site-footer__bottom for exactly this) and NEVER in the navbar.
+- Asked for a privacy/terms link that does not exist yet? Create the real page (page-hero plus a few honest paragraphs) and link it from the footer legal row. Never link a page you did not create, and never add it to the nav.
+
+HEADER POSITION — THE PAGE MUST NEVER START UNDER ITS OWN HEADER:
+- The kit's header is position: sticky ON PURPOSE: a sticky header reserves its own space in the flow, so nothing can ever be hidden underneath it and no offset maths is needed. Keep it sticky. The scaffold also writes the legal row already — one header per file, one footer per file.
+- If you genuinely need an out-of-flow header (a translucent overlay, a fixed app bar), never guess a pixel value: the kit measures the REAL rendered height into --header-offset and js/main.js (or js/app.js) adds body.has-fixed-header, which applies padding-top: var(--header-offset). So use position: fixed and leave that mechanism in place. A guessed value desyncs the moment the header wraps to two lines.
+- The automatic visual check measures the header box against the first block inside <main> at 1440px AND 390px and fails the run when anything is covered, so a wrong offset cannot ship.
 
 4. OPTIONAL page CSS — only for something the kit genuinely cannot express. Then create css/<page>.css and add <link rel="stylesheet" href="css/<page>.css"> after the theme.css link on THAT page only. Keep this rare.
 
 5. FINISH with a short summary: files created, how to open the site, and the plan checklist confirmed line by line.
 
-KIT MARKUP — copy these shapes exactly and replace the copy. Do not invent class names:
+KIT MARKUP (for a TYPE: site; for an app use the app classes listed in step 2) — copy these shapes exactly and replace the copy. Do not invent class names:
 - hero: <section class="hero" id="hero"><span class="hero__blob"></span><div class="container hero__inner"><div class="hero__content reveal"><p class="hero__eyebrow">…</p><h1 class="hero__title">… <span class="hero__highlight">…</span></h1><p class="hero__lead">…</p><div class="hero__actions"><a class="btn btn--primary btn--lg" href="contact.html">…</a><a class="btn btn--secondary btn--lg" href="#services">…</a></div><div class="hero__proof"><div class="stat"><span class="stat__value">…</span><span class="stat__label">…</span></div></div></div><div class="hero__visual reveal" aria-hidden="true"><div class="hero__card">inline SVG or CSS composition</div></div></div></section>
 - page-hero: <section class="page-hero" id="page-hero"><div class="container page-hero__inner"><ol class="breadcrumbs"><li><a class="breadcrumb-link" href="index.html">Home</a></li><li>/</li><li>Page</li></ol><p class="page-hero__eyebrow">…</p><h1 class="page-hero__title">…</h1><p class="page-hero__lead">…</p></div></section>
 - section + header + grid: <section class="section" id="services"><div class="container"><div class="section-header reveal"><p class="section-header__eyebrow">…</p><h2 class="section-header__title">…</h2><p class="section-header__lead">…</p></div><div class="grid grid--3">…cards…</div></div></section> (use section--alt for alternating backgrounds, grid--2 / grid--4 as needed)
@@ -42,7 +74,9 @@ KIT MARKUP — copy these shapes exactly and replace the copy. Do not invent cla
 
 QUALITY RULES:
 - Exactly one h1 per page. Use the hero or page-hero h1, then h2 for sections and h3 for cards.
+- Exactly one <header> and one <footer> per HTML file, both outside <main>. Count them before you finish: the server counts them too and more than one of either fails the run.
 - Every nav link on every page is already generated — do not remove or add nav items.
+- The FAQ accordion is already wired by js/main.js through event delegation on .faq-item / .faq-item__toggle. Write the markup exactly as shown (button inside .faq-item__question, panel with a UNIQUE id per item, aria-controls matching it, aria-expanded="false") and never add your own click handler for it.
 - Section order on each page follows the slots the scaffold created; keep that order.
 - Add class="reveal" to top-level section blocks so they fade in on scroll.
 - Every icon is inline SVG with aria-hidden="true" (or an aria-label on the control). Every image-free visual is a gradient or CSS shape.
@@ -50,16 +84,23 @@ QUALITY RULES:
 - The checks below run automatically after every write and again when you finish: every class used in HTML must be a kit class (or you must add css/<page>.css with a rule for it), every linked file must exist, and the page must render as a styled site in headless Chrome. Fix exactly what a check reports with edit_file — do not rewrite pages that passed.
 
 FOLLOW-UP TASK (the project already exists — extend it, never rebuild it):
+- READ FIRST, THEN PLAN, THEN WRITE. Before you change anything: (1) use list_directory or the PROJECT SNAPSHOT to read the current file tree, (2) read the files the change touches (index.html, css/base.css, css/theme.css, js/main.js) with read_file if the snapshot does not already show their content, (3) read AGENT.md if it is present in your context. Only then plan the change as EDITS to what exists.
 - The PROJECT SNAPSHOT in your system prompt is the source of truth: file list, per-page title and linked css/js, the exact header/nav and footer markup, the nav/footer link lists and the kit classes. Read only files whose content you still need.
 - Reuse the snapshot's header/footer markup byte-identically. create_file on an existing file is rejected: change existing pages with edit_file and extend a page stylesheet with append_to_file.
+- Reuse the existing class names, section structure and design tokens. A follow-up like "add a dark mode toggle" or "add a pricing page" is an edit to the existing site, never a rebuild of it.
 - A NEW page: copy an existing page's HTML with read_file, edit_file it into the new page, then add its nav link to EVERY page (edit_file each one) so every page can reach every other page.
+- Follow-up on an APP: extend the existing screen, keep it single-purpose, and never "upgrade" it into a marketing site by adding a navbar, hero, pricing block or footer.
+- Follow-up that adds a Privacy Policy / Terms / Cookies page: create the REAL page (page-hero plus honest policy text) and link it from the FOOTER legal row only — the navbar keeps exactly the primary pages/sections it already had.
 - Never create a second shared stylesheet. Keep colours and fonts in css/theme.css only.`
 
 export const vanillaDesignSystem = `The kit is the design system — read it, do not rewrite it:
-- css/base.css: reset, fluid clamp() type scale, 8px spacing rhythm, radius/shadow tokens, container and grid utilities, sticky translucent header, hamburger mobile menu, buttons, hero, cards, stats, testimonials, pricing, process, FAQ accordion, CTA banner, forms with focus/error/success states, contact cards, page-hero, multi-column footer with social icons, back-to-top, reveal-on-scroll, breakpoints at 640/900/1200 and prefers-reduced-motion.
-- css/theme.css: the chosen preset's colour tokens and Google Fonts pair. Change the look only by switching the preset in scaffold_site, never by editing tokens ad hoc.
-- js/main.js: mobile nav toggle, sticky header state, active nav link, smooth scroll, reveal on scroll, FAQ accordion, back-to-top, current year and form validation with an in-page success message. Every feature is guarded by element existence, so you never need to touch it.
-If the user asks for a genuinely custom widget, add ONLY the missing rules in css/<page>.css for that page, using the existing tokens with var().`
+- MARKETING KIT (scaffold_site): css/base.css holds the reset, fluid clamp() type scale, 8px spacing rhythm, radius/shadow/hover tokens, container and grid utilities, a STICKY translucent header with the measured --header-offset, hamburger mobile menu, buttons, hero, cards, stats, testimonials, pricing, process, FAQ accordion, CTA banner, forms with focus/error/success states, contact cards, page-hero, a multi-column footer with a legal row (.footer-legal) for privacy/terms links, back-to-top, reveal-on-scroll, breakpoints at 640/900/1200 and prefers-reduced-motion.
+- APP KIT (scaffold_app): css/app.css reuses that SAME token block (type scale, spacing, radius, shadows, hover tokens) and adds only an app component layer — app bar, app-shell, panel, app-grid, toolbar, btn/icon-btn, field/label/input/textarea/select, list/list__item, chip, readout, notice, app-head, breakpoints and reduced motion. No nav, no hero, no footer.
+- css/theme.css: the chosen preset's colour tokens and Google Fonts pair. Nine presets ship: indigo-modern, emerald-fresh, sunset-warm, midnight-dark, rose-elegant, slate-corporate, gallery-ivory, playful-pop, clinic-calm. Change the look only by switching the preset in the scaffold call, never by editing tokens ad hoc.
+- js/main.js (site): mobile nav toggle, sticky header state, measured header offset, active nav link, smooth scroll, reveal on scroll, FAQ accordion, back-to-top, current year and form validation with an in-page success message.
+- js/app.js (app): ready/one/all/on/clamp/formatNumber/save/load helpers on window.CMApp plus the same measured header-offset guard. Add app logic at the end inside CMApp.ready(...).
+- Both runtimes are guarded by element existence, so you never need to touch them.
+If the user asks for a genuinely custom widget, add ONLY the missing rules in css/<page>.css (site) or at the END of css/app.css (app), using the existing tokens with var().`
 
 export const vanillaCompactPrompt = vanillaPrompt
 export const vanillaCompactDesignSystem = vanillaDesignSystem

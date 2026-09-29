@@ -114,6 +114,19 @@ export async function quickCheck({
   else if (Array.isArray(files) && files.length > 0) for (const file of files) addPlanned(file)
   else for (const file of plan?.files ?? []) addPlanned(file)
 
+  // The plan's own page list is what decides which sections a page owes. A
+  // scaffolded page that still does not carry its declared sections is an
+  // incomplete build, not a style warning — the loop must keep going.
+  const declaredSections = new Map()
+  for (const page of Array.isArray(plan?.pages) ? plan.pages : []) {
+    const filePath = cleanRelative(typeof page === 'string' ? page : page?.file)
+    if (!filePath) continue
+    const sections = (Array.isArray(page?.sections) ? page.sections : [])
+      .map((section) => String(section ?? '').trim())
+      .filter(Boolean)
+    if (sections.length > 0) declaredSections.set(filePath, sections)
+  }
+
   const cache = new Map()
   const read = async (relativePath) => {
     const clean = cleanRelative(relativePath)
@@ -161,6 +174,27 @@ export async function quickCheck({
 
     if (/\bhref\s*=\s*(""|'')/i.test(content) || /\bhref\s*=\s*"#"/i.test(content)) {
       problems.push(`"${file}" contains a dead link (href="#") — point it at a real file or section id.`)
+    }
+
+    // A page is structurally incomplete without these, and reporting it as a
+    // success is exactly how a near-empty page shipped. Catch it here, cheaply.
+    if (!/<header\b/i.test(content)) {
+      problems.push(`"${file}" has no <header> — a page is incomplete without its site header.`)
+    }
+    if (!/<footer\b/i.test(content)) {
+      problems.push(`"${file}" has no <footer> landmark — the page is incomplete without its footer.`)
+    }
+    const h1Count = (content.match(/<h1\b/gi) || []).length
+    if (h1Count !== 1) {
+      problems.push(`"${file}" must contain exactly one <h1> (found ${h1Count}).`)
+    }
+    for (const section of declaredSections.get(file) ?? []) {
+      const idPattern = new RegExp(`id\\s*=\\s*["']${section}["']`, 'i')
+      if (!idPattern.test(content)) {
+        problems.push(
+          `"${file}" is missing the planned <section id="${section}"> — write that section with real copy now, it is part of the page the plan promised.`,
+        )
+      }
     }
 
     if (!checkReferences) continue

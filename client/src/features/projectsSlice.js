@@ -18,6 +18,11 @@ const initialState = {
   missing: null,
   // A project awaiting delete confirmation from the list view.
   pendingDelete: null,
+  // projectId -> Redux tree of that project, fetched on demand so the Explorer
+  // can show a sibling project's files WITHOUT making it the active workspace.
+  // Clicking one of those files is what activates the project, so there is no
+  // separate "select project" step anywhere.
+  trees: {},
 }
 
 export const fetchRecentProjects = createAsyncThunk(
@@ -81,12 +86,51 @@ export const removeRecentProject = createAsyncThunk(
   },
 )
 
+/**
+ * Reads a project's tree for the Explorer's top level, purely for BROWSING.
+ * It never touches the active workspace: the active project is decided by which
+ * file (or project row) the user actually clicks. A tree already in the cache
+ * is returned as-is, so expanding a project repeatedly costs one request in
+ * total for the session.
+ */
+export const fetchProjectTree = createAsyncThunk(
+  'projects/fetchTree',
+  async ({ projectId }, { getState, rejectWithValue }) => {
+    if (!projectId) return rejectWithValue('A project id is required.')
+    const cached = getState().projects.trees[projectId]
+    if (cached) return { projectId, tree: cached, cached: true }
+    try {
+      const data = await workspaceApi.getTree(projectId)
+      return {
+        projectId,
+        tree: toReduxTree(data.tree),
+        name: data.name ?? null,
+        cached: false,
+      }
+    } catch (error) {
+      return rejectWithValue(error.message)
+    }
+  },
+)
+
 const projectsSlice = createSlice({
   name: 'projects',
   initialState,
   reducers: {
     removeRecentProjectItem(state, action) {
       state.items = state.items.filter((item) => item.id !== action.payload)
+      delete state.trees[action.payload]
+    },
+    /** Drops every cached sibling tree (sign-out, project deleted). */
+    clearProjectTrees(state, action = {}) {
+      const keep = action.payload?.keep ?? null
+      if (!keep) {
+        state.trees = {}
+        return
+      }
+      for (const projectId of Object.keys(state.trees)) {
+        if (projectId !== keep) delete state.trees[projectId]
+      }
     },
     markRecentMissing(state, action) {
       state.missing = action.payload
@@ -116,11 +160,16 @@ const projectsSlice = createSlice({
         state.status = 'error'
         state.error = action.payload ?? 'Could not load your projects.'
       })
+      .addCase(fetchProjectTree.fulfilled, (state, action) => {
+        const { projectId, tree } = action.payload ?? {}
+        if (projectId && tree) state.trees[projectId] = tree
+      })
   },
 })
 
 export const {
   removeRecentProjectItem,
+  clearProjectTrees,
   markRecentMissing,
   dismissRecentMissing,
   requestDeleteRecent,

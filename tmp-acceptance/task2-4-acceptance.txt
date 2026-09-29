@@ -1,0 +1,102 @@
+
+==============================================================================
+TASK 2 — "make a calculator" / "todo app" / "snake game" must get the APP kit, not the marketing kit
+==============================================================================
+
+[calculator] request "make me a calculator" → scaffold_app (indigo-modern)
+  files: css/theme.css:24L, css/app.css:527L, js/app.js:171L, index.html:55L
+  leftover slots: none
+  structure: header=1 nav=0 footer=0 hero=false pricing=false faq=false testimonials=false h1=1
+  nav links: NONE (no Home link)
+  link/style check: PASS
+  visual check: PASS
+  quality gate (TYPE: app): PASS
+  screenshots: 46862 bytes @1440, 28366 bytes @390
+
+[todo] request "make a todo app" → scaffold_app (emerald-fresh)
+  files: css/theme.css:24L, css/app.css:525L, js/app.js:158L, index.html:42L
+  leftover slots: none
+  structure: header=1 nav=0 footer=0 hero=false pricing=false faq=false testimonials=false h1=1
+  nav links: NONE (no Home link)
+  link/style check: PASS
+  visual check: PASS
+  quality gate (TYPE: app): PASS
+  screenshots: 40046 bytes @1440, 27693 bytes @390
+
+[snake] request "make a snake game" → scaffold_app (midnight-dark)
+  files: css/theme.css:24L, css/app.css:538L, js/app.js:199L, index.html:47L
+  leftover slots: none
+  structure: header=1 nav=0 footer=0 hero=false pricing=false faq=false testimonials=false h1=1
+  nav links: NONE (no Home link)
+  link/style check: PASS
+  visual check: PASS
+  quality gate (TYPE: app): PASS
+  screenshots: 38082 bytes @1440, 25220 bytes @390
+
+==============================================================================
+TASK 3 — the visual direction must follow the domain, not one default look
+==============================================================================
+
+[art-gallery] request "make an art gallery portfolio website" → scaffold_site (gallery-ivory)
+  chosen CSS variables: primary=#9a6b3f accent=#c2a878 bg=#faf7f2
+  fonts: body='Karla', system-ui, -apple-system, 'Segoe UI', sans-serif heading='Cormorant Garamond', 'Iowan Old Style', Georgia, serif
+  leftover slots: none
+  structure: header=1 nav=1 footer=1 hero=true faq=true testimonial=true h1=1
+  nav links: Home=>index.html, Start a project=>index.html
+  link/style check: PASS
+  visual check: PASS
+  screenshots: 440446 bytes @1440, 188227 bytes @390
+
+[saas] request "make a SaaS landing page" → scaffold_site (indigo-modern)
+  chosen CSS variables: primary=#4f46e5 accent=#06b6d4 bg=#f7f8fc
+  fonts: body='Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif heading='Sora', 'Inter', system-ui, sans-serif
+  leftover slots: none
+  structure: header=1 nav=1 footer=1 hero=true faq=true testimonial=false h1=1
+  nav links: Home=>index.html, Start a project=>index.html
+  link/style check: PASS
+  visual check: PASS
+  screenshots: 508972 bytes @1440, 204309 bytes @390
+
+==============================================================================
+TASK 4 — Privacy Policy / Terms links belong in the footer, never the navbar
+==============================================================================
+
+[scaffold] requested "add a privacy policy and terms links" → privacy.html is planned
+  index.html nav links: Home=>index.html, Start a project=>index.html
+  index.html FOOTER links privacy.html: true (legal row text: "Privacy Policy Back to top of site")
+  index.html NAV contains privacy: false
+  privacy.html nav links: Home=>index.html, Start a project=>index.html
+  link/style check on the 2-page site: PASS
+
+[injected defect] the same legal links moved into the header nav:
+  check: FAIL (caught, as required)
+  legal-in-nav problem raised: index.html, terms.html
+    · index.html, terms.html place a legal/secondary link (Privacy Policy, Terms & Conditions, Cookie Policy, Sitemap) inside the header <nav>. Those are FOOTER links, never navbar links: the navbar holds only the primary pages or sections the visitor browses (Home, About, Services, Pricing, Contact). Move them into the footer's legal row with edit_file and delete them from the nav.
+
+==============================================================================
+TASK 1 — a fixed header must never cover the first block of content
+==============================================================================
+
+[before] fixed header, no offset, and the ORIGINAL js/main.js (no offset guard)
+  old visual check: PASS — it never looked at the overlap (the bug shipped)
+
+[after] the same broken page judged by the NEW check
+  measured @1422px viewport (position: fixed): header 73px tall, bottom edge 73px, first content top 0px, body padding-top 0px, main padding-top 0px, overlap 73px
+  measured @390px viewport (position: fixed): header 73px tall, bottom edge 73px, first content top 0px, body padding-top 0px, main padding-top 0px, overlap 73px
+  check: FAIL
+    · "index.html" hides content under the header at 1422px wide: the header is 73px tall (bottom edge at 73px) but the first block inside <main> starts at 0px — 73px of it is covered. Fix it by making the header position: sticky (no offset maths needed), OR, if the header must stay fixed, offset the content by the REAL measured height: set --header-offset: 73px and add padding-top: var(--header-offset) to <body>, or add padding-top: 73px to <main>. Never use a guessed pixel value. Current body padding-top: 0px, main padding-top: 0px.
+    · "index.html" hides content under the header at 390px wide: the header is 73px tall (bottom edge at 73px) but the first block inside <main> starts at 0px — 73px of it is covered. Fix it by making the header position: sticky (no offset maths needed), OR, if the header must stay fixed, offset the content by the REAL measured height: set --header-offset: 73px and add padding-top: var(--header-offset) to <body>, or add padding-top: 73px to <main>. Never use a guessed pixel value. Current body padding-top: 0px, main padding-top: 0px.
+
+[after + runtime] the same fixed header with the NEW js/main.js (real height measured into --header-offset)
+  measured @1422px viewport (position: fixed): header 73px tall, bottom edge 73px, first content top 73px, body padding-top 73px, main padding-top 0px, overlap 0px
+  measured @390px viewport (position: fixed): header 73px tall, bottom edge 73px, first content top 73px, body padding-top 73px, main padding-top 0px, overlap 0px
+  check: PASS
+
+[after + narrow] fixed header that wraps to two lines at 390px
+  measured @1422px viewport (position: fixed): header 73px tall, bottom edge 73px, first content top 73px, body padding-top 73px, main padding-top 0px, overlap 0px
+  measured @390px viewport (position: fixed): header 119px tall, bottom edge 119px, first content top 119px, body padding-top 119px, main padding-top 0px, overlap 0px
+  check: PASS
+
+==============================================================================
+done — artefacts in tmp-acceptance\task2-4
+==============================================================================

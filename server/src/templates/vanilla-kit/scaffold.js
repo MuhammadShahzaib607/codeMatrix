@@ -1,6 +1,9 @@
 import { DEFAULT_THEME_ID, getThemePreset, fontsHref } from './themes.js'
 import { SECTION_TYPES } from './snippets.js'
 
+export const LEGAL_PAGE = /\b(privacy|terms|terms-and-conditions|terms-conditions|cookie|cookies|legal|sitemap|disclaimer|impressum)\b/i
+export const LEGAL_LINK = /\b(privacy|terms|cookie|cookies|legal|sitemap|disclaimer|impressum)\b/i
+
 const SOCIAL_ICONS = {
   x: '<path d="M4 4l7 8-7 8h3l5.5-6.3L18 20h3l-7.3-8.4L20.5 4h-3l-5 5.8L7 4Z" fill="currentColor" stroke="none"/>',
   linkedin:
@@ -43,7 +46,7 @@ function normalizePages(pages) {
   return list
 }
 
-function initialMark(brand) {
+export function initialMark(brand) {
   const words = String(brand ?? '')
     .split(/[^A-Za-z0-9]+/)
     .filter(Boolean)
@@ -61,7 +64,15 @@ export function normalizeScaffoldInput(input) {
 }
 
 export function buildPageShell({ brand, tagline, theme, pages, page, description }) {
-  const navLinks = pages
+  const isLegalPage = (entry) => LEGAL_PAGE.test(entry.file) || LEGAL_PAGE.test(entry.navLabel)
+  const primaryPages = pages.filter((entry) => !isLegalPage(entry))
+  const legalPages = pages.filter(isLegalPage)
+  const navPages = primaryPages.length > 0 ? primaryPages : pages
+  const legalLinks = legalPages
+    .map((entry) => `<a class="footer-link" href="${entry.file}">${entry.navLabel}</a>`)
+    .join('\n        ')
+
+  const navLinks = navPages
     .map((entry) => {
       const isCurrent = entry.file === page.file
       return `          <li class="nav-item"><a class="nav-link${isCurrent ? ' is-active' : ''}" href="${entry.file}"${isCurrent ? ' aria-current="page"' : ''}>${entry.navLabel}</a></li>`
@@ -107,6 +118,11 @@ ${navLinks}
       </nav>
     </div>
   </header>
+  <!-- ONE DOCUMENT PER FILE: the header above and the footer below are written
+       exactly ONCE. Every section of this page belongs INSIDE the main element,
+       back to back, in the slot order below. Replace each slot marker with one
+       section block and nothing else. Never re-emit a closing main, footer or
+       document tag: each of them already exists exactly once, at the end. -->
   <main id="main">
 ${slots}
   </main>
@@ -125,7 +141,7 @@ ${slots}
       <div class="footer-col">
         <h2 class="footer-col__title">Explore</h2>
         <ul class="footer-col__list">
-${pages.map((entry) => `          <li><a class="footer-link" href="${entry.file}">${entry.navLabel}</a></li>`).join('\n')}
+${navPages.map((entry) => `          <li><a class="footer-link" href="${entry.file}">${entry.navLabel}</a></li>`).join('\n')}
         </ul>
       </div>
       <div class="footer-col">
@@ -147,7 +163,7 @@ ${pages.map((entry) => `          <li><a class="footer-link" href="${entry.file}
     </div>
     <div class="container site-footer__bottom">
       <p class="footer-note">&copy; <span data-year>2026</span> ${brand}. All rights reserved.</p>
-      <p class="footer-note"><a class="footer-link" href="${pages[0]?.file ?? 'index.html'}">Back to top of site</a></p>
+      <p class="footer-note footer-legal">${legalLinks.length > 0 ? `\n        ${legalLinks}\n        ` : ''}<a class="footer-link" href="${pages[0]?.file ?? 'index.html'}">Back to top of site</a></p>
     </div>
   </footer>
   <button class="back-to-top" type="button" aria-label="Back to top">

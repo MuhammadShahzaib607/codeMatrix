@@ -1,0 +1,8 @@
+[mock] #0 stream=true  text at 09:50:26
+[mock] #1 stream=true  scaffold_site at 09:50:26
+[mock] #2 stream=true  edit_file at 09:50:26
+[mock] #3 stream=true  edit_file at 09:50:26
+[mock] #4 stream=false  edit_file at 09:50:26
+[mock] #5 stream=false  edit_file at 09:50:26
+[mock] #6 stream=true  edit_file at 09:50:26
+[mock] #7 stream=true  edit_file at 09:50:26

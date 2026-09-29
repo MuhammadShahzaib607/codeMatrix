@@ -1,0 +1,23 @@
+:root {
+  --font-body: 'Karla', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-heading: 'Cormorant Garamond', 'Iowan Old Style', Georgia, serif;
+  --bg: #faf7f2;
+  --surface: #ffffff;
+  --surface-2: #f1ece3;
+  --text: #1c1917;
+  --muted: #6f6659;
+  --border: #e7dfd2;
+  --primary: #9a6b3f;
+  --primary-600: #7c5330;
+  --accent: #c2a878;
+  --on-primary: #ffffff;
+  --focus: #b07a45;
+  --danger: #a3361f;
+  --success: #4d7c3a;
+  --footer-bg: #231f1b;
+  --footer-text: #f4efe6;
+  --footer-muted: #b9ab97;
+  --footer-link-hover: #e0c79b;
+  --hover-overlay: rgba(154, 107, 63, 0.16);
+  --primary-hover: #6b4527;
+}

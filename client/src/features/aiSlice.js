@@ -270,6 +270,10 @@ export const startAgentTask = createAsyncThunk(
             strictRules: (settings?.agent?.strictRules ?? [])
               .filter((rule) => rule.enabled)
               .map((rule) => ({ id: rule.id, text: rule.text })),
+            // Settings > General. OFF by default: the server still writes
+            // AGENT.md after every run, this only decides whether its contents
+            // are injected into the model's context for this run.
+            projectHistory: settings?.agent?.projectHistory === true,
           },
           (response) => {
             clearTimeout(timeout)

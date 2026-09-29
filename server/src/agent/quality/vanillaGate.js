@@ -4,6 +4,9 @@ import vm from 'node:vm'
 import * as cheerio from 'cheerio'
 import { getWorkspacePath } from '../../utils/workspaceManager.js'
 import {
+  APP_REQUIRED_JS_SNIPPETS,
+  APP_SCRIPT,
+  APP_STYLESHEET,
   CONTACT_FIELDS,
   GATE_MAX_REPAIR_ROUNDS,
   MAX_MISSING_CLASS_RATIO,
@@ -29,6 +32,14 @@ const BANNED_TEXT = [
 ]
 const ID_PATTERN = /^[A-Za-z][\w-]*$/
 const HTTP_URL = /url\(\s*['"]?https?:\/\//i
+
+function promisedScript(paths) {
+  return paths.find((file) => /(^|\/)js\/main\.js$/i.test(file))
+}
+
+function promisedAppScript(paths) {
+  return paths.find((file) => /(^|\/)js\/app\.js$/i.test(file))
+}
 
 function pageStylesheetFor(pageFile) {
   const name = path.posix.basename(String(pageFile ?? '')).replace(/\.[^.]+$/, '')
@@ -90,7 +101,12 @@ function normalizePlan(plan) {
     .map((item) => normalizeText(item))
     .filter(Boolean)
 
-  return { files, pages, nav, requirements }
+  const declaredType = String(source.type ?? source.project_type ?? '')
+    .trim()
+    .toLowerCase()
+  const type = declaredType === 'app' || declaredType === 'site' ? declaredType : null
+
+  return { files, pages, nav, requirements, type }
 }
 
 function maxRepeatedGroup($section) {
@@ -157,6 +173,10 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   const normalizedPlan = normalizePlan(plan)
   const plannedPaths = normalizedPlan.files.map((file) => file.path)
 
+  const projectType =
+    normalizedPlan.type ?? (hasFile(APP_STYLESHEET) && !hasFile(BASE_STYLESHEET) ? 'app' : 'site')
+  const isApp = projectType === 'app'
+
   const htmlByFile = new Map()
   const loadPage = (file) => {
     if (htmlByFile.has(file)) return htmlByFile.get(file)
@@ -210,7 +230,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       continue
     }
     const lines = content.split('\n').length
-    const minimum = minLinesFor(file.path)
+    const minimum = minLinesFor(file.path, { type: projectType })
     if (lines < minimum) {
       failures.push(
         `"${file.path}" has ${lines} lines; at least ${minimum} lines of real content are required — extend it with append_to_file.`,
@@ -233,12 +253,43 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
     if (!normalizeText($('title').first().text())) failures.push(`${file}: add a non-empty <title>.`)
     const h1Count = $('h1').length
     if (h1Count !== 1) failures.push(`${file}: needs exactly one <h1> (found ${h1Count}).`)
-    if (!$('header').length) failures.push(`${file}: add a <header> landmark.`)
-    if (!$('header nav').length) failures.push(`${file}: the header needs a <nav> with the site links.`)
     if (!$('main').length) failures.push(`${file}: add a <main> landmark.`)
-    if (!$('footer').length) failures.push(`${file}: add a <footer> landmark.`)
-    if (!$('header button[aria-expanded][aria-controls]').length)
-      failures.push(`${file}: the header needs a hamburger button carrying aria-expanded and aria-controls.`)
+    if (isApp) {
+      if ($('header nav').length > 0)
+        failures.push(
+          `${file}: this is a utility APP, so it must not have a <nav>. The app bar holds only the app title — delete the navbar markup with edit_file.`,
+        )
+      if ($('footer').length > 0)
+        failures.push(
+          `${file}: this is a utility APP, so it must not have a <footer>. Delete the marketing footer (brand blurb, quick links, social icons) with edit_file and keep the app single-screen.`,
+        )
+      if ($('#hero, .hero, .pricing-card, #pricing, #faq, .faq-item, #testimonials, .testimonial').length > 0)
+        failures.push(
+          `${file}: this is a utility APP — a calculator/tool must not include hero, pricing, testimonial or FAQ sections. Keep only the functional UI.`,
+        )
+    } else {
+      if (!$('header').length) failures.push(`${file}: add a <header> landmark.`)
+      if (!$('header nav').length) failures.push(`${file}: the header needs a <nav> with the site links.`)
+      if (!$('footer').length) failures.push(`${file}: add a <footer> landmark.`)
+      if (!$('header button[aria-expanded][aria-controls]').length)
+        failures.push(`${file}: the header needs a hamburger button carrying aria-expanded and aria-controls.`)
+    }
+
+    const headerCount = $('header').length
+    const footerCount = $('footer').length
+    const bodyCloseCount = (html.match(/<\/body\s*>/gi) ?? []).length
+    if (headerCount > 1)
+      failures.push(
+        `${file}: contains ${headerCount} <header> elements. Every page has exactly ONE header at the top of <body> — a single-page site with many sections still has one. Delete the repeats with edit_file.`,
+      )
+    if (footerCount > 1)
+      failures.push(
+        `${file}: contains ${footerCount} <footer> elements. Every page has exactly ONE footer at the bottom of <body>; sections belong inside <main> between the single header and the single footer. Delete the repeats with edit_file.`,
+      )
+    if (bodyCloseCount > 1)
+      failures.push(
+        `${file}: closes </body> ${bodyCloseCount} times — a "page tail" (</main>, <footer>, </body>, </html>) was repeated after sections. Keep exactly one of each at the end of the file.`,
+      )
 
     const stylesheets = $('link[rel~="stylesheet"]')
       .map((_, element) => $(element).attr('href'))
@@ -251,9 +302,11 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
     const sharedSheet = resolvedSheets.find((sheet) => SHARED_STYLESHEETS.includes(sheet))
     if (!sharedSheet)
       failures.push(
-        `${file}: link the shared stylesheet with <link rel="stylesheet" href="css/base.css"> (or css/style.css for a single-stylesheet project) — a valid, RELATIVE path with no leading "/".`,
+        isApp
+          ? `${file}: link the app stylesheet with <link rel="stylesheet" href="css/app.css"> after css/theme.css — a valid, RELATIVE path with no leading "/".`
+          : `${file}: link the shared stylesheet with <link rel="stylesheet" href="css/base.css"> (or css/style.css for a single-stylesheet project) — a valid, RELATIVE path with no leading "/".`,
       )
-    else if (sharedSheet === BASE_STYLESHEET && usesPageStylesheets) {
+    else if (!isApp && sharedSheet === BASE_STYLESHEET && usesPageStylesheets) {
       const pageSheet = pageStylesheetFor(file)
       if (!resolvedSheets.includes(pageSheet))
         failures.push(
@@ -267,20 +320,23 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       .map((_, element) => $(element).attr('src'))
       .get()
       .filter(Boolean)
+    const wantedScript = isApp ? APP_SCRIPT : REQUIRED_SCRIPT
     const linksScript = scripts.some(
       (src) =>
         !String(src).split('?')[0].split('#')[0].startsWith('/') &&
-        posixJoin(file, cleanRelative(String(src).split('?')[0].split('#')[0])) === REQUIRED_SCRIPT,
+        posixJoin(file, cleanRelative(String(src).split('?')[0].split('#')[0])) === wantedScript,
     )
     if (!linksScript)
-      failures.push(`${file}: include <script src="js/main.js" defer></script> as a relative path with no leading "/".`)
+      failures.push(
+        `${file}: include <script src="${wantedScript}" defer></script> as a relative path with no leading "/".`,
+      )
 
     structureProblems += failures.length - before
   }
   record('page-structure', pages.length, structureProblems)
 
   let consistencyProblems = 0
-  if (pages.length > 1) {
+  if (!isApp && pages.length > 1) {
     const signature = (page) => ({
       nav: page
         .$('header nav a')
@@ -382,7 +438,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   }
   record('links', pages.length, linkProblems)
 
-  if (normalizedPlan.nav.length > 0 && pages.length > 0) {
+  if (!isApp && normalizedPlan.nav.length > 0 && pages.length > 0) {
     const homeLabels = new Set(
       pages[0]
         .$('header nav a')
@@ -398,7 +454,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   }
 
   let sectionProblems = 0
-  for (const planned of normalizedPlan.pages) {
+  for (const planned of isApp ? [] : normalizedPlan.pages) {
     if (!/\.html?$/i.test(planned.file)) continue
     const page = loadPage(planned.file)
     if (!page) continue
@@ -429,7 +485,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   // The FAQ accordion belongs to the HOME page. A follow-up that only adds
   // other pages must not be asked to invent one, so the requirement applies
   // only when the run actually builds (or rebuilds) the home page.
-  const declaredHome = normalizedPlan.pages.some((entry) => /(^|\/)(index|home)\.html?$/i.test(entry.file))
+  const declaredHome = !isApp && normalizedPlan.pages.some((entry) => /(^|\/)(index|home)\.html?$/i.test(entry.file))
   const faqButtons = pages.reduce((total, page) => total + page.$('#faq button[aria-expanded]').length, 0)
   if (declaredHome && faqButtons < MIN_FAQ_ITEMS) {
     failures.push(`The #faq section needs at least ${MIN_FAQ_ITEMS} accordion buttons carrying aria-expanded (found ${faqButtons}).`)
@@ -441,7 +497,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   // adds unrelated pages must not be told to put a form on the first page it
   // happened to create.
   const contactPage =
-    pages.find((page) => /contact/i.test(page.file)) ??
+    (isApp ? undefined : pages.find((page) => /contact/i.test(page.file))) ??
     pages.find((page) =>
       normalizedPlan.pages.some(
         (entry) => entry.file === page.file && (entry.sections ?? []).includes('contact-form'),
@@ -530,7 +586,9 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
   }
   record('content-year', pages.length, contentProblems)
 
-  const jsPath = plannedPaths.find((file) => /(^|\/)js\/main\.js$/i.test(file)) ?? REQUIRED_SCRIPT
+  const jsPath =
+    (isApp ? promisedAppScript(plannedPaths) : promisedScript(plannedPaths)) ??
+    (isApp ? APP_SCRIPT : REQUIRED_SCRIPT)
   const cssPath = sharedCssPath
   let assetProblems = 0
 
@@ -545,7 +603,7 @@ export async function vanillaGate({ projectId = null, root = null, plan = null, 
       failures.push(`${jsPath} does not compile: ${error.message}`)
       assetProblems += 1
     }
-    for (const [needle, why] of REQUIRED_JS_SNIPPETS) {
+    for (const [needle, why] of isApp ? APP_REQUIRED_JS_SNIPPETS : REQUIRED_JS_SNIPPETS) {
       if (!js.includes(needle)) {
         failures.push(`${jsPath} must contain "${needle}" (${why}).`)
         assetProblems += 1

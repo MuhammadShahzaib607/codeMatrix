@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getWorkspacePath } from '../../utils/workspaceManager.js'
-import { loadKitClasses } from '../../templates/vanilla-kit/index.js'
+import { LEGAL_LINK, loadKitClasses } from '../../templates/vanilla-kit/index.js'
+import { APP_STYLESHEET, SECONDARY_PAGE } from './thresholds.js'
 
 const IGNORED_SCHEMES = /^(mailto:|tel:|sms:|data:|javascript:|blob:)/i
 const REMOTE = /^(https?:|\/\/)/i
@@ -35,6 +36,8 @@ const RUNTIME_CLASS_ALLOWLIST = new Set([
 ])
 
 const RUNTIME_ID_ALLOWLIST = new Set(['year', 'main', 'content', 'top'])
+
+const SINGLETON_TAGS = ['header', 'footer', 'main', 'body', 'html']
 const STRUCTURAL_TAG = /<(section|main|header|footer|nav|aside|form|article|figure)\b[^>]*\bid\s*=\s*(?:"([^"]*)"|'([^']*)')/gi
 
 function cleanPath(value) {
@@ -137,6 +140,13 @@ function jsReferences(jsText) {
     for (const name of match[1].split(/\s+/)) if (name) selectors.add(name)
   }
   for (const match of jsText.matchAll(/getElementById\(\s*['"]([^'"]+)['"]/g)) ids.add(match[1])
+  // Any id the script looks up by the string "#id" (through a helper, a
+  // template or a data lookup) is a runtime hook, not a styling target, so it
+  // must not be reported as an unstyled id.
+  for (const match of jsText.matchAll(/['"]#([A-Za-z_][\w-]*)['"]/g)) {
+    if (/^[0-9a-f]{3,8}$/i.test(match[1])) continue
+    ids.add(match[1])
+  }
   for (const match of jsText.matchAll(/classList\.(?:add|remove|toggle|contains)\(\s*['"]([^'"]+)['"]/g)) {
     for (const name of match[1].split(/\s+/)) if (name) mutations.add(name)
   }
@@ -230,6 +240,17 @@ function pageStylesheetName(pageFile, stylesheet) {
   return dir && dir !== '.' ? `${dir}/${name}.css` : `${name}.css`
 }
 
+function tagCounts(html) {
+  const source = String(html ?? '').replace(/<!--[\s\S]*?-->/g, '')
+  const counts = {}
+  for (const tag of SINGLETON_TAGS) {
+    const open = source.match(new RegExp(`<${tag}\\b`, 'gi'))?.length ?? 0
+    const close = source.match(new RegExp(`</${tag}\\s*>`, 'gi'))?.length ?? 0
+    counts[tag] = { open, close }
+  }
+  return counts
+}
+
 function cssBracesBalanced(css) {
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
   const open = (stripped.match(/\{/g) ?? []).length
@@ -258,6 +279,7 @@ export async function connectionCheck({
   const allSet = new Set(all)
   const cssAll = all.filter((file) => CSS_EXT.test(file))
   const jsAll = all.filter((file) => JS_EXT.test(file))
+  const isAppProject = cssAll.includes(APP_STYLESHEET)
 
   let requested = null
   if (Array.isArray(files) && files.length > 0) requested = files.map(cleanPath).filter(Boolean)
@@ -281,6 +303,7 @@ export async function connectionCheck({
 
   const checked = []
   const problemFiles = new Set()
+  const duplicateStructure = []
   const stylesheetTargets = new Map()
   const scriptTargets = new Map()
   const navData = new Map()
@@ -300,12 +323,39 @@ export async function connectionCheck({
     navUnreachable: [],
     footerInconsistent: [],
     missingPageCss: [],
+    legalInNav: [],
+    duplicateStructure,
   }
 
   for (const file of htmlFiles) {
     const html = await read(file)
     if (html === null) continue
     checked.push(file)
+
+    const counts = tagCounts(html)
+    for (const tag of ['header', 'footer']) {
+      if (counts[tag].open > 1) {
+        problems.push(
+          `"${file}" contains ${counts[tag].open} <${tag}> tags. Every page has exactly ONE <${tag}> (${tag === 'header' ? 'at the top' : 'at the bottom'} of <body>) — sections go inside <main> between them, so a single-page site with ten sections still has one <${tag}>. Delete the extra ${counts[tag].open - 1} with edit_file.`,
+        )
+        duplicateStructure.push({ file, tag, count: counts[tag].open })
+        problemFiles.add(file)
+      }
+    }
+    if (counts.main.open > 1 || counts.main.close > 1) {
+      problems.push(
+        `"${file}" contains ${counts.main.open} <main> and ${counts.main.close} </main> tags but a document has exactly one of each. This is what happens when a "page tail" (</main>, <footer>, </body>, </html>) is repeated after every section — remove the extra ones with edit_file and keep every section as a sibling INSIDE the single <main>.`,
+      )
+      duplicateStructure.push({ file, tag: 'main', count: counts.main.open })
+      problemFiles.add(file)
+    }
+    if (counts.body.close > 1 || counts.html.close > 1) {
+      problems.push(
+        `"${file}" closes the document ${Math.max(counts.body.close, counts.html.close)} times (${counts.body.close} </body>, ${counts.html.close} </html>). The file must end exactly once with </body> and </html>; delete the repeated closers with edit_file.`,
+      )
+      duplicateStructure.push({ file, tag: 'document', count: Math.max(counts.body.close, counts.html.close) })
+      problemFiles.add(file)
+    }
 
     const sheets = new Set()
     const scripts = new Set()
@@ -461,7 +511,9 @@ export async function connectionCheck({
           .map((item) => normalizeNavHref(file, item.href).split('#')[0])
           .filter(Boolean),
       )
-      const missing = htmlFiles.filter((other) => other !== file && !targets.has(other))
+      const missing = htmlFiles.filter(
+        (other) => other !== file && !targets.has(other) && !SECONDARY_PAGE.test(other),
+      )
       if (missing.length > 0) unreachable.push({ file, missing })
     }
     if (unreachable.length > 0) {
@@ -474,6 +526,22 @@ export async function connectionCheck({
           .join('; ')}. Add the missing links to the nav of the page(s) listed (use edit_file).`,
       )
     }
+  }
+
+  const legalInNav = []
+  for (const file of htmlFiles) {
+    const nav = navData.get(file)
+    if (!nav?.found) continue
+    const text = String(nav.block ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+    const offending = LEGAL_LINK.test(text) || nav.items.some((item) => LEGAL_LINK.test(item.href))
+    if (offending) legalInNav.push(file)
+  }
+  if (legalInNav.length > 0) {
+    details.legalInNav = legalInNav
+    for (const file of legalInNav) problemFiles.add(file)
+    problems.push(
+      `${legalInNav.join(', ')} place a legal/secondary link (Privacy Policy, Terms & Conditions, Cookie Policy, Sitemap) inside the header <nav>. Those are FOOTER links, never navbar links: the navbar holds only the primary pages or sections the visitor browses (Home, About, Services, Pricing, Contact). Move them into the footer's legal row with edit_file and delete them from the nav.`,
+    )
   }
 
   const footerFiles = htmlFiles.filter((file) => footerData.get(file)?.found)
@@ -597,7 +665,7 @@ export async function connectionCheck({
     for (const match of cssText.matchAll(/#([A-Za-z_][\w-]*)/g)) cssIds.add(match[1])
 
     const js = jsReferences(jsText)
-    const kitClasses = await loadKitClasses()
+    const kitClasses = isAppProject ? new Set() : await loadKitClasses()
     const allowClasses = new Set(js.mutations)
     const allowIds = new Set(js.ids)
 
@@ -682,7 +750,7 @@ export function formatConnectionReport(result, { max = 6 } = {}) {
   return [
     'LINK/STYLE CHECK FAILED — fix exactly these, then continue:',
     ...lines.slice(0, max),
-    'Every page lives at the project root and links the SAME shared stylesheet(s) and the same script as the other pages, with a RELATIVE path (never a leading "/"); a css/base.css project also gives every page its own css/<page>.css. Give every class the HTML uses a CSS rule.',
+    'Every page lives at the project root and links the SAME shared stylesheet(s) and the same script as the other pages, with a RELATIVE path (never a leading "/"); a css/base.css project also gives every page its own css/<page>.css. Give every class the HTML uses a CSS rule. A file has exactly one <header>, one <main> and one <footer> — sections are siblings inside <main>, never a repeated page tail.',
   ].join('\n')
 }
 
@@ -900,6 +968,7 @@ export const __testables = {
   htmlClassesOf,
   htmlIdsOf,
   cssBracesBalanced,
+  tagCounts,
   replaceAttribute,
   navItemsOf,
   footerLinksOf,

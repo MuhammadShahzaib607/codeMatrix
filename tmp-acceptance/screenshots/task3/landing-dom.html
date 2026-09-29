@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en" style="--header-offset: 73px;"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Northwind Studio — web design agency</title>
+  <meta name="description" content="Websites that win work — Northwind Studio.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Sora:wght@600;700;800&amp;display=swap">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/theme.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="container site-header__inner">
+      <a class="brand" href="index.html">
+        <span class="brand__mark" aria-hidden="true">NS</span>
+        <span class="brand__name">Northwind Studio</span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu">
+        <span class="nav-toggle__bar"></span>
+        <span class="nav-toggle__bar"></span>
+        <span class="nav-toggle__bar"></span>
+      </button>
+      <nav class="site-nav" id="site-nav" aria-label="Main navigation">
+        <ul class="nav-list">
+          <li class="nav-item"><a class="nav-link is-active" href="index.html" aria-current="page">Home</a></li>
+        </ul>
+        <a class="btn btn--primary btn--sm nav-cta" href="index.html">Start a project</a>
+      </nav>
+    </div>
+  </header>
+  <!-- ONE DOCUMENT PER FILE: the header above and the footer below are written
+       exactly ONCE. Every section of this page belongs INSIDE the main element,
+       back to back, in the slot order below. Replace each slot marker with one
+       section block and nothing else. Never re-emit a closing main, footer or
+       document tag: each of them already exists exactly once, at the end. -->
+  <main id="main">
+      <section class="hero" id="hero">
+  <span class="hero__blob"></span>
+  <div class="container hero__inner">
+    <div class="hero__content reveal in-view">
+      <p class="hero__eyebrow">Independent design studio</p>
+      <h1 class="hero__title">Websites that <span class="hero__highlight">win work</span></h1>
+      <p class="hero__lead">Northwind Studio designs and builds fast, accessible websites for ambitious service businesses. We turn quiet visitors into qualified enquiries with clear messaging, honest design and a page that loads in under two seconds.</p>
+      <div class="hero__actions"><a class="btn btn--primary btn--lg" href="index.html#cta">Start a project</a><a class="btn btn--secondary btn--lg" href="index.html#services">See our services</a></div>
+      <div class="hero__proof"><div class="stat"><span class="stat__value">120+</span><span class="stat__label">sites launched</span></div><div class="stat"><span class="stat__value">9 yrs</span><span class="stat__label">in business</span></div><div class="stat"><span class="stat__value">4.9/5</span><span class="stat__label">client rating</span></div></div>
+    </div>
+    <div class="hero__visual reveal" aria-hidden="true"><div class="hero__card"></div></div>
+  </div>
+</section>
+      <section class="section" id="services">
+  <div class="container">
+    <div class="section-header reveal"><p class="section-header__eyebrow">Services</p><h2 class="section-header__title">What we do best</h2><p class="section-header__lead">Three focused services that cover the whole journey from first idea to a site that keeps earning its keep.</p></div>
+    <div class="grid grid--3">
+              <article class="service-card reveal">
+          <span class="service-card__icon" aria-hidden="true"></span>
+          <h3 class="service-card__title">Website design</h3>
+          <p class="service-card__text">From the first wireframe to the final page, we design a clean interface that makes your offer obvious. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+          <a class="link link--arrow service-card__link" href="index.html#cta">Start a project</a>
+        </article>
+              <article class="service-card reveal">
+          <span class="service-card__icon" aria-hidden="true"></span>
+          <h3 class="service-card__title">Web development</h3>
+          <p class="service-card__text">Hand-built HTML, CSS and JavaScript that scores green on speed and accessibility without a heavy build step. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+          <a class="link link--arrow service-card__link" href="index.html#cta">Start a project</a>
+        </article>
+              <article class="service-card reveal">
+          <span class="service-card__icon" aria-hidden="true"></span>
+          <h3 class="service-card__title">Content and SEO</h3>
+          <p class="service-card__text">Real copy written for your customers, structured so search engines understand exactly what you sell. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+          <a class="link link--arrow service-card__link" href="index.html#cta">Start a project</a>
+        </article>
+    </div>
+  </div>
+</section>
+      <section class="section section--alt" id="features">
+  <div class="container">
+    <div class="section-header reveal"><p class="section-header__eyebrow">Why Northwind</p><h2 class="section-header__title">Built to last, easy to run</h2><p class="section-header__lead">Every site we ship is owned by you, documented, and simple enough that your team can update it without calling a developer.</p></div>
+    <div class="grid grid--2">
+              <div class="feature reveal">
+          <span class="feature__icon" aria-hidden="true"></span>
+          <div class="feature__body">
+            <h3 class="feature__title">Fast by default</h3>
+            <p class="feature__text">Under 100KB on first load, no render-blocking fonts and no third-party trackers slowing the page down. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+          </div>
+        </div>
+              <div class="feature reveal">
+          <span class="feature__icon" aria-hidden="true"></span>
+          <div class="feature__body">
+            <h3 class="feature__title">Accessible to everyone</h3>
+            <p class="feature__text">Keyboard navigation, visible focus states and colour contrast checked against WCAG AA before launch. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+          </div>
+        </div>
+              <div class="feature reveal">
+          <span class="feature__icon" aria-hidden="true"></span>
+          <div class="feature__body">
+            <h3 class="feature__title">Fixed, honest pricing</h3>
+            <p class="feature__text">One clear quote and a fixed scope agreed before we start, so there is never a surprise invoice at the end. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+          </div>
+        </div>
+              <div class="feature reveal">
+          <span class="feature__icon" aria-hidden="true"></span>
+          <div class="feature__body">
+            <h3 class="feature__title">Yours to keep</h3>
+            <p class="feature__text">No locked-in platform and no monthly licence. You get the files, the documentation and full ownership on day one. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+          </div>
+        </div>
+    </div>
+  </div>
+</section>
+      <section class="section" id="testimonials">
+  <div class="container">
+    <div class="section-header reveal"><p class="section-header__eyebrow">Testimonials</p><h2 class="section-header__title">Clients who stayed</h2><p class="section-header__lead">Long relationships, small teams and websites that quietly keep bringing in enquiries.</p></div>
+    <div class="grid grid--3">
+              <figure class="testimonial reveal">
+          <div class="rating" aria-label="5 out of 5">★★★★★</div>
+          <blockquote class="testimonial__quote">The new site paid for itself in six weeks. Enquiries are up and I finally sound like the business I actually run.</blockquote>
+          <figcaption class="testimonial__meta">
+            <span class="testimonial__avatar">JO</span>
+            <span><span class="testimonial__name">Jo Mercer</span><span class="testimonial__role">Owner, Mercer Interiors</span></span>
+          </figcaption>
+        </figure>
+              <figure class="testimonial reveal">
+          <div class="rating" aria-label="5 out of 5">★★★★★</div>
+          <blockquote class="testimonial__quote">Clear pricing, no jargon and delivered ahead of schedule. The handover session made the whole thing approachable.</blockquote>
+          <figcaption class="testimonial__meta">
+            <span class="testimonial__avatar">DA</span>
+            <span><span class="testimonial__name">Daniel Okafor</span><span class="testimonial__role">Director, Okafor Legal</span></span>
+          </figcaption>
+        </figure>
+              <figure class="testimonial reveal">
+          <div class="rating" aria-label="5 out of 5">★★★★★</div>
+          <blockquote class="testimonial__quote">Patients book online now and the clinic page answers their questions before they even call the front desk.</blockquote>
+          <figcaption class="testimonial__meta">
+            <span class="testimonial__avatar">PR</span>
+            <span><span class="testimonial__name">Priya Raman</span><span class="testimonial__role">Founder, Raman Physio</span></span>
+          </figcaption>
+        </figure>
+    </div>
+  </div>
+</section>
+      <section class="section section--alt" id="faq">
+  <div class="container">
+    <div class="section-header reveal"><p class="section-header__eyebrow">FAQ</p><h2 class="section-header__title">Questions we hear often</h2><p class="section-header__lead">If your question is not here, tell us and we will answer it in plain English within one working day.</p></div>
+    <div class="faq reveal">
+              <div class="faq-item">
+          <h3 class="faq-item__question" id="faq-1-label"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-1" aria-labelledby="faq-1-label">How long does a typical website take?</button></h3>
+          <div class="faq-item__panel" id="faq-1" aria-hidden="true"><p class="faq-item__answer">Most projects take between three and six weeks from our first call to launch, depending on how quickly you can sign off the copy and photography.</p></div>
+        </div>
+              <div class="faq-item">
+          <h3 class="faq-item__question" id="faq-2-label"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-2" aria-labelledby="faq-2-label">Do you write the content as well?</button></h3>
+          <div class="faq-item__panel" id="faq-2" aria-hidden="true"><p class="faq-item__answer">Yes. We interview you, write the first draft of every page and refine it with your feedback until it sounds like you rather than a template.</p></div>
+        </div>
+              <div class="faq-item">
+          <h3 class="faq-item__question" id="faq-3-label"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-3" aria-labelledby="faq-3-label">Can I update the site myself afterwards?</button></h3>
+          <div class="faq-item__panel" id="faq-3" aria-hidden="true"><p class="faq-item__answer">Absolutely. We record a short handover session and document every section, so routine edits never require a developer.</p></div>
+        </div>
+              <div class="faq-item">
+          <h3 class="faq-item__question" id="faq-4-label"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-4" aria-labelledby="faq-4-label">What does a project cost?</button></h3>
+          <div class="faq-item__panel" id="faq-4" aria-hidden="true"><p class="faq-item__answer">A focused one-page site starts at 1,800 pounds and a full multi-page site is usually between 3,500 and 8,000 pounds. You get the exact figure before we begin.</p></div>
+        </div>
+              <div class="faq-item">
+          <h3 class="faq-item__question" id="faq-5-label"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-5" aria-labelledby="faq-5-label">What happens after launch?</button></h3>
+          <div class="faq-item__panel" id="faq-5" aria-hidden="true"><p class="faq-item__answer">You get thirty days of free support for fixes, a backup of the site and the option of a light monthly care plan only if you want one.</p></div>
+        </div>
+    </div>
+  </div>
+</section>
+      <section class="section" id="cta">
+  <div class="container">
+    <div class="cta-banner reveal">
+      <div class="cta-banner__inner">
+        <h2 class="cta-banner__title">Ready to win more work?</h2>
+        <p class="cta-banner__text">Tell us about your business in a short email and we will send a clear, fixed-price proposal within two working days. There is no pressure and no obligation: if we are not the right studio for the job we will say so and point you somewhere better.</p>
+        <div class="cta-banner__actions">
+          <a class="btn btn--secondary btn--lg" href="index.html">Back to the top of the page</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="section" id="process">
+  <div class="container">
+    <div class="section-header reveal"><p class="section-header__eyebrow">How it works</p><h2 class="section-header__title">A calm, three-step project</h2><p class="section-header__lead">No discovery theatre and no endless meetings. A short call, a written plan and then focused build weeks.</p></div>
+    <div class="process">
+              <div class="process-step reveal">
+          <span class="process-step__number">1</span>
+          <h3 class="process-step__title">Discover</h3>
+          <p class="process-step__text">A ninety-minute call to understand your customers, your margins and the one action every visitor should take. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+        </div>
+              <div class="process-step reveal">
+          <span class="process-step__number">2</span>
+          <h3 class="process-step__title">Design and write</h3>
+          <p class="process-step__text">We design the interface and write the copy together, so the words and the layout always agree with each other. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+        </div>
+              <div class="process-step reveal">
+          <span class="process-step__number">3</span>
+          <h3 class="process-step__title">Build and launch</h3>
+          <p class="process-step__text">We build, test on real devices, connect analytics and hand over a documented site that you fully own. We keep the scope fixed and the copy honest, so you always know what you are paying for and what the site will say about your business.</p>
+        </div>
+    </div>
+  </div>
+</section>
+  </main>
+  <footer class="site-footer">
+    <div class="container site-footer__grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html">
+          <span class="brand__mark" aria-hidden="true">NS</span>
+          <span class="brand__name">Northwind Studio</span>
+        </a>
+        <p class="footer-blurb">Websites that win work. We design and build websites that turn visitors into customers.</p>
+        <div class="footer-social">
+          <a class="social-link" href="https://www.x.com" aria-label="Northwind Studio on X"><svg class="social__icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 4l7 8-7 8h3l5.5-6.3L18 20h3l-7.3-8.4L20.5 4h-3l-5 5.8L7 4Z" fill="currentColor" stroke="none"></path></svg></a>
+          <a class="social-link" href="https://www.linkedin.com" aria-label="Northwind Studio on Linkedin"><svg class="social__icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 9h4v11H4zM6 4.5A2 2 0 1 0 6 8.5 2 2 0 0 0 6 4.5ZM10 9h4v1.6a4 4 0 0 1 3.5-1.8c2.6 0 4.5 1.7 4.5 5V20h-4v-5c0-1.3-.6-2-1.8-2s-2.2.8-2.2 2.2V20h-4Z" fill="currentColor" stroke="none"></path></svg></a>
+          <a class="social-link" href="https://www.github.com" aria-label="Northwind Studio on Github"><svg class="social__icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 3a9 9 0 0 0-2.8 17.5c.4.1.6-.2.6-.5v-1.9c-2.3.5-2.9-1-2.9-1-.4-1-1-1.3-1-1.3-.8-.5 0-.5 0-.5.9.1 1.4.9 1.4.9.8 1.3 2 1 2.5.7.1-.6.3-1 .6-1.2-2-.2-4-1-4-4.2 0-.9.3-1.7.9-2.3-.1-.2-.4-1.1.1-2.3 0 0 .7-.2 2.4.9a8 8 0 0 1 4.2 0c1.7-1.1 2.4-.9 2.4-.9.5 1.2.2 2.1.1 2.3.6.6.9 1.4.9 2.3 0 3.2-2 4-3.9 4.2.3.3.6.9.6 1.8v2.6c0 .3.2.6.6.5A9 9 0 0 0 12 3Z" fill="currentColor" stroke="none"></path></svg></a>
+          <a class="social-link" href="https://www.instagram.com" aria-label="Northwind Studio on Instagram"><svg class="social__icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"></rect><circle cx="12" cy="12" r="3.4"></circle><circle cx="16.6" cy="7.4" r="1" fill="currentColor"></circle></svg></a>
+        </div>
+      </div>
+      <div class="footer-col">
+        <h2 class="footer-col__title">Explore</h2>
+        <ul class="footer-col__list">
+          <li><a class="footer-link" href="index.html">Home</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h2 class="footer-col__title">Services</h2>
+        <ul class="footer-col__list">
+          <li><a class="footer-link" href="index.html#services">Web design</a></li>
+          <li><a class="footer-link" href="index.html#services">Development</a></li>
+          <li><a class="footer-link" href="index.html#services">SEO and content</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h2 class="footer-col__title">Contact</h2>
+        <ul class="footer-contact">
+          <li>hello@northwindstudio.com</li>
+          <li>+44 20 7946 0123</li>
+          <li>14 Bridge Street, London</li>
+        </ul>
+      </div>
+    </div>
+    <div class="container site-footer__bottom">
+      <p class="footer-note">© <span data-year="">2026</span> Northwind Studio. All rights reserved.</p>
+      <p class="footer-note footer-legal"><a class="footer-link" href="index.html">Back to top of site</a></p>
+    </div>
+  </footer>
+  <button class="back-to-top" type="button" aria-label="Back to top">
+    <svg class="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>
+  </button>
+  <script src="js/main.js" defer=""></script>
+
+
+</body></html>

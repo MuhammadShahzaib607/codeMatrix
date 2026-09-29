@@ -23,6 +23,7 @@ import { addTab, toggleFolder } from '../../features/fileSystemSlice'
 import { CONTAINER_ID, ROOT_ID, containerEntryId } from '../../services/fileSystemAccess'
 import { isHtmlPath } from '../../utils/preview'
 import { findNode } from '../../utils/tree'
+import Tooltip from '../Common/Tooltip'
 import TreeContextMenu from './TreeContextMenu'
 
 function IndentGuides({ depth }) {
@@ -322,41 +323,154 @@ const TreeNode = memo(function TreeNode({
  * project folder opens it as the active workspace; a container file is not part
  * of any project, so it explains itself instead of pretending to open.
  */
-function ContainerRow({ entry, onOpenProject, onInspectFile, isActive }) {
+/**
+ * One file (or nested folder) of a SIBLING project, rendered inline under its
+ * top-level row. Clicking a file makes that file's project the active one and
+ * opens the file — one click, no "select project" step in between. Nothing here
+ * mutates the file: these rows exist so every project's files are usable
+ * directly, exactly like the active project's own tree.
+ */
+function SiblingNode({ node, depth, onOpenFile }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const isFolder = node.type === 'folder'
+
+  return (
+    <div className="sibling-node">
+      <div
+        className="tree-row is-sibling"
+        style={{ paddingLeft: 10 + depth * 14 }}
+        role="button"
+        tabIndex={0}
+        data-sibling-node={node.path ?? node.id}
+        title={isFolder ? node.name : `${node.name} — click to open it in this project`}
+        onClick={() => (isFolder ? setIsOpen((value) => !value) : onOpenFile?.(node))}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault()
+          if (isFolder) setIsOpen((value) => !value)
+          else onOpenFile?.(node)
+        }}
+      >
+        <span className="tree-chevron">
+          {isFolder ? (
+            isOpen ? (
+              <ChevronDown size={14} />
+            ) : (
+              <ChevronRight size={14} />
+            )
+          ) : null}
+        </span>
+        <span className={`tree-icon ${isFolder ? 'is-folder' : 'is-file'}`}>
+          {isFolder ? <Folder size={16} /> : <FileText size={16} />}
+        </span>
+        <span className="tree-label">{node.name}</span>
+      </div>
+      {isFolder &&
+        isOpen &&
+        (node.children ?? []).map((child) => (
+          <SiblingNode
+            key={child.id}
+            node={child}
+            depth={depth + 1}
+            onOpenFile={onOpenFile}
+          />
+        ))}
+    </div>
+  )
+}
+
+/**
+ * The inline file list of one SIBLING project, shown under its top-level row.
+ * It is expanded by default, so a freshly opened app shows every project's
+ * files ready to click without any prior interaction.
+ */
+function SiblingProject({ entry, tree, onOpenFile }) {
+  const nodes = tree?.children ?? []
+  if (nodes.length === 0) {
+    return (
+      <div className="sibling-empty" data-sibling-empty={entry.projectId}>
+        Loading {entry.name}…
+      </div>
+    )
+  }
+  return (
+    <div className="sibling-project" data-sibling-project={entry.projectId}>
+      {nodes.map((node) => (
+        <SiblingNode key={node.id} node={node} depth={1} onOpenFile={onOpenFile} />
+      ))}
+    </div>
+  )
+}
+
+function ContainerRow({
+  entry,
+  onOpenProject,
+  onInspectFile,
+  onToggleProject,
+  onOpenFile,
+  isActive,
+  isExpanded,
+  tree,
+}) {
   const isFolder = entry.type === 'folder'
   const clickable = isFolder && Boolean(entry.projectId)
 
   return (
-    <div
-      data-container-entry={entry.name}
-      className={`tree-row is-container ${isActive ? 'is-active-project' : ''}`}
-      role="button"
-      tabIndex={0}
-      title={
-        clickable
-          ? `Open project “${entry.name}” (terminal, preview, export and the agent follow it)`
-          : `${entry.name} — at the top level, outside every project`
-      }
-      onClick={() => (clickable ? onOpenProject?.(entry) : onInspectFile?.(entry))}
-      onKeyDown={(event) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return
-        event.preventDefault()
-        if (clickable) onOpenProject?.(entry)
-        else onInspectFile?.(entry)
-      }}
-      onContextMenu={(event) => {
-        event.preventDefault()
-        event.stopPropagation()
-        if (clickable) onOpenProject?.(entry)
-        else onInspectFile?.(entry)
-      }}
-    >
-      <span className="tree-chevron" />
-      <span className={`tree-icon ${isFolder ? 'is-folder' : 'is-file'}`}>
-        {isFolder ? <Folder size={16} /> : <FileText size={16} />}
-      </span>
-      <span className="tree-label">{entry.name}</span>
-      <span className="tree-badge">{isActive ? 'active project' : isFolder ? 'project' : 'top level'}</span>
+    <div className="container-group">
+      <div
+        data-container-entry={entry.name}
+        className={`tree-row is-container ${isActive ? 'is-active-project' : ''}`}
+        role="button"
+        tabIndex={0}
+        aria-expanded={clickable ? Boolean(isExpanded) : undefined}
+        title={
+          clickable
+            ? `Open project “${entry.name}” — its files below are already usable; click one and the terminal, preview, export and agent follow it`
+            : `${entry.name} — at the top level, outside every project`
+        }
+        onClick={() => (clickable ? onOpenProject?.(entry) : onInspectFile?.(entry))}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault()
+          if (clickable) onOpenProject?.(entry)
+          else onInspectFile?.(entry)
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          if (clickable) onOpenProject?.(entry)
+          else onInspectFile?.(entry)
+        }}
+      >
+        {clickable ? (
+          <Tooltip label={isExpanded ? `Hide ${entry.name}'s files` : `Show ${entry.name}'s files`}>
+            <button
+              type="button"
+              className="tree-chevron-btn"
+              aria-label={isExpanded ? `Hide files of ${entry.name}` : `Show files of ${entry.name}`}
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onToggleProject?.(entry)
+              }}
+            >
+              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </button>
+          </Tooltip>
+        ) : (
+          <span className="tree-chevron" />
+        )}
+        <span className={`tree-icon ${isFolder ? 'is-folder' : 'is-file'}`}>
+          {isFolder ? <Folder size={16} /> : <FileText size={16} />}
+        </span>
+        <span className="tree-label">{entry.name}</span>
+        <span className="tree-badge">
+          {isActive ? 'active project' : isFolder ? 'project' : 'top level'}
+        </span>
+      </div>
+      {clickable && isExpanded && (
+        <SiblingProject entry={entry} tree={tree} onOpenFile={onOpenFile} />
+      )}
     </div>
   )
 }
@@ -387,6 +501,10 @@ function FileTree({
   showContainer = false,
   onOpenContainerProject,
   onInspectContainerFile,
+  projectTrees = {},
+  collapsedProjects = [],
+  onToggleContainerProject,
+  onOpenContainerFile,
 }) {
   const revealedNode = useSelector((state) => state.ui.revealedNode)
   const clipboard = useSelector((state) => state.clipboard)
@@ -654,8 +772,14 @@ function FileTree({
             key={containerEntryId(entry.name)}
             entry={entry}
             isActive={Boolean(activeProjectId) && entry.projectId === activeProjectId}
+            isExpanded={
+              Boolean(entry.projectId) && !collapsedProjects.includes(entry.projectId)
+            }
+            tree={entry.projectId ? projectTrees[entry.projectId] : null}
             onOpenProject={onOpenContainerProject}
             onInspectFile={onInspectContainerFile}
+            onToggleProject={onToggleContainerProject}
+            onOpenFile={onOpenContainerFile}
           />
         ))}
 

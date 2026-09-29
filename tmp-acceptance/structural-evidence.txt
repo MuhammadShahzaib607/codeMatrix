@@ -1,0 +1,42 @@
+Evidence captured from the real stored workspace on disk (2026-09-29, before the
+server's ephemeral workspace folder was replaced by a later run):
+
+path: server/workspaces/u-6ab62726ce74736cedba9f08/todo-app/index.html  (310 lines)
+$ grep -c "<footer" index.html  -> 4
+$ grep -c "<header" index.html  -> 1
+$ grep -n "<main|</main>|<header|<footer|</footer>|<body>|</body>" index.html
+12:<body>
+13:    <header class="header">
+30:    <main>
+31:        <section class="hero" id="hero">
+50:        </section>
+51:        <section class="section" id="todo-list">
+71:        </section>
+72:    </main>
+73:    <footer class="footer">
+92:    </footer>
+95:</body>
+96:</html>        <section class="section" id="faq">
+156:        </section>
+157:    </main>
+158:    <footer class="footer">
+177:    </footer>
+180:</body>
+181:</html>        <section class="section" id="cta">
+193:        </section>
+194:    </main>
+195:    <footer class="footer">
+214:    </footer>
+217:</body>
+218:</html>        <section class="section" id="testimonials">
+286:        </section>
+287:    </main>
+288:    <footer class="footer">
+307:    </footer>
+310:</body>
+
+Rendered DOM (headless Chrome, --dump-dom):
+  document.querySelectorAll('footer').length -> 4
+
+The file is four concatenated "page tails": after each section the model closed
+</main>, wrote a full <footer>, and closed </body></html> again.

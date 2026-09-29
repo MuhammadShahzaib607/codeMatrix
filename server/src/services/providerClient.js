@@ -118,6 +118,71 @@ function randomCallId() {
   return `call_${crypto.randomBytes(6).toString('hex')}`
 }
 
+const TOOL_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/
+
+export function splitJsonPayload(text) {
+  const source = String(text ?? '')
+  let start = -1
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]
+    if (character === '{' || character === '[') {
+      start = index
+      break
+    }
+  }
+  if (start === -1) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') {
+      inString = true
+      continue
+    }
+    if (character === '{' || character === '[') depth += 1
+    else if (character === '}' || character === ']') {
+      depth -= 1
+      if (depth === 0) {
+        return { json: source.slice(start, index + 1), before: source.slice(0, start), after: source.slice(index + 1) }
+      }
+    }
+  }
+  return null
+}
+
+export function sanitizeToolCallName(rawName) {
+  const text = String(rawName ?? '').trim()
+  if (!text) return { name: '', misplacedJson: '' }
+  if (TOOL_NAME_PATTERN.test(text)) return { name: text, misplacedJson: '' }
+  const split = splitJsonPayload(text)
+  if (!split) return { name: text, misplacedJson: '' }
+  const rest = `${split.before} ${split.after}`
+  const identifier = rest.match(/[A-Za-z_][A-Za-z0-9_-]{0,63}/)
+  return { name: identifier ? identifier[0] : '', misplacedJson: split.json }
+}
+
+export function trimTrailingNameLeak(argsText) {
+  const split = splitJsonPayload(String(argsText ?? ''))
+  if (!split || (!split.before.trim() && !split.after.trim())) {
+    return { arguments: String(argsText ?? ''), leakedName: '' }
+  }
+  const junk = `${split.before} ${split.after}`.trim()
+  const identifier = junk.match(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/)
+  return { arguments: split.json, leakedName: identifier ? identifier[0] : '' }
+}
+
+function isWholeJsonObject(text) {
+  const split = splitJsonPayload(String(text ?? ''))
+  return Boolean(split && !split.before.trim() && !split.after.trim())
+}
+
 function normalizeToolCall(call) {
   const fn = call?.function ?? {}
   const rawArgs = fn.arguments
@@ -374,6 +439,7 @@ export async function providerChatStream({
 
   const content = []
   const toolCalls = new Map()
+  const idKeys = new Map()
   let lastToolKey = null
   let toolCallSeq = 0
   let usage = null
@@ -381,32 +447,48 @@ export async function providerChatStream({
 
   const absorbToolCall = (call) => {
     const id = typeof call?.id === 'string' && call.id.trim() ? call.id.trim() : null
-    const name = typeof call?.function?.name === 'string' ? call.function.name : ''
+    const rawName =
+      typeof call?.function?.name === 'string'
+        ? call.function.name
+        : typeof call?.name === 'string'
+          ? call.name
+          : ''
     const index = Number.isInteger(call?.index) ? call.index : null
-    let key = id ? `id:${id}` : index !== null ? `idx:${index}` : (lastToolKey ?? 'idx:0')
-    const existing = toolCalls.get(key)
-    if (name && existing?.function?.name) {
+    const { name, misplacedJson } = sanitizeToolCallName(rawName)
+
+    let key = null
+    if (id && idKeys.has(id)) key = idKeys.get(id)
+    else if (index !== null) {
+      key = `idx:${index}`
+      const slot = toolCalls.get(key)
+      if (slot && id && slot.id && slot.id !== id) key = `id:${id}`
+    } else if (id) key = `id:${id}`
+    else key = lastToolKey ?? 'idx:0'
+
+    let current = toolCalls.get(key)
+    if (!current) {
+      current = { id: null, type: 'function', function: { name: '', arguments: '' } }
+      toolCalls.set(key, current)
+    } else if (name && current.function.name && current.function.name !== name) {
       toolCallSeq += 1
       key = `${key}#${toolCallSeq}`
+      current = { id: null, type: current.type, function: { name: '', arguments: '' } }
+      toolCalls.set(key, current)
     }
-    const current = toolCalls.get(key) ?? {
-      id: null,
-      type: 'function',
-      function: { name: '', arguments: '' },
+    if (id) {
+      current.id = id
+      idKeys.set(id, key)
     }
-    if (id) current.id = id
     if (call?.type) current.type = call.type
-    if (name) {
-      if (!current.function.name) current.function.name = name
-      else if (current.function.name !== name && !current.function.name.endsWith(name)) {
-        current.function.name = name
-      }
-    }
-    const args = call?.function?.arguments
-    if (typeof args === 'string') {
-      current.function.arguments += args
-    } else if (args && typeof args === 'object') {
-      current.function.arguments = JSON.stringify(args)
+    if (name && !current.function.name) current.function.name = name
+
+    const rawArgs = call?.function?.arguments
+    let incoming = ''
+    if (typeof rawArgs === 'string') incoming = rawArgs
+    else if (rawArgs && typeof rawArgs === 'object') incoming = JSON.stringify(rawArgs)
+    if (!incoming && misplacedJson) incoming = misplacedJson
+    if (incoming && !(current.function.arguments && isWholeJsonObject(current.function.arguments))) {
+      current.function.arguments += incoming
     }
     toolCalls.set(key, current)
     lastToolKey = key
@@ -463,9 +545,20 @@ export async function providerChatStream({
     role: 'assistant',
     content: content.join(''),
   }
-  const finalized = [...toolCalls.values()].filter(
-    (call) => call?.function?.name || call?.function?.arguments,
-  )
+  const finalizeCall = (call) => {
+    const trimmed = trimTrailingNameLeak(call?.function?.arguments ?? '')
+    call.function.arguments = trimmed.arguments
+    const clean = sanitizeToolCallName(call?.function?.name ?? '')
+    if (clean.name) call.function.name = clean.name
+    else if (trimmed.leakedName) call.function.name = trimmed.leakedName
+    else call.function.name = String(call.function.name ?? '').trim()
+    if (clean.misplacedJson && !call.function.arguments) call.function.arguments = clean.misplacedJson
+    return call
+  }
+
+  const finalized = [...toolCalls.values()]
+    .filter((call) => call?.function?.name || call?.function?.arguments)
+    .map(finalizeCall)
   if (finalized.length > 0) message.tool_calls = finalized.map(normalizeToolCall)
 
   return {

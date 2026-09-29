@@ -14,9 +14,10 @@ import {
 } from '../utils/workspaceManager.js'
 import { buildSystemPrompt, isVanillaFramework, resolveTier } from '../agent/prompts/index.js'
 import { buildProjectSnapshot } from '../agent/prompts/projectSnapshot.js'
+import { AGENT_MEMORY_FILENAME, readAgentMemory } from './agentMemory.js'
 import { queueAgentFsChange } from './agentFsNotifier.js'
 import { findRuleBlock } from './strictRules.js'
-import { buildScaffoldPlan, sectionCatalog } from '../templates/vanilla-kit/index.js'
+import { buildScaffoldAppPlan, buildScaffoldPlan, sectionCatalog } from '../templates/vanilla-kit/index.js'
 import { formatGateReport, vanillaGate } from '../agent/quality/vanillaGate.js'
 import { formatQuickCheck, quickCheck } from '../agent/quality/quickCheck.js'
 import {
@@ -57,6 +58,8 @@ import {
   normalizeMessagesForProvider,
   providerChat,
   providerChatStream,
+  splitJsonPayload,
+  trimTrailingNameLeak,
 } from './providerClient.js'
 
 export const MAX_TOOL_CALLS = 60
@@ -70,9 +73,14 @@ export const MAX_APPENDS_PER_FILE = 6
 export const MAX_QUICK_CHECK_ROUNDS = 2
 // Repair rounds for the html<->css<->js connection check (links, class coverage).
 export const MAX_CONNECTION_ROUNDS = 2
-// Soft per-task token budget. At 70% the agent is told to wrap up, at 100% the
-// run stops cleanly with a summary instead of silently burning another 300K.
-export const TASK_TOKEN_BUDGET = 150000
+// Soft PER-TASK token budget, measured rather than guessed. A complete one-page
+// vanilla landing page (plan + scaffold_site + one full-page write + the quality
+// gate) costs ~44K cumulative tokens in a real runAgent run (4 requests; 38K
+// prompt / 5.8K completion). The budget is 4x that so a 3-5 page site fits with
+// room for a repair round, and it is a limit for the WHOLE task: an internal
+// auto-continue only tops it up by a bounded fraction, it can never reset it.
+export const MEASURED_LANDING_PAGE_TOKENS = 44000
+export const TASK_TOKEN_BUDGET = MEASURED_LANDING_PAGE_TOKENS * 4
 export const TASK_WRAP_UP_RATIO = 0.7
 
 const MAX_GATE_ROUNDS = GATE_MAX_REPAIR_ROUNDS
@@ -90,6 +98,18 @@ const KEEP_RECENT_MESSAGES = 8
 const KEEP_FULL_TURNS = 4
 const MIN_HTML_LINES = 10
 const MAX_AUTO_CONTINUES = 5
+// A continuation tops the task budget up by this fraction, capped at
+// MAX_BUDGET_MULTIPLIER x the base — enough to finish real work, never enough
+// to hide a runaway loop.
+const AUTO_CONTINUE_BUDGET_BONUS = 0.34
+const MAX_BUDGET_MULTIPLIER = 2.5
+// How many times the SAME failing check may be auto-continued before the run
+// stops honestly instead of burning the budget on a loop that changes nothing.
+const MAX_STALLED_CONTINUES = 1
+// A stuck loop stops after this many detections — cumulative, never reset by an
+// auto-continue, so a model that keeps rewriting one page cannot burn the whole
+// task budget before the run stops honestly.
+const MAX_STUCK_WARNINGS = 3
 const MAX_SUMMARY_CONTINUES = 2
 const MAX_EMPTY_RETRIES = 2
 const DEBUG_AGENT = process.env.DEBUG_AGENT === '1'
@@ -111,14 +131,56 @@ const TOOL_CALL_CORRECTION_NOTE =
 const CONTINUE_TASK_NOTE =
   'Continue the previous task. First call list_directory, then create the remaining files from the plan.'
 
-const TOOL_FAILURE_NON_STREAM_NOTE =
-  'Your last two tool calls failed, so this turn is being re-requested WITHOUT streaming. Send the SAME call again with a complete JSON object in one piece. Check that every key is spelled exactly like the tool schema (path, content) and that the JSON is closed.'
+const TOOL_ARG_SPECS = {
+  create_file: {
+    keys: 'path, content',
+    example: '{"path":"index.html","content":"<!DOCTYPE html>…"}',
+  },
+  append_to_file: {
+    keys: 'path, content',
+    example: '{"path":"css/base.css","content":".card { border-radius: 8px; }"}',
+  },
+  edit_file: {
+    keys: 'path, old_string, new_string (or path, content for a whole-file rewrite)',
+    example:
+      '{"path":"css/theme.css","old_string":"--color-primary: #4361ee;","new_string":"--color-primary: #e94560;"}',
+  },
+  scaffold_site: {
+    keys: 'brand, pages',
+    example: '{"brand":"Acme","pages":[{"file":"index.html","sections":["hero","services"]}]}',
+  },
+  scaffold_app: {
+    keys: 'title, brand, palette',
+    example: '{"title":"Tip Calculator","brand":"Acme","palette":"indigo-modern"}',
+  },
+  read_file: { keys: 'path', example: '{"path":"index.html"}' },
+  list_directory: { keys: 'path', example: '{"path":"."}' },
+  delete_file: { keys: 'path', example: '{"path":"old.html"}' },
+  run_command: { keys: 'command', example: '{"command":"npm run build"}' },
+}
 
-const TOOL_FAILURE_ESCALATE_NOTE =
-  'Your tool calls keep failing. Send ONE simple, complete tool call now — a single create_file with a small valid path and content — and nothing else.'
+function toolArgSpec(toolName) {
+  const spec = TOOL_ARG_SPECS[toolName]
+  if (spec) {
+    return `${toolName} takes exactly these keys: ${spec.keys}. Example: ${toolName} ${spec.example}`
+  }
+  return (
+    `Valid tools: ${Object.keys(TOOL_LABELS).join(', ')}. The write tools take these exact keys — ` +
+    `create_file: path, content. append_to_file: path, content. edit_file: path, old_string, new_string (or path, content). ` +
+    `Example: edit_file ${TOOL_ARG_SPECS.edit_file.example}`
+  )
+}
 
-const TOOL_FAILURE_CORRECTIVE_NOTE =
-  'STOP. Do not send another failing tool call. If you cannot produce a valid create_file call, reply with plain text explaining exactly what you need instead of calling a tool.'
+function toolFailureNotes(toolName, failureText) {
+  const spec = toolArgSpec(toolName)
+  const last = failureText ? ` Last error: ${failureText}` : ''
+  return {
+    nonStream: `Your last two tool calls failed, so this turn is being re-requested WITHOUT streaming. ${spec}${last} Send ONE complete tool call with balanced JSON and nothing else.`,
+    corrective: `Your tool calls are still failing. ${spec}${last} Send ONE complete tool call with balanced JSON now — no other call in the same reply.`,
+    escalate: `Your tool calls keep failing, so this turn uses a different model. ${spec}${last} Send ONE simple, complete tool call and nothing else.`,
+    final: `STOP. Do not send another failing tool call. ${spec}${last} If you cannot produce a valid call, reply with plain text explaining exactly what you need instead of calling a tool.`,
+  }
+}
 
 const PLAN_NAME_PATTERN = /project[_\s-]*name\s*[:=]\s*([a-z0-9][a-z0-9-]*)/i
 const FILES_LINE_PATTERN = /(?:^|\n)\s*(?:files|plan)\s*[:=]\s*([^\n]+)/i
@@ -214,6 +276,16 @@ function normalizePlanFiles(value) {
   return files
 }
 
+export function normalizePlanType(value) {
+  const text = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  if (!text) return null
+  if (/\b(app|tool|utility|widget|game|calculator|converter|todo)\b/.test(text)) return 'app'
+  if (/\b(site|website|webpage|landing|blog|marketing|portfolio|brochure|content)\b/.test(text)) return 'site'
+  return null
+}
+
 export function parsePlanJson(text) {
   const raw = String(text ?? '')
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
@@ -233,6 +305,8 @@ export function parsePlanJson(text) {
     if (files.length === 0 && !projectName) continue
     return {
       projectName: projectName ?? null,
+      type: normalizePlanType(parsed.type ?? parsed.project_type ?? parsed.kind),
+      direction: String(parsed.direction ?? '').trim().slice(0, 240) || null,
       brand: parsed.brand && typeof parsed.brand === 'object' ? parsed.brand : null,
       nav: (Array.isArray(parsed.nav) ? parsed.nav : []).map((entry) => ({
         label: String((typeof entry === 'string' ? entry : entry?.label) ?? '').trim(),
@@ -261,6 +335,8 @@ export function parsePlanJson(text) {
 function planSpecText(doc) {
   if (!doc) return ''
   const parts = [`project ${doc.projectName ?? 'unnamed'}`]
+  if (doc.type) parts.push(`type ${doc.type}`)
+  if (doc.direction) parts.push(`direction ${doc.direction}`)
   if (doc.brand?.name) {
     parts.push(`brand ${doc.brand.name}${doc.brand.industry ? ` (${doc.brand.industry})` : ''}`)
   }
@@ -286,7 +362,27 @@ function appendGuidance(messages, text) {
   return false
 }
 
-async function plannedFileIssues(projectId, plannedPaths) {
+function plannedSectionsFor(planDoc, file) {
+  const target = String(file ?? '')
+    .replace(/\\/g, '/')
+    .replace(/^\.?\//, '')
+    .toLowerCase()
+  const sections = []
+  for (const page of Array.isArray(planDoc?.pages) ? planDoc.pages : []) {
+    const pageFile = String(typeof page === 'string' ? page : page?.file ?? '')
+      .replace(/\\/g, '/')
+      .replace(/^\.?\//, '')
+      .toLowerCase()
+    if (pageFile !== target) continue
+    for (const section of Array.isArray(page?.sections) ? page.sections : []) {
+      const name = String(section ?? '').trim()
+      if (name && !sections.includes(name)) sections.push(name)
+    }
+  }
+  return sections
+}
+
+async function plannedFileIssues(projectId, plannedPaths, planDoc = null) {
   if (!Array.isArray(plannedPaths) || plannedPaths.length === 0) return []
   const issues = []
   for (const file of plannedPaths) {
@@ -317,6 +413,22 @@ async function plannedFileIssues(projectId, plannedPaths) {
     if (!/<\/html>\s*$/i.test(content.trimEnd())) {
       issues.push({ path: file, kind: 'noClosingHtml', lines })
     }
+    // "The file exists" is NOT "the page is finished". A scaffolded page whose
+    // SLOT markers were never replaced, or whose plan-declared sections were
+    // never written, is still incomplete work and must keep the run going.
+    const leftoverSlots = (content.match(/<!--\s*SLOT:/g) || []).length
+    if (leftoverSlots > 0) {
+      issues.push({ path: file, kind: 'slots', count: leftoverSlots, lines })
+    }
+    // ONE issue per file, listing every missing section. Reporting one issue per
+    // section made the progress text read "23 file(s) still incomplete" on a
+    // 5-page plan, which is both wrong and useless to the model.
+    const missingSections = plannedSectionsFor(planDoc, file).filter(
+      (section) => !new RegExp(`id\\s*=\\s*["']${section}["']`, 'i').test(content),
+    )
+    if (missingSections.length > 0) {
+      issues.push({ path: file, kind: 'missingSections', sections: missingSections })
+    }
   }
   return issues
 }
@@ -334,6 +446,12 @@ function formatIssues(issues) {
         return `${issue.path} is only ${issue.lines} line(s) and looks incomplete`
       case 'noDoctype':
         return `${issue.path} does not start with <!DOCTYPE html>`
+      case 'slots':
+        return `${issue.path} still has ${issue.count} empty scaffold slot(s) that were never replaced with real content`
+      case 'missingSections':
+        return `${issue.path} is missing ${issue.sections.length} planned section(s): ${issue.sections
+          .map((section) => `<section id="${section}">`)
+          .join(', ')}`
       case 'noClosingHtml':
         return `${issue.path} does not end with </html>`
       default:
@@ -342,22 +460,22 @@ function formatIssues(issues) {
   })
 }
 
-async function missingPlannedFiles(projectId, plannedPaths) {
-  const issues = await plannedFileIssues(projectId, plannedPaths)
-  return issues.map((issue) => issue.path)
+async function missingPlannedFiles(projectId, plannedPaths, planDoc = null) {
+  const issues = await plannedFileIssues(projectId, plannedPaths, planDoc)
+  return [...new Set(issues.map((issue) => issue.path))]
 }
 
-async function nextPlannedPath(projectId, plannedPaths, exclude = null) {
-  const issues = await plannedFileIssues(projectId, plannedPaths)
+async function nextPlannedPath(projectId, plannedPaths, exclude = null, planDoc = null) {
+  const issues = await plannedFileIssues(projectId, plannedPaths, planDoc)
   const remaining = issues.filter((issue) => issue.path !== exclude)
   return remaining.length > 0
     ? `finish ${formatIssues(remaining).join('; ')}`
     : 'stop with your short summary.'
 }
 
-async function buildProgressHint(projectId, plannedPaths, justWritten) {
+async function buildProgressHint(projectId, plannedPaths, justWritten, planDoc = null) {
   if (!Array.isArray(plannedPaths) || plannedPaths.length === 0) return ''
-  const issues = await plannedFileIssues(projectId, plannedPaths)
+  const issues = await plannedFileIssues(projectId, plannedPaths, planDoc)
   const remaining = issues.map((issue) => issue.path)
   const done = plannedPaths.filter((file) => !remaining.includes(file))
   const next = remaining.find((file) => file !== justWritten) ?? remaining[0] ?? null
@@ -417,14 +535,23 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'edit_file',
-      description: 'Overwrite an existing file. Fails when it does not exist.',
+      description:
+        'Change an EXISTING file. PREFERRED: pass old_string (an exact snippet that occurs once, e.g. a <!-- SLOT:hero --> marker) plus new_string — only that snippet is replaced and the rest of the file is kept byte for byte, so the header, footer and every other section survive. ALTERNATIVE: pass content to overwrite the WHOLE file, which is only allowed for a complete page.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Relative path' },
-          content: { type: 'string', description: 'New full content' },
+          old_string: {
+            type: 'string',
+            description: 'Exact snippet to replace, e.g. "<!-- SLOT:hero -->". Must occur exactly once in the file.',
+          },
+          new_string: { type: 'string', description: 'The replacement for old_string' },
+          content: {
+            type: 'string',
+            description: 'Whole new file content (only for a complete page; prefer old_string/new_string)',
+          },
         },
-        required: ['path', 'content'],
+        required: ['path'],
       },
     },
   },
@@ -441,7 +568,8 @@ const OPENAI_TOOLS = [
           tagline: { type: 'string', description: 'One short line about the business' },
           palette: {
             type: 'string',
-            description: 'Theme preset id: indigo-modern | emerald-fresh | sunset-warm | midnight-dark | rose-elegant | slate-corporate',
+            description:
+              'Theme preset id: indigo-modern | emerald-fresh | sunset-warm | midnight-dark | rose-elegant | slate-corporate | gallery-ivory | playful-pop | clinic-calm',
           },
           pages: {
             type: 'array',
@@ -463,6 +591,28 @@ const OPENAI_TOOLS = [
           },
         },
         required: ['brand', 'pages'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'scaffold_app',
+      description:
+        'Create the shell for a single-purpose UTILITY APP (calculator, todo list, timer, quiz, converter, small game) in ONE call: writes the palette tokens, a compact app stylesheet and the js/app.js helpers, plus an index.html with an app bar, one <main> and a single <!-- SLOT:app --> marker. It deliberately writes NO navbar, NO hero, NO footer, NO pricing/FAQ/ testimonials — an app is not a marketing site. Never use it for a marketing/content site; use scaffold_site for those.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'App title, shown in the app bar and in <title>' },
+          brand: { type: 'string', description: 'Optional short brand name for the app bar badge' },
+          description: { type: 'string', description: 'One short line about what the app does (meta description)' },
+          palette: {
+            type: 'string',
+            description:
+              'Theme preset id: indigo-modern | emerald-fresh | sunset-warm | midnight-dark | rose-elegant | slate-corporate | gallery-ivory | playful-pop | clinic-calm',
+          },
+        },
+        required: ['title'],
       },
     },
   },
@@ -524,6 +674,7 @@ const TOOL_LABELS = {
   append_to_file: 'append_to_file',
   edit_file: 'edit_file',
   scaffold_site: 'scaffold_site',
+  scaffold_app: 'scaffold_app',
   read_file: 'read_file',
   list_directory: 'list_directory',
   delete_file: 'delete_file',
@@ -568,6 +719,25 @@ function looksComplete(filePath, text) {
   return true
 }
 
+// A starter-kit page is recognisable by its <header class="site-header">. Every
+// such page owes exactly one header, one footer and one <h1>, and must end with
+// </html>. Written as a checklist so a partial rewrite can never pass again.
+const SITE_PAGE_MARKER = /class\s*=\s*["'][^"']*\bsite-header\b/i
+
+export function documentIntegrityIssues(text) {
+  const problems = []
+  const count = (pattern) => (String(text ?? '').match(pattern) || []).length
+  const headers = count(/<header\b/gi)
+  const footers = count(/<footer\b/gi)
+  const h1s = count(/<h1\b/gi)
+  if (headers !== 1) problems.push(`${headers} <header> (a page has exactly one)`)
+  if (footers !== 1) problems.push(`${footers} <footer> (a page has exactly one)`)
+  if (h1s !== 1) problems.push(`${h1s} <h1> (a page has exactly one)`)
+  if (!/<\/html>\s*$/i.test(String(text ?? '').trimEnd())) problems.push('no closing </html>')
+  if (problems.length === 0) return ''
+  return `the document is incomplete — it has ${problems.join(', ')}`
+}
+
 function validateWriteContent(name, filePath, content) {
   const text = typeof content === 'string' ? content : String(content ?? '')
   const lines = countLines(text)
@@ -590,7 +760,16 @@ function validateWriteContent(name, filePath, content) {
   }
   const head = text.replace(/^\uFEFF/, '').trimStart()
   if (!/^<!doctype\s+html/i.test(head)) {
-    return `Error: "${filePath}" must start with <!DOCTYPE html>. Write the FULL page in THIS call.`
+    return `Error: "${filePath}" must start with <!DOCTYPE html>. Write the FULL page in THIS call, or change ONE snippet of the existing file with old_string/new_string.`
+  }
+  // This is the check that was missing. A whole-file rewrite that starts with
+  // <!DOCTYPE html> and has 10+ lines used to be accepted even when it was only
+  // the page's navbar — the page on disk then lost its footer and every section.
+  if (SITE_PAGE_MARKER.test(text)) {
+    const integrity = documentIntegrityIssues(text)
+    if (integrity) {
+      return `Error: "${filePath}" was NOT written, because ${integrity}. A page keeps exactly one <header> at the top, EVERY planned section inside <main>, and exactly one <footer> at the bottom. Fill the page one section at a time with edit_file { path, old_string: "<!-- SLOT:hero -->", new_string: "<section …>…</section>" }, or resend content for the COMPLETE page.`
+    }
   }
   return null
 }
@@ -625,11 +804,18 @@ function describeAction(name, args, { phase = 'running', lines = 0 } = {}) {
     case 'append_to_file':
       return phase === 'running' ? `Extending ${filePath}…` : `Extended ${filePath} · +${lines} lines`
     case 'edit_file':
+      if (args.old_string) {
+        return phase === 'running' ? `Filling ${filePath}…` : `Filled ${filePath} · ${lines} lines`
+      }
       return phase === 'running' ? `Editing ${filePath}…` : `Edited ${filePath} · ${lines} lines`
     case 'scaffold_site':
       return phase === 'running'
         ? `Scaffolding ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) from the starter kit…`
         : `Scaffolded ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) — ${lines} lines`
+    case 'scaffold_app':
+      return phase === 'running'
+        ? `Scaffolding the ${args.title ? `${truncate(args.title, 40)} ` : ''}app shell…`
+        : `Scaffolded the app shell — ${lines} lines`
     case 'read_file':
       return `Read ${filePath}`
     case 'list_directory':
@@ -660,6 +846,8 @@ function describeFailure(name, args, outcome = null) {
       return reason ? `Failed to edit ${filePath} — ${reason}` : `Failed to edit ${filePath}`
     case 'scaffold_site':
       return reason ? `Failed to scaffold the site — ${reason}` : 'Failed to scaffold the site'
+    case 'scaffold_app':
+      return reason ? `Failed to scaffold the app — ${reason}` : 'Failed to scaffold the app'
     default:
       return reason ? `Failed: ${name} — ${reason}` : `Failed: ${name}`
   }
@@ -756,6 +944,25 @@ export const CONTENT_ARG_ALIASES = [
 
 export const COMMAND_ARG_ALIASES = ['command', 'cmd', 'shell_command', 'shellCommand']
 
+export const OLD_STRING_ARG_ALIASES = [
+  'old_string',
+  'oldString',
+  'oldStr',
+  'old_str',
+  'oldContent',
+  'find',
+  'search',
+]
+export const NEW_STRING_ARG_ALIASES = [
+  'new_string',
+  'newString',
+  'newStr',
+  'new_str',
+  'newContent',
+  'replace',
+  'replacement',
+]
+
 function pickArgumentAlias(args, aliases) {
   for (const alias of aliases) {
     const value = args?.[alias]
@@ -838,6 +1045,43 @@ function parseJsonLenient(raw) {
   }
 }
 
+function isKnownToolName(value) {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(TOOL_LABELS, value)
+}
+
+export function resolveToolCallName(rawName, rawArguments) {
+  let name = String(rawName ?? '').trim()
+  let argsText =
+    typeof rawArguments === 'string'
+      ? rawArguments
+      : rawArguments == null
+        ? ''
+        : JSON.stringify(rawArguments)
+  if (!isKnownToolName(name)) {
+    const split = splitJsonPayload(name)
+    let rest = name
+    let embedded = ''
+    if (split) {
+      embedded = split.json
+      rest = `${split.before} ${split.after}`
+    }
+    const tokens = rest.match(/[A-Za-z_][A-Za-z0-9_-]{0,63}/g) ?? []
+    const recovered = [...tokens].reverse().find((token) => isKnownToolName(token))
+    if (recovered) {
+      name = recovered
+      if (!argsText && embedded) argsText = embedded
+    } else {
+      name = rest.trim()
+      if (!argsText) argsText = embedded
+    }
+  }
+  if (argsText) {
+    const trimmed = trimTrailingNameLeak(argsText)
+    if (trimmed.arguments !== argsText) argsText = trimmed.arguments
+  }
+  return { name, arguments: argsText }
+}
+
 export function parseAndNormalizeToolArguments(name, rawArguments) {
   const { value, error } = parseJsonLenient(rawArguments)
   const args = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
@@ -852,6 +1096,23 @@ export function parseAndNormalizeToolArguments(name, rawArguments) {
       args.content = typeof contentHit.value === 'string' ? contentHit.value : JSON.stringify(contentHit.value)
       if (contentHit.key !== 'content') delete args[contentHit.key]
     }
+    // Surgical-edit aliases. Kept separate from CONTENT_ARG_ALIASES on purpose:
+    // "new_string" is NOT the whole file, and mapping it onto `content` would
+    // overwrite a page with one section (which is exactly what broke pages).
+    const oldHit = pickArgumentAlias(args, OLD_STRING_ARG_ALIASES)
+    if (oldHit && typeof args.old_string !== 'string') {
+      args.old_string = String(oldHit.value)
+    }
+    for (const alias of OLD_STRING_ARG_ALIASES) {
+      if (alias !== 'old_string') delete args[alias]
+    }
+    const newHit = pickArgumentAlias(args, NEW_STRING_ARG_ALIASES)
+    if (newHit && typeof args.new_string !== 'string') {
+      args.new_string = typeof newHit.value === 'string' ? newHit.value : JSON.stringify(newHit.value)
+    }
+    for (const alias of NEW_STRING_ARG_ALIASES) {
+      if (alias !== 'new_string') delete args[alias]
+    }
   } else {
     const commandHit = pickArgumentAlias(args, COMMAND_ARG_ALIASES)
     if (commandHit && typeof args.command !== 'string') args.command = String(commandHit.value)
@@ -865,17 +1126,30 @@ function requiredPathMessage(name, args) {
   const examples = {
     create_file: '{"path":"index.html","content":"<!DOCTYPE html>…"}',
     append_to_file: '{"path":"css/base.css","content":"…the next block of rules…"}',
-    edit_file: '{"path":"index.html","content":"…the full new file content…"}',
+    edit_file: '{"path":"index.html","old_string":"<!-- SLOT:hero -->","new_string":"<section class=\"hero\" id=\"hero\">…</section>"}',
     read_file: '{"path":"index.html"}',
     delete_file: '{"path":"old.html"}',
   }
   const example = examples[name] ?? '{"path":"index.html"}'
-  const needsContent = WRITE_TOOLS.has(name)
+  const needsContent = WRITE_TOOLS.has(name) && name !== 'edit_file'
+  const contentNote = name === 'edit_file' ? ', and either old_string + new_string or content' : needsContent ? ', content' : ''
   return (
     `Error: ${name} needs a "path" — a workspace-relative file path such as "index.html" or "css/base.css". ` +
-    `It received these keys: ${received}. Required keys: path${needsContent ? ', content' : ''}. ` +
+    `It received these keys: ${received}. Required keys: path${contentNote}. ` +
     `Accepted aliases: ${PATH_ARG_ALIASES.join(', ')}. ` +
     `Send it again like this: ${name} ${example}`
+  )
+}
+
+function editPayloadMessage(args) {
+  const keys = Object.keys(args ?? {})
+  const received = keys.length > 0 ? keys.join(', ') : '(none)'
+  return (
+    `Error: edit_file needs either old_string + new_string (an exact snippet that occurs once in the file) or content (a complete file). ` +
+    `It received these keys: ${received}. ` +
+    `Valid keys: path, old_string, new_string, content. ` +
+    `Accepted aliases: path, file_path, filepath, old_string, old_str, oldStr, new_string, new_str, newStr. ` +
+    `Send it again like this: edit_file ${TOOL_ARG_SPECS.edit_file.example}`
   )
 }
 
@@ -920,6 +1194,84 @@ async function executeTool(name, rawArgs, projectId) {
       if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
       if (name === 'edit_file' && !existsInWorkspace(projectId, filePath)) {
         return { text: `Error: "${filePath}" does not exist (use create_file).` }
+      }
+
+      // ---- SURGICAL EDIT (the safe way to fill a scaffold slot) -------------
+      // Replaces ONE exact occurrence and keeps the rest of the file byte for
+      // byte, so filling a <!-- SLOT:x --> marker CANNOT drop the header, the
+      // footer or the sections written before it. Before this existed the only
+      // way to fill a slot was to resend the whole page, and a truncated resend
+      // is what shipped "a navbar with nothing below it".
+      const oldString = typeof args.old_string === 'string' ? args.old_string : ''
+      if (name === 'edit_file' && oldString) {
+        const existing = await readWorkspaceFileSafe(projectId, filePath)
+        if (existing === null) {
+          return { text: `Error: "${filePath}" does not exist (use create_file).`, rejected: true }
+        }
+        const newString = typeof args.new_string === 'string' ? args.new_string : String(args.new_string ?? '')
+        if (!newString.trim()) {
+          return {
+            text: `Error: edit_file needs a non-empty "new_string" — the real markup that replaces "${truncate(oldString, 60)}".`,
+            rejected: true,
+          }
+        }
+        const candidates = [oldString]
+        if (existing.includes('\r\n') && oldString.includes('\n')) {
+          candidates.push(oldString.replace(/\n/g, '\r\n'))
+        }
+        if (oldString.trim() !== oldString) candidates.push(oldString.trim())
+        let needle = null
+        for (const candidate of candidates) {
+          if (candidate && existing.split(candidate).length - 1 === 1) {
+            needle = candidate
+            break
+          }
+        }
+        if (!needle) {
+          const occurrences = existing.split(oldString).length - 1
+          const slots = [...existing.matchAll(/<!--\s*SLOT:([a-z0-9-]+)\s*-->/g)].map(
+            (match) => `<!-- SLOT:${match[1]} -->`,
+          )
+          if (occurrences > 1) {
+            return {
+              text: `Error: old_string appears ${occurrences} times in "${filePath}", so the edit would be ambiguous. Include a few surrounding characters so it occurs exactly once.${slots.length > 0 ? ` Empty slots still in the file: ${slots.join(', ')}.` : ''}`,
+              rejected: true,
+            }
+          }
+          return {
+            text: `Error: old_string was not found in "${filePath}", so nothing was changed.${slots.length > 0 ? ` Replace one of these markers instead: ${slots.join(', ')}.` : ' Read the file with read_file and copy the exact snippet.'}`,
+            rejected: true,
+          }
+        }
+        const next = existing.replace(needle, newString)
+        if (/\.html?$/i.test(filePath) && SITE_PAGE_MARKER.test(next)) {
+          const integrity = documentIntegrityIssues(next)
+          if (integrity) {
+            return {
+              text: `Error: that edit would leave "${filePath}" incomplete (${integrity}), so it was rejected. Replace one <!-- SLOT:name --> marker per call and never delete the header or the footer.`,
+              rejected: true,
+            }
+          }
+        }
+        const existedBefore = existsInWorkspace(projectId, filePath)
+        let saved
+        try {
+          saved = writeFileToWorkspace(projectId, filePath, next)
+        } catch (error) {
+          debugToolCall(name, filePath, next, 'error')
+          return { text: toolErrorMessage(name, args, error) }
+        }
+        debugToolCall(name, saved, next, 'edited')
+        const slotsLeft = [...next.matchAll(/<!--\s*SLOT:([a-z0-9-]+)\s*-->/g)].map((match) => match[1])
+        return {
+          text: `Updated ${saved}.${slotsLeft.length > 0 ? ` Empty slots left in this file: ${slotsLeft.join(', ')}.` : ' No empty slots left in this file.'}`,
+          modelText: `ok, ${countLines(next)} lines${slotsLeft.length > 0 ? `, ${slotsLeft.length} slot(s) left` : ', no slots left'}`,
+          lines: countLines(next),
+          fsChanges: [{ path: saved, type: existedBefore ? 'change' : 'add' }],
+        }
+      }
+      if (name === 'edit_file' && !oldString && !content.trim()) {
+        return { text: editPayloadMessage(args), rejected: true }
       }
       if (name === 'create_file' && existsInWorkspace(projectId, filePath)) {
         const existing = await readWorkspaceFileSafe(projectId, filePath)
@@ -1034,6 +1386,54 @@ async function executeTool(name, rawArgs, projectId) {
         slotSummary ? `Content slots to fill next: ${slotSummary}.` : '',
         'Replace each <!-- SLOT:name --> marker with the real section markup using ONLY the kit classes, one edit_file per page.',
       ].filter(Boolean)
+      return {
+        text: parts.join(' '),
+        modelText: parts.join(' '),
+        lines: totalLines,
+        written: created,
+        fsChanges: [
+          ...[...folders].map((folder) => ({ path: folder, type: 'addDir' })),
+          ...created.map((file) => ({ path: file.path, type: 'add' })),
+        ],
+      }
+    }
+    case 'scaffold_app': {
+      let plan
+      try {
+        plan = await buildScaffoldAppPlan(args)
+      } catch (error) {
+        return { text: `Error: could not read the app kit: ${error.message}`, rejected: true }
+      }
+      const created = []
+      const skipped = []
+      const folders = new Set()
+      let totalLines = 0
+      for (const file of plan.files) {
+        const existing = existsInWorkspace(projectId, file.path)
+          ? await readWorkspaceFileSafe(projectId, file.path)
+          : null
+        if (existing !== null && existing.trim()) {
+          skipped.push(file.path)
+          continue
+        }
+        try {
+          writeFileToWorkspace(projectId, file.path, file.content)
+        } catch (error) {
+          return { text: `Error: could not write ${file.path}: ${error.message}`, rejected: true }
+        }
+        const segments = file.path.split('/')
+        for (let index = 1; index < segments.length; index += 1) {
+          folders.add(segments.slice(0, index).join('/'))
+        }
+        created.push({ path: file.path, lines: countLines(file.content) })
+        totalLines += countLines(file.content)
+      }
+      const themeNote = `palette ${plan.theme.id} (${plan.theme.headingFont} + ${plan.theme.bodyFont})`
+      const parts = [
+        `Scaffolded the app shell: ${created.map((file) => file.path).join(', ')} — ${themeNote}${skipped.length > 0 ? ` (left ${skipped.length} existing file(s) untouched: ${skipped.join(', ')})` : ''}.`,
+        'This is a UTILITY APP, not a marketing site: do NOT add a navbar, hero, footer, pricing or FAQ section.',
+        'Next: replace <!-- SLOT:app --> in index.html with the real app UI using the classes in css/app.css (panel, app-grid, toolbar, btn, field, label, input, list, list__item, chip, readout, notice, icon-btn, app-head) and append your app logic to the END of js/app.js inside CMApp.ready(function () { ... }). The app bar already holds the page <h1> — do not add another one.',
+      ]
       return {
         text: parts.join(' '),
         modelText: parts.join(' '),
@@ -1329,6 +1729,7 @@ export async function runAgent({
   shouldStop = null,
   runStartedAt = null,
   strictRules = [],
+  projectHistory = false,
 }) {
   const startedAt = Number.isFinite(runStartedAt) ? runStartedAt : Date.now()
   let toolCalls = 0
@@ -1420,6 +1821,16 @@ export async function runAgent({
     projectSnapshotText = null
   }
 
+  let projectMemoryText = null
+  if (projectHistory) {
+    try {
+      projectMemoryText = await readAgentMemory(projectId)
+    } catch (error) {
+      console.warn(`[agent] ${AGENT_MEMORY_FILENAME} read failed: ${error?.message ?? error}`)
+      projectMemoryText = null
+    }
+  }
+
   const repairIntent = !resume && vanillaMode && detectRepairIntent(task)
   let repairClean = false
   let repairInfo = null
@@ -1450,13 +1861,15 @@ export async function runAgent({
     if (problemFiles.length > 0) {
       plan = problemFiles
       planDoc = {
-        projectName: null,
-        brand: null,
-        nav: [],
-        files: problemFiles.map((file) => ({ path: file, purpose: 'connection repair' })),
-        pages: [],
-        requirements: [],
-      }
+          projectName: null,
+          type: null,
+          direction: null,
+          brand: null,
+          nav: [],
+          files: problemFiles.map((file) => ({ path: file, purpose: 'connection repair' })),
+          pages: [],
+          requirements: [],
+        }
     }
     task =
       'REPAIR ONLY — the links and styles in this project are broken. The server found exactly these problems; fix ONLY these, do not regenerate the whole site:\n' +
@@ -1478,7 +1891,8 @@ export async function runAgent({
       now: new Date(),
       projectStructure: treeContext,
       projectSnapshot: projectSnapshotText,
-      updateWorkflow: vanillaMode,
+      projectMemory: projectMemoryText,
+      updateWorkflow: Boolean(projectSnapshotText),
       strictRules,
     }),
   }
@@ -1932,9 +2346,14 @@ export async function runAgent({
   let failureEscalation = 0
   let forceNonStreamOnce = false
   let lastFailureText = ''
+  let lastFailureTool = ''
+  // A repair round that produces the SAME failure list and changes nothing on
+  // disk is not progress; continuing it only burns budget.
+  let lastCheckSignature = null
+  let stalledContinues = 0
 
   const wrapUpHint = async (usedTokens) => {
-    const remaining = await missingPlannedFiles(projectId, plan)
+    const remaining = await missingPlannedFiles(projectId, plan, planDoc)
     return [
       `TOKEN BUDGET: this task has used about ${Math.round(usedTokens / 1000)}K of its ~${Math.round(effectiveBudget / 1000)}K budget.`,
       remaining.length > 0
@@ -1971,9 +2390,14 @@ export async function runAgent({
     if (consecutiveFailures >= 2) return false
     autoContinues += 1
     toolCallCap += toolCallCapBase
-    effectiveBudget += TASK_TOKEN_BUDGET
+    // A continuation extends the task's token budget by a BOUNDED increment,
+    // never by a whole fresh budget: the budget is per task, so it can no
+    // longer be silently reset (5x150K) by internal continuations.
+    effectiveBudget = Math.min(
+      TASK_TOKEN_BUDGET * MAX_BUDGET_MULTIPLIER,
+      effectiveBudget + TASK_TOKEN_BUDGET * AUTO_CONTINUE_BUDGET_BONUS,
+    )
     wrapUpNotified = false
-    stuckWarnings = 0
     writeStreak = 0
     writesWithoutNewFile = 0
     parseRetries = 0
@@ -2039,7 +2463,7 @@ export async function runAgent({
     // summary instead of silently burning another 300K like the old loop did.
     const usedTokens = taskId ? (getTaskTotals(taskId)?.totalTokens ?? 0) : 0
     if (usedTokens >= effectiveBudget) {
-      const issuesNow = await plannedFileIssues(projectId, plan)
+      const issuesNow = await plannedFileIssues(projectId, plan, planDoc)
       if (
         issuesNow.length > 0 &&
         tryAutoContinue('the token budget was spent before the files were finished')
@@ -2110,6 +2534,8 @@ export async function runAgent({
         planDoc = jsonPlan
           ? {
               projectName: jsonPlan.projectName,
+              type: jsonPlan.type,
+              direction: jsonPlan.direction,
               brand: jsonPlan.brand,
               nav: jsonPlan.nav,
               files: jsonPlan.files,
@@ -2135,19 +2561,26 @@ export async function runAgent({
           }
         }
         persistSession('plan')
-        event_('plan', `Planned ${plan.length} file(s): ${plan.join(', ')}`, {
-          status: 'done',
-          model,
-          provider: active.providerId,
-          tool: 'plan',
-          projectName: parsed.projectName ?? null,
-        })
+        const planType = jsonPlan?.type ?? null
+        event_(
+          'plan',
+          `${planType ? `TYPE: ${planType} — ` : ''}Planned ${plan.length} file(s): ${plan.join(', ')}`,
+          {
+            status: 'done',
+            model,
+            provider: active.providerId,
+            tool: 'plan',
+            projectName: parsed.projectName ?? null,
+            projectType: planType,
+            direction: jsonPlan?.direction ?? null,
+          },
+        )
       }
     }
 
     const calls = Array.isArray(message.tool_calls) ? message.tool_calls : []
     if (calls.length === 0) {
-      const issues = await plannedFileIssues(projectId, plan)
+      const issues = await plannedFileIssues(projectId, plan, planDoc)
       const missing = issues.map((issue) => issue.path)
       if (issues.length > 0 && planReminders < 3 && toolCalls < toolCallCap) {
         planReminders += 1
@@ -2156,7 +2589,7 @@ export async function runAgent({
           messages,
           `These planned files are not complete yet: ${formatIssues(issues).join(
             '; ',
-          )}. Write each one completely in a single create_file call.`,
+          )}. Finish each one now: fill the remaining <!-- SLOT:name --> markers with edit_file { path, old_string: "<!-- SLOT:hero -->", new_string: "<section …>…</section>" } — several in ONE reply — and create a page with create_file only when it does not exist yet.`,
         )
         note(`Verifying the plan — ${issues.length} file(s) still incomplete…`)
         continue
@@ -2189,17 +2622,28 @@ export async function runAgent({
         continue
       }
       if (!quick.ok) {
-        if (tryAutoContinue('the automatic content check still found problems')) {
+        const signature = quick.problems.join(' | ')
+        if (signature === lastCheckSignature) stalledContinues += 1
+        else {
+          lastCheckSignature = signature
+          stalledContinues = 0
+        }
+        if (
+          stalledContinues < MAX_STALLED_CONTINUES &&
+          tryAutoContinue('the automatic content check still found problems')
+        ) {
           quickCheckRounds = 0
           appendGuidance(messages, formatQuickCheck(quick))
           continue
         }
-        event_('gate', `Automatic check still failing (${quick.problems.length} problem(s)).`, {
-          status: 'done',
-          tool: 'gate',
-          passed: false,
-          failures: quick.problems.slice(0, 12),
-        })
+        // A page that still fails the automatic content check must NEVER be
+        // reported as a success. Stop honestly (an error the client turns into
+        // Continue) instead of shipping a near-empty page.
+        blockFinishing(
+          'the automatic content check still fails',
+          quick.problems,
+          'content_incomplete',
+        )
       }
 
       if (vanillaMode) {
@@ -2338,6 +2782,9 @@ export async function runAgent({
               checks: gate.checks.length,
             },
           )
+          // The gate failing after every repair round means the page is still
+          // under-sized or unfinished. Never report that as a successful run.
+          blockFinishing('the quality gate still fails', gate.failures, 'gate_failed')
         }
       }
 
@@ -2398,7 +2845,7 @@ export async function runAgent({
     let batchFailures = 0
     for (const call of calls) {
       if (toolCalls >= toolCallCap) {
-        const issuesAtCap = await plannedFileIssues(projectId, plan)
+        const issuesAtCap = await plannedFileIssues(projectId, plan, planDoc)
         if (
           issuesAtCap.length > 0 &&
           tryAutoContinue(`reached the per-run tool-call limit (${toolCallCap})`)
@@ -2433,8 +2880,10 @@ export async function runAgent({
       }
       toolCalls += 1
 
-      const name = String(call.function?.name ?? call.name ?? 'unknown').trim() || 'unknown'
-      const parsed = parseAndNormalizeToolArguments(name, call.function?.arguments)
+      const rawName = String(call.function?.name ?? call.name ?? 'unknown').trim() || 'unknown'
+      const resolved = resolveToolCallName(rawName, call.function?.arguments)
+      const name = resolved.name || 'unknown'
+      const parsed = parseAndNormalizeToolArguments(name, resolved.arguments)
       let args = normalizeToolArgs(projectId, name, parsed.args)
 
       const actionId = crypto.randomUUID()
@@ -2456,7 +2905,7 @@ export async function runAgent({
         const used = appendCallsByPath.get(filePath) ?? 0
         if (used >= MAX_APPENDS_PER_FILE) {
           rejection =
-            `Error: "${filePath}" has already been appended to ${used} times in this run — the per-file limit, and the file is long enough. Stop writing it and ${await nextPlannedPath(projectId, plan, filePath)}`
+            `Error: "${filePath}" has already been appended to ${used} times in this run — the per-file limit, and the file is long enough. Stop writing it and ${await nextPlannedPath(projectId, plan, filePath, planDoc)}`
         } else {
           appendCallsByPath.set(filePath, used + 1)
         }
@@ -2497,6 +2946,7 @@ export async function runAgent({
       if (failed) {
         batchFailures += 1
         lastFailureText = String(outcome.text ?? '').slice(0, 240)
+        lastFailureTool = name
       }
 
       // The Explorer must follow the agent in real time, so every successful
@@ -2558,7 +3008,7 @@ export async function runAgent({
           })
         }
 
-        const progress = await buildProgressHint(projectId, plan, filePath)
+        const progress = await buildProgressHint(projectId, plan, filePath, planDoc)
         if (progress) modelResult = `${modelResult}\n${progress}`
 
         // Every page is checked immediately: it must end with </html>, must not
@@ -2599,13 +3049,14 @@ export async function runAgent({
         writeStreak = writeStreakPath === filePath ? writeStreak + 1 : 1
         writeStreakPath = filePath
         writesWithoutNewFile = isNewFile ? 0 : writesWithoutNewFile + 1
-        const remaining = await missingPlannedFiles(projectId, plan)
+        const remaining = await missingPlannedFiles(projectId, plan, planDoc)
         const stuck =
           remaining.length > 0 &&
           (writeStreak >= STUCK_SAME_PATH_STREAK || writesWithoutNewFile >= STUCK_WRITE_CALLS)
         if (stuck) {
-          const issueText = formatIssues(await plannedFileIssues(projectId, plan)).join('; ')
-          if (stuckWarnings >= 2 && !tryAutoContinue(`the agent kept repeating "${filePath}"`)) {
+          const issueText = formatIssues(await plannedFileIssues(projectId, plan, planDoc)).join('; ')
+          stuckWarnings += 1
+          if (stuckWarnings >= MAX_STUCK_WARNINGS) {
             const stopMessage = `Stopped: the agent kept repeating "${filePath}" without finishing. Still incomplete: ${issueText}. Use Continue to finish them.`
             event_('complete', stopMessage, {
               status: 'done',
@@ -2626,10 +3077,9 @@ export async function runAgent({
               provider: active.providerId,
             }
           }
-          stuckWarnings += 1
           writeStreak = 0
           writesWithoutNewFile = 0
-          modelResult = `${modelResult}\n\nStop writing ${filePath}. Finish only these incomplete files: ${issueText}. One create_file call each, then summarise and stop.`
+          modelResult = `${modelResult}\n\nStop rewriting ${filePath} the same way. Finish only this remaining work: ${issueText}. Fill each empty <!-- SLOT:name --> marker with edit_file { path, old_string, new_string } in one reply, then summarise and stop.`
           note(`Stuck loop detected on ${filePath} — telling the agent to move on…`)
         }
       }
@@ -2647,18 +3097,28 @@ export async function runAgent({
     } else if (batchCalls > 0) {
       consecutiveFailures = 0
       failureEscalation = 0
+      lastFailureTool = ''
+      lastFailureText = ''
     }
 
     if (consecutiveFailures >= 2) {
+      const guidance = toolFailureNotes(lastFailureTool, lastFailureText)
       if (failureEscalation === 0) {
         failureEscalation = 1
         forceNonStreamOnce = true
-        appendGuidance(messages, TOOL_FAILURE_NON_STREAM_NOTE)
+        appendGuidance(messages, guidance.nonStream)
         note('Two tool calls in a row failed — retrying this turn without streaming…')
         continue
       }
       if (failureEscalation === 1) {
         failureEscalation = 2
+        forceNonStreamOnce = true
+        appendGuidance(messages, guidance.corrective)
+        note('Still failing — sending the exact argument names for that tool and retrying…')
+        continue
+      }
+      if (failureEscalation === 2) {
+        failureEscalation = 3
         const previous = active
         if (advanceCandidate()) {
           event_('fallback', `Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, {
@@ -2667,18 +3127,33 @@ export async function runAgent({
             provider: active.providerId,
             tool: 'fallback',
           })
-          appendGuidance(messages, TOOL_FAILURE_ESCALATE_NOTE)
+          appendGuidance(messages, guidance.escalate)
           continue
         }
       }
-      if (failureEscalation === 2) {
-        failureEscalation = 3
-        appendGuidance(messages, TOOL_FAILURE_CORRECTIVE_NOTE)
+      if (failureEscalation === 3) {
+        failureEscalation = 4
+        const previous = active
+        if (advanceCandidate()) {
+          event_('fallback', `Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, {
+            status: 'done',
+            model,
+            provider: active.providerId,
+            tool: 'fallback',
+          })
+          appendGuidance(messages, guidance.escalate)
+          continue
+        }
+        appendGuidance(messages, guidance.final)
         note('One corrective message before giving up…')
         continue
       }
       const failureError = new Error(
-        `Stopped: the agent's tool calls failed ${consecutiveFailures} turns in a row and no files were written. Last error: ${lastFailureText || 'unknown'}`,
+        `Stopped: the agent's tool calls failed ${consecutiveFailures} turns in a row${
+          writtenThisRun.size > 0
+            ? ` (${writtenThisRun.size} file(s) were written earlier in this run)`
+            : ' and no files were written'
+        } after every automatic recovery attempt (non-streaming retry, corrective message, model fallback) was exhausted. Last error: ${lastFailureText || 'unknown'}`,
       )
       event_('error', failureError.message, { status: 'done', model, toolFailures: consecutiveFailures })
       persistSession('tool_failure')

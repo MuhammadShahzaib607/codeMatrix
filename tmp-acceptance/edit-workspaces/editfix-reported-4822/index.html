@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Northwind Studio — websites, brand systems and product design</title>
+  <meta name="description" content="Websites, brand systems and product design — Northwind Studio.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700;800&display=swap">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/theme.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="container site-header__inner">
+      <a class="brand" href="index.html">
+        <span class="brand__mark" aria-hidden="true">NS</span>
+        <span class="brand__name">Northwind Studio</span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu">
+        <span class="nav-toggle__bar"></span>
+        <span class="nav-toggle__bar"></span>
+        <span class="nav-toggle__bar"></span>
+      </button>
+      <nav class="site-nav" id="site-nav" aria-label="Main navigation">
+        <ul class="nav-list">
+          <li class="nav-item"><a class="nav-link is-active" href="index.html" aria-current="page">Home</a></li>
+        </ul>
+        <a class="btn btn--primary btn--sm nav-cta" href="index.html">Start a project</a>
+      </nav>
+    </div>
+  </header>
+  <!-- ONE DOCUMENT PER FILE: the header above and the footer below are written
+       exactly ONCE. Every section of this page belongs INSIDE the main element,
+       back to back, in the slot order below. Replace each slot marker with one
+       section block and nothing else. Never re-emit a closing main, footer or
+       document tag: each of them already exists exactly once, at the end. -->
+  <main id="main">
+      <section class="hero" id="hero">
+  <span class="hero__blob" aria-hidden="true"></span>
+  <div class="container hero__inner">
+    <div class="hero__content reveal">
+      <p class="hero__eyebrow">Shahzaib.art — contemporary painting studio, Lahore</p>
+      <h1 class="hero__title">Paintings that make a room <span class="hero__highlight">feel alive</span></h1>
+      <p class="hero__lead">Oil and acrylic work made by hand in Lahore, plus signed limited-edition prints. Collectors, designers and hotels commission the studio for one honest reason: the finished piece looks better on the wall than it did on the screen.</p>
+      <div class="hero__actions">
+        <a class="btn btn--primary btn--lg" href="#">Commission a painting</a>
+        <a class="btn btn--secondary btn--lg" href="#services">Browse what we make</a>
+      </div>
+      <div class="hero__proof">
+          <div class="stat"><span class="stat__value">120+</span><span class="stat__label">Works placed</span></div>
+          <div class="stat"><span class="stat__value">4.9/5</span><span class="stat__label">Collector rating</span></div>
+          <div class="stat"><span class="stat__value">11 yrs</span><span class="stat__label">In the studio</span></div>
+      </div>
+    </div>
+    <div class="hero__visual reveal" aria-hidden="true">
+      <div class="hero__card"><h3>Studio work in progress</h3><p class="card__text">A four-metre commission on the easel, three colour studies pinned beside it, and the daylight rig we use to check every tone before it ships.</p></div>
+    </div>
+  </div>
+</section>
+      <section class="section" id="services">
+  <div class="container">
+    <div class="section-header reveal">
+      <p class="section-header__eyebrow">What the studio makes</p>
+      <h2 class="section-header__title">Originals, editions and commissions</h2>
+      <p class="section-header__lead">Three ways to work with Shahzaib.art, each with a fixed process, a written timeline and a price agreed before the first brush touches the canvas.</p>
+    </div>
+    <div class="grid grid--3">
+        <article class="service-card reveal">
+          <span class="service-card__icon"><svg class="icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20s2-1 3-3 8-9 11-12"/><path d="M14 4h6v6"/></svg></span>
+          <h3 class="service-card__title">Original canvas paintings</h3>
+          <p class="service-card__text">Hand-painted oil and acrylic works on stretched linen, each one a single piece signed by Shahzaib. Studio works ship stretched, varnished and ready to hang, with a certificate of authenticity and a lifetime care sheet.</p>
+          <a class="link link--arrow service-card__link" href="#">Enquire about this</a>
+        </article>
+        <article class="service-card reveal">
+          <span class="service-card__icon"><svg class="icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 8h8v8H8z"/></svg></span>
+          <h3 class="service-card__title">Limited-edition prints</h3>
+          <p class="service-card__text">Museum-grade giclee editions of the most requested works, limited to sixty signed and numbered copies on 310gsm cotton rag. Every order includes a hand-numbered certificate and archival packaging built to survive the post.</p>
+          <a class="link link--arrow service-card__link" href="#">Enquire about this</a>
+        </article>
+        <article class="service-card reveal">
+          <span class="service-card__icon"><svg class="icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.7 6.3.9-4.5 4.4 1 6.2-5.5-3-5.5 3 1-6.2L3 9.6l6.3-.9Z"/></svg></span>
+          <h3 class="service-card__title">Bespoke commissions</h3>
+          <p class="service-card__text">A private commission starts with a colour and story conversation, moves through two studio sketches you approve, and finishes as a piece sized for the wall it was made for. Typical turnaround is six to eight weeks.</p>
+          <a class="link link--arrow service-card__link" href="#">Enquire about this</a>
+        </article>
+    </div>
+  </div>
+</section>
+      <section class="section section--alt" id="testimonials">
+  <div class="container">
+    <div class="section-header reveal">
+      <p class="section-header__eyebrow">Collectors</p>
+      <h2 class="section-header__title">What people say after the crate is open</h2>
+      <p class="section-header__lead">Three recent commissions, in the words of the people who now live with the work.</p>
+    </div>
+    <div class="grid grid--3">
+        <figure class="testimonial reveal">
+          <div class="rating" aria-label="5 out of 5"><svg class="icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.7 6.3.9-4.5 4.4 1 6.2-5.5-3-5.5 3 1-6.2L3 9.6l6.3-.9Z"/></svg></div>
+          <blockquote class="testimonial__quote">We commissioned a four-metre piece for the hotel lobby and the studio handled every stage, from the first sketch to the crate it arrived in. Guests photograph it constantly.</blockquote>
+          <figcaption class="testimonial__meta">
+            <span class="testimonial__avatar" aria-hidden="true">AR</span>
+            <span><span class="testimonial__name">Ayesha Rehman</span><span class="testimonial__role">Interior lead, Marlowe Hotels</span></span>
+          </figcaption>
+        </figure>
+        <figure class="testimonial reveal">
+          <div class="rating" aria-label="5 out of 5"><svg class="icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.7 6.3.9-4.5 4.4 1 6.2-5.5-3-5.5 3 1-6.2L3 9.6l6.3-.9Z"/></svg></div>
+          <blockquote class="testimonial__quote">The edition I bought was packed better than anything else I have ever had shipped, and the colours on the print match the original canvas exactly. It now hangs above our reception desk.</blockquote>
+          <figcaption class="testimonial__meta">
+            <span class="testimonial__avatar" aria-hidden="true">DO</span>
+            <span><span class="testimonial__name">Daniel Okoye</span><span class="testimonial__role">Founder, Okoye Architecture</span></span>
+          </figcaption>
+        </figure>
+        <figure class="testimonial reveal">
+          <div class="rating" aria-label="5 out of 5"><svg class="icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.7 6.3.9-4.5 4.4 1 6.2-5.5-3-5.5 3 1-6.2L3 9.6l6.3-.9Z"/></svg></div>
+          <blockquote class="testimonial__quote">Shahzaib painted a portrait of my parents from two old photographs. He asked careful questions, showed progress sketches, and delivered something our family will keep for generations.</blockquote>
+          <figcaption class="testimonial__meta">
+            <span class="testimonial__avatar" aria-hidden="true">HQ</span>
+            <span><span class="testimonial__name">Hina Qureshi</span><span class="testimonial__role">Private collector, Karachi</span></span>
+          </figcaption>
+        </figure>
+    </div>
+  </div>
+</section>
+      <section class="section" id="faq">
+  <div class="container container--narrow">
+    <div class="section-header reveal">
+      <p class="section-header__eyebrow">Questions</p>
+      <h2 class="section-header__title">The things collectors ask first</h2>
+      <p class="section-header__lead">Shipping, timelines, editions and studio visits — answered plainly before you spend anything.</p>
+    </div>
+    <div class="faq reveal">
+          <div class="faq-item">
+            <h3 class="faq-item__question"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-1">How do I know a painting will suit my room before it arrives?</button></h3>
+            <div class="faq-item__panel" id="faq-1"><p class="faq-item__answer">Every listing includes a short video in daylight, exact dimensions in centimetres and inches, and a free visual mockup. Send a photograph of the wall and you will get the piece composited onto it within one working day, before you commit to anything.</p></div>
+          </div>
+          <div class="faq-item">
+            <h3 class="faq-item__question"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-2">How long does a bespoke commission take?</button></h3>
+            <div class="faq-item__panel" id="faq-2"><p class="faq-item__answer">Most commissions take six to eight weeks from the approval of the first sketch. Larger architectural work is quoted on its own schedule, and every commission gets a written timeline with a studio photograph at each milestone so you always know where it stands.</p></div>
+          </div>
+          <div class="faq-item">
+            <h3 class="faq-item__question"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-3">What is included with a limited-edition print?</button></h3>
+            <div class="faq-item__panel" id="faq-3"><p class="faq-item__answer">Each edition is sixty signed and numbered copies printed on 310gsm cotton rag, supplied with a hand-numbered certificate of authenticity, a care card and archival packaging. Edition numbers are allocated in order of purchase and cannot be reissued once the run is closed.</p></div>
+          </div>
+          <div class="faq-item">
+            <h3 class="faq-item__question"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-4">Do you ship outside Pakistan and who handles customs?</button></h3>
+            <div class="faq-item__panel" id="faq-4"><p class="faq-item__answer">Yes. Paintings and prints ship worldwide from the Lahore studio, fully insured, with tracking from the moment they leave. Import duties are the buyer responsibility and the studio provides the commercial invoice and HS codes your customs broker will ask for.</p></div>
+          </div>
+          <div class="faq-item">
+            <h3 class="faq-item__question"><button class="faq-item__toggle" type="button" aria-expanded="false" aria-controls="faq-5">Can I visit the studio before buying?</button></h3>
+            <div class="faq-item__panel" id="faq-5"><p class="faq-item__answer">The Lahore studio opens to collectors on Thursdays and Saturdays between 11am and 6pm, by appointment. You can see works in progress, review framing options and take away printed colour studies of anything you are considering.</p></div>
+          </div>
+    </div>
+  </div>
+</section>
+      <section class="section section--tight" id="cta">
+  <div class="container">
+      <div class="cta-banner reveal">
+        <div class="cta-banner__inner">
+          <h2 class="cta-banner__title">Start with a conversation about the wall</h2>
+          <p class="cta-banner__text">Send the room, the size and the mood you are after and the studio replies within one working day with a sketch direction and a fixed quote.</p>
+          <div class="cta-banner__actions">
+            <a class="btn btn--secondary btn--lg" href="#">Commission a piece</a>
+            <a class="btn btn--ghost btn--lg" href="#">See services</a>
+          </div>
+        </div>
+      </div>
+  </div>
+</section>
+  </main>
+  <footer class="site-footer">
+    <div class="container site-footer__grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html">
+          <span class="brand__mark" aria-hidden="true">NS</span>
+          <span class="brand__name">Northwind Studio</span>
+        </a>
+        <p class="footer-blurb">Websites, brand systems and product design. We design and build websites that turn visitors into customers.</p>
+        <div class="footer-social">
+          <a class="social-link" href="https://www.x.com" aria-label="Northwind Studio on X"><svg class="social__icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 4l7 8-7 8h3l5.5-6.3L18 20h3l-7.3-8.4L20.5 4h-3l-5 5.8L7 4Z" fill="currentColor" stroke="none"/></svg></a>
+          <a class="social-link" href="https://www.linkedin.com" aria-label="Northwind Studio on Linkedin"><svg class="social__icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 9h4v11H4zM6 4.5A2 2 0 1 0 6 8.5 2 2 0 0 0 6 4.5ZM10 9h4v1.6a4 4 0 0 1 3.5-1.8c2.6 0 4.5 1.7 4.5 5V20h-4v-5c0-1.3-.6-2-1.8-2s-2.2.8-2.2 2.2V20h-4Z" fill="currentColor" stroke="none"/></svg></a>
+          <a class="social-link" href="https://www.github.com" aria-label="Northwind Studio on Github"><svg class="social__icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 3a9 9 0 0 0-2.8 17.5c.4.1.6-.2.6-.5v-1.9c-2.3.5-2.9-1-2.9-1-.4-1-1-1.3-1-1.3-.8-.5 0-.5 0-.5.9.1 1.4.9 1.4.9.8 1.3 2 1 2.5.7.1-.6.3-1 .6-1.2-2-.2-4-1-4-4.2 0-.9.3-1.7.9-2.3-.1-.2-.4-1.1.1-2.3 0 0 .7-.2 2.4.9a8 8 0 0 1 4.2 0c1.7-1.1 2.4-.9 2.4-.9.5 1.2.2 2.1.1 2.3.6.6.9 1.4.9 2.3 0 3.2-2 4-3.9 4.2.3.3.6.9.6 1.8v2.6c0 .3.2.6.6.5A9 9 0 0 0 12 3Z" fill="currentColor" stroke="none"/></svg></a>
+          <a class="social-link" href="https://www.instagram.com" aria-label="Northwind Studio on Instagram"><svg class="social__icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><circle cx="12" cy="12" r="3.4"/><circle cx="16.6" cy="7.4" r="1" fill="currentColor"/></svg></a>
+        </div>
+      </div>
+      <div class="footer-col">
+        <h2 class="footer-col__title">Explore</h2>
+        <ul class="footer-col__list">
+          <li><a class="footer-link" href="index.html">Home</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h2 class="footer-col__title">Services</h2>
+        <ul class="footer-col__list">
+          <li><a class="footer-link" href="index.html#services">Web design</a></li>
+          <li><a class="footer-link" href="index.html#services">Development</a></li>
+          <li><a class="footer-link" href="index.html#services">SEO and content</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h2 class="footer-col__title">Contact</h2>
+        <ul class="footer-contact">
+          <li>hello@northwindstudio.com</li>
+          <li>+44 20 7946 0123</li>
+          <li>14 Bridge Street, London</li>
+        </ul>
+      </div>
+    </div>
+    <div class="container site-footer__bottom">
+      <p class="footer-note">&copy; <span data-year>2026</span> Northwind Studio. All rights reserved.</p>
+      <p class="footer-note footer-legal"><a class="footer-link" href="index.html">Back to top of site</a></p>
+    </div>
+  </footer>
+  <button class="back-to-top" type="button" aria-label="Back to top">
+    <svg class="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+  </button>
+  <script src="js/main.js" defer></script>
+</body>
+</html>

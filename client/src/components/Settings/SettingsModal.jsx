@@ -35,6 +35,7 @@ import {
   setSettingsSection,
   setTheme,
   toggleStrictRule,
+  updateAgentSetting,
   updateEditorSetting,
   updateStrictRule,
   updateTerminalSetting,
@@ -963,6 +964,20 @@ export default function SettingsModal() {
                 ) : (
                   <p className="settings-section-desc">Not signed in.</p>
                 )}
+
+                <h3 className="settings-section-title settings-section-title-spaced">Agent</h3>
+                <Row
+                  label="Give the agent project history (AGENT.md)"
+                  hint="The agent always writes AGENT.md after a run. Turn this on to also send its contents back to the model as context on every run."
+                >
+                  <Toggle
+                    label="Give the agent project history (AGENT.md)"
+                    checked={agent.projectHistory === true}
+                    onChange={(value) =>
+                      dispatch(updateAgentSetting({ key: 'projectHistory', value }))
+                    }
+                  />
+                </Row>
 
                 {canDeleteProject && (
                   <>

@@ -1,0 +1,39 @@
+==============================================================================
+PLAN TYPE + KIT SELECTION + PROMPT DELIVERY (mock provider, real runAgent)
+==============================================================================
+
+[app] run finished
+  tools offered to the model include scaffold_app: true, scaffold_site: true
+  feed plan line: "TYPE: app — Planned 1 file(s): index.html"
+  plan event details: {"status":"done","model":"mistral-large-latest","provider":"mistral","tool":"plan","projectName":"pocket-calculator","projectType":"app","direction":"app — indigo-modern, one screen, no marketing chrome"}
+  scaffold tool result: "Scaffolded the app shell — 636 lines"
+  provider requests: #1 stream=true msgs=2 last=user:make me a calculator | #2 stream=true msgs=4 last=user:These planned files are not complete yet: index.html was not | #3 stream=true msgs=6 last=tool:Scaffolded the app shell: css/theme.css, css/app.css, js/app | #4 stream=true msgs=6 last=tool:Scaffolded the app shell: css/theme.css, css/app.css, js/app ... (20 total)
+  files on disk: css, index.html, js
+  index.html: nav=0 footer=0 header=1 hero=false faq=false pricing=false
+
+[site] run finished
+  tools offered to the model include scaffold_app: true, scaffold_site: true
+  feed plan line: "TYPE: site — Planned 1 file(s): index.html"
+  plan event details: {"status":"done","model":"mistral-large-latest","provider":"mistral","tool":"plan","projectName":"relay-deploy","projectType":"site","direction":"tech/SaaS — indigo-modern, dark modern product look"}
+  scaffold tool result: "Scaffolded 1 page(s) — 2062 lines"
+  provider requests: #1 stream=true msgs=2 last=user:make a SaaS landing page | #2 stream=true msgs=4 last=user:These planned files are not complete yet: index.html was not | #3 stream=true msgs=6 last=tool:Scaffolded 4 file(s) with palette indigo-modern (Sora + Inte | #4 stream=true msgs=6 last=tool:Scaffolded 4 file(s) with palette indigo-modern (Sora + Inte ... (20 total)
+  files on disk: css, index.html, js
+  index.html: nav=1 footer=1 header=1 hero=false faq=false pricing=false
+
+system prompt sent with the app run (25991 chars):
+  PRESENT  the app/site classification rule
+  PRESENT  the type field in the plan schema
+  PRESENT  the direction field in the plan schema
+  PRESENT  the app kit tool
+  PRESENT  the no-navbar/footer rule for apps
+  PRESENT  the navbar/footer link rule
+  PRESENT  the legal-links-belong-in-the-footer list
+  PRESENT  the domain -> mood guidance
+  PRESENT  the new gallery preset
+  PRESENT  the new kids preset
+  PRESENT  the new health preset
+  PRESENT  the header-offset rule
+  PRESENT  the measured header offset mechanism
+  PRESENT  the read-first update workflow
+  PRESENT  Roman Urdu / mixed-language handling
+  PRESENT  the Roman Urdu example carried into the plan

@@ -22,7 +22,7 @@ const CHROME_CANDIDATES = [
   '/snap/bin/chromium',
 ]
 
-const DEFAULT_UA_SERIF = /^(times new roman|times|serif|georgia)$/i
+const DEFAULT_UA_SERIF = /^["']?(times new roman|times|serif|georgia)["']?$/i
 
 let chromePathCache
 
@@ -72,8 +72,31 @@ const PROBE_SCRIPT = `<script>
       overflowX: document.documentElement.scrollWidth > window.innerWidth + 4,
       width: window.innerWidth,
       mobileNavWorks: null,
-      faqWorks: null
+      faqWorks: null,
+      headerCount: document.querySelectorAll('header').length,
+      footerCount: document.querySelectorAll('footer').length,
+      mainCount: document.querySelectorAll('main').length,
+      faqItemCount: document.querySelectorAll('.faq-item').length
     };
+    function firstBox(scope) {
+      if (!scope) return null;
+      var kids = scope.children;
+      for (var i = 0; i < kids.length; i += 1) {
+        var box = kids[i].getBoundingClientRect();
+        if (box.height > 0 && box.width > 0) return box;
+      }
+      var own = scope.getBoundingClientRect();
+      return own.height > 0 ? own : null;
+    }
+    var mainEl = document.querySelector('main');
+    var headBox = header ? header.getBoundingClientRect() : null;
+    var contentBox = firstBox(mainEl);
+    out.headerHeight = headBox ? Math.round(headBox.height) : 0;
+    out.headerBottom = headBox ? Math.round(headBox.bottom) : 0;
+    out.contentTop = contentBox ? Math.round(contentBox.top) : null;
+    out.headerOverlap = headBox && contentBox ? Math.round(headBox.bottom - contentBox.top) : 0;
+    out.bodyPaddingTop = px(getComputedStyle(document.body).paddingTop);
+    out.mainPaddingTop = mainEl ? px(getComputedStyle(mainEl).paddingTop) : 0;
     if (hero) { var hs = getComputedStyle(hero); out.heroPadding = px(hs.paddingTop) + px(hs.paddingBottom); }
     if (card) { var cs = getComputedStyle(card); out.cardPadding = px(cs.paddingTop) + px(cs.paddingLeft); }
     var toggle = document.querySelector('.nav-toggle');
@@ -83,11 +106,20 @@ const PROBE_SCRIPT = `<script>
       out.mobileNavWorks = nav.classList.contains('is-open') && toggle.getAttribute('aria-expanded') === 'true';
       toggle.click();
     }
-    var faqToggle = document.querySelector('.faq-item__toggle');
-    if (faqToggle) {
+    var faqToggles = document.querySelectorAll('.faq-item__toggle');
+    if (faqToggles.length > 0) {
+      var faqToggle = faqToggles[0];
       var faqItem = faqToggle.closest('.faq-item');
       faqToggle.click();
       out.faqWorks = faqItem.classList.contains('is-open') && faqToggle.getAttribute('aria-expanded') === 'true';
+      out.faqOpensOthersClosed = null;
+      if (faqToggles.length > 1) {
+        var second = faqToggles[1];
+        var secondItem = second.closest('.faq-item');
+        second.click();
+        out.faqOpensOthersClosed = !faqItem.classList.contains('is-open') && secondItem.classList.contains('is-open');
+        second.click();
+      }
       faqToggle.click();
     }
     document.documentElement.setAttribute('data-visual-report', JSON.stringify(out));
@@ -138,13 +170,45 @@ function evaluateReport(report, file, problems) {
     problems.push(`"${file}" could not be rendered in headless Chrome, so its styling could not be verified.`)
     return
   }
+  if (report.headerCount > 1) {
+    problems.push(
+      `"${file}" renders ${report.headerCount} <header> elements. Every page has exactly ONE header at the top of <body> — a single-page site with many sections still has one. The repeated copies come from re-emitting a page tail per section; delete them with edit_file.`,
+    )
+  }
+  if (report.footerCount > 1) {
+    problems.push(
+      `"${file}" renders ${report.footerCount} <footer> elements. Every page has exactly ONE footer at the bottom of <body>; every section belongs inside <main> between the single header and the single footer. Delete the repeated footers with edit_file.`,
+    )
+  }
+  if (report.mainCount > 1) {
+    problems.push(
+      `"${file}" renders ${report.mainCount} <main> elements but a document has exactly one. Fold the sections into the single <main> instead of closing and reopening it per section.`,
+    )
+  }
+  if (report.faqItemCount > 0 && report.faqWorks === false) {
+    problems.push(
+      `"${file}" has ${report.faqItemCount} FAQ item(s) but clicking .faq-item__toggle did not open one (no is-open class / aria-expanded="true"). Keep the kit's markup exactly as documented — .faq-item > h3.faq-item__question > button.faq-item__toggle[aria-expanded] and a .faq-item__panel sibling with a unique id — and never add your own click handler for it.`,
+    )
+  }
+  if (report.faqOpensOthersClosed === false) {
+    problems.push(
+      `"${file}": opening one FAQ item did not close the other, so two answers can be open at once. The kit's main.js closes siblings; check that the items share the same .faq parent.`,
+    )
+  }
   if (report.hasLink && /^rgba?\(0,\s*0,\s*238/.test(report.linkColor)) {
     problems.push(
       `"${file}" renders links with the browser default blue (${report.linkColor}) — the stylesheet did not apply. Check the <link> paths and that css/base.css is not empty.`,
     )
   }
   if (report.headerPosition && report.headerPosition !== 'sticky' && report.headerPosition !== 'fixed') {
-    problems.push(`"${file}" header is "${report.headerPosition}" but should be sticky or fixed for a modern site.`)
+    problems.push(
+      `"${file}" header is "${report.headerPosition}" but should be position: sticky (preferred — it reserves its own space, so it can never cover the page) or position: fixed with a matching offset.`,
+    )
+  }
+  if (report.headerOverlap > 2) {
+    problems.push(
+      `"${file}" hides content under the header at ${report.width}px wide: the header is ${report.headerHeight}px tall (bottom edge at ${report.headerBottom}px) but the first block inside <main> starts at ${report.contentTop}px — ${report.headerOverlap}px of it is covered. Fix it by making the header position: sticky (no offset maths needed), OR, if the header must stay fixed, offset the content by the REAL measured height: set --header-offset: ${report.headerHeight}px and add padding-top: var(--header-offset) to <body>, or add padding-top: ${report.headerHeight}px to <main>. Never use a guessed pixel value. Current body padding-top: ${report.bodyPaddingTop}px, main padding-top: ${report.mainPaddingTop}px.`,
+    )
   }
   if (report.heroPadding > 0 && report.heroPadding < 48) {
     problems.push(`"${file}" hero has only ${Math.round(report.heroPadding)}px of vertical padding — it needs at least 48px.`)
@@ -158,9 +222,18 @@ function evaluateReport(report, file, problems) {
   if (report.overflowX) {
     problems.push(`"${file}" has horizontal overflow at ${report.width}px wide.`)
   }
+  if (report.width === NARROW_WIDTH && report.mobileNavWorks === false) {
+    problems.push(
+      `"${file}": at ${NARROW_WIDTH}px the hamburger button did not open the nav (.site-nav never got is-open / aria-expanded stayed "false"). Keep the kit's nav-toggle markup and js/main.js wiring.`,
+    )
+  }
 }
 
-export async function visualSanityCheck({ projectId = null, root = null, files = null } = {}) {
+const NARROW_WIDTH = 390
+export const VISUAL_WIDTHS = [1440]
+export const VISUAL_NARROW_WIDTH = NARROW_WIDTH
+
+export async function visualSanityCheck({ projectId = null, root = null, files = null, narrow = true } = {}) {
   let workspaceRoot = root
   if (!workspaceRoot) {
     try {
@@ -190,6 +263,8 @@ export async function visualSanityCheck({ projectId = null, root = null, files =
   const checked = []
   const reports = []
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-visual-'))
+  const narrowFiles = new Set(narrow ? htmlFiles.slice(0, 2) : [])
+  const narrowProbes = new Map()
 
   for (const file of htmlFiles.slice(0, 4)) {
     let html
@@ -204,34 +279,75 @@ export async function visualSanityCheck({ projectId = null, root = null, files =
     ].map((value) => value.replace(/^\.?\//, ''))
     const assets = await readAssets(workspaceRoot, reachable)
 
-    const probeFile = path.join(tempRoot, `${file.replace(/[\\/]/g, '_')}.html`)
+    const slug = file.replace(/[\\/]/g, '_')
+    const probeFile = path.join(tempRoot, `${slug}.html`)
     await fs.writeFile(probeFile, inlineStyles(html, assets), 'utf8')
-    const { stdout } = await runChrome(chrome, [
-      '--headless=new',
-      '--disable-gpu',
-      '--no-sandbox',
-      '--hide-scrollbars',
-      '--window-size=1440,1200',
-      '--virtual-time-budget=2500',
-      '--allow-file-access-from-files',
-      '--dump-dom',
-      pathToFileURL(probeFile).href,
-    ], 25000)
-
-    const match = /data-visual-report="([^"]+)"/.exec(stdout)
-    let report = null
-    if (match) {
-      try {
-        report = JSON.parse(match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'))
-      } catch {
-        report = null
-      }
+    if (narrowFiles.has(file)) {
+      const wrapper = path.join(tempRoot, `${slug}.narrow.html`)
+      await fs.writeFile(
+        wrapper,
+        `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>narrow probe</title>
+<style>html,body{margin:0;padding:0;background:#fff}iframe{width:${NARROW_WIDTH}px;height:900px;border:0;display:block;margin:0 auto}</style>
+</head>
+<body>
+<iframe id="probe" src="${slug}.html"></iframe>
+<script>
+(function () {
+  var frame = document.getElementById('probe')
+  function copy() {
+    try {
+      var inner = frame.contentDocument && frame.contentDocument.documentElement.getAttribute('data-visual-report')
+      if (inner) document.documentElement.setAttribute('data-visual-report', inner)
+    } catch (error) {
+      document.documentElement.setAttribute('data-visual-report', JSON.stringify({ width: ${NARROW_WIDTH} }))
     }
-    const before = problems.length
-    evaluateReport(report, file, problems)
-    if (problems.length > before) problemFiles.add(file)
-    checked.push(file)
-    if (report) reports.push({ file, ...report, mobileNavWorks: report.mobileNavWorks, faqWorks: report.faqWorks })
+  }
+  frame.addEventListener('load', function () { copy(); window.setTimeout(copy, 120) })
+})()
+</script>
+</body>
+</html>
+`,
+        'utf8',
+      )
+      narrowProbes.set(file, wrapper)
+    }
+
+    const widths = narrowFiles.has(file) ? [1440, NARROW_WIDTH] : [1440]
+    for (const width of widths) {
+      const { stdout } = await runChrome(
+        chrome,
+        [
+          '--headless=new',
+          '--disable-gpu',
+          '--no-sandbox',
+          '--hide-scrollbars',
+          `--window-size=${width},${width === NARROW_WIDTH ? 900 : 1200}`,
+          '--virtual-time-budget=2500',
+          '--allow-file-access-from-files',
+          '--dump-dom',
+          pathToFileURL(width === NARROW_WIDTH ? narrowProbes.get(file) : probeFile).href,
+        ],
+        width === NARROW_WIDTH ? 30000 : 25000,
+      )
+
+      const match = /data-visual-report="([^"]+)"/.exec(stdout)
+      let report = null
+      if (match) {
+        try {
+          report = JSON.parse(match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'))
+        } catch {
+          report = null
+        }
+      }
+      const before = problems.length
+      evaluateReport(report, file, problems)
+      if (problems.length > before) problemFiles.add(file)
+      if (!checked.includes(file)) checked.push(file)
+      if (report) reports.push({ file, width, ...report })
+    }
   }
 
   await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {})

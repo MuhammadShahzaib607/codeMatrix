@@ -23,6 +23,7 @@ const initialState = {
   // Clicking one of those files is what activates the project, so there is no
   // separate "select project" step anywhere.
   trees: {},
+  treeStates: {},
 }
 
 export const fetchRecentProjects = createAsyncThunk(
@@ -120,16 +121,21 @@ const projectsSlice = createSlice({
     removeRecentProjectItem(state, action) {
       state.items = state.items.filter((item) => item.id !== action.payload)
       delete state.trees[action.payload]
+      delete state.treeStates[action.payload]
     },
     /** Drops every cached sibling tree (sign-out, project deleted). */
     clearProjectTrees(state, action = {}) {
       const keep = action.payload?.keep ?? null
       if (!keep) {
         state.trees = {}
+        state.treeStates = {}
         return
       }
       for (const projectId of Object.keys(state.trees)) {
-        if (projectId !== keep) delete state.trees[projectId]
+        if (projectId !== keep) {
+          delete state.trees[projectId]
+          delete state.treeStates[projectId]
+        }
       }
     },
     markRecentMissing(state, action) {
@@ -160,9 +166,23 @@ const projectsSlice = createSlice({
         state.status = 'error'
         state.error = action.payload ?? 'Could not load your projects.'
       })
+      .addCase(fetchProjectTree.pending, (state, action) => {
+        const projectId = action.meta.arg?.projectId
+        if (projectId) state.treeStates[projectId] = { status: 'loading' }
+      })
       .addCase(fetchProjectTree.fulfilled, (state, action) => {
         const { projectId, tree } = action.payload ?? {}
-        if (projectId && tree) state.trees[projectId] = tree
+        if (!projectId) return
+        if (tree) state.trees[projectId] = tree
+        state.treeStates[projectId] = { status: 'ready' }
+      })
+      .addCase(fetchProjectTree.rejected, (state, action) => {
+        const projectId = action.meta.arg?.projectId
+        if (!projectId) return
+        state.treeStates[projectId] = {
+          status: 'error',
+          error: action.payload ?? 'Could not load this project.',
+        }
       })
   },
 })

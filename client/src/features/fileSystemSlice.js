@@ -11,6 +11,8 @@ const initialState = {
   tree: [],
   activeFileId: null,
   openTabs: [],
+  fileProjects: {},
+  focusedProjectId: null,
   // The Explorer's top level: every entry of the user's container folder, with
   // the project each top-level folder belongs to. The active project is one of
   // these entries (rendered as the project tree); the rest are siblings.
@@ -30,6 +32,9 @@ function pruneTabs(state) {
   state.openTabs = state.openTabs.filter((fileId) => valid.has(fileId))
   if (state.activeFileId && !valid.has(state.activeFileId)) {
     state.activeFileId = state.openTabs[state.openTabs.length - 1] ?? null
+  }
+  for (const fileId of Object.keys(state.fileProjects)) {
+    if (!state.openTabs.includes(fileId)) delete state.fileProjects[fileId]
   }
 }
 
@@ -86,6 +91,8 @@ const fileSystemSlice = createSlice({
       state.tree = tree
       state.activeFileId = null
       state.openTabs = []
+      state.fileProjects = {}
+      state.focusedProjectId = projectId
     },
 
     /**
@@ -99,6 +106,8 @@ const fileSystemSlice = createSlice({
       state.workspace = { name, source: 'scratch', projectId }
       state.workspaceMissing = false
       state.tree = tree
+      state.fileProjects = {}
+      state.focusedProjectId = projectId
     },
 
     refreshTree(state, action) {
@@ -190,6 +199,8 @@ const fileSystemSlice = createSlice({
       state.tree = []
       state.activeFileId = null
       state.openTabs = []
+      state.fileProjects = {}
+      state.focusedProjectId = null
     },
 
     remapPaths(state, action) {
@@ -197,6 +208,15 @@ const fileSystemSlice = createSlice({
       state.tree = remapTreeIds(state.tree, oldPath, newPath)
       state.openTabs = state.openTabs.map((id) => remapPath(oldPath, newPath, id))
       state.activeFileId = remapPath(oldPath, newPath, state.activeFileId)
+      const remappedProjects = {}
+      for (const [fileId, projectId] of Object.entries(state.fileProjects)) {
+        remappedProjects[remapPath(oldPath, newPath, fileId)] = projectId
+      }
+      state.fileProjects = remappedProjects
+    },
+
+    setFocusedContainerProject(state, action) {
+      state.focusedProjectId = action.payload ?? null
     },
 
     setActiveFile(state, action) {
@@ -204,8 +224,14 @@ const fileSystemSlice = createSlice({
     },
 
     addTab(state, action) {
-      const fileId = action.payload
+      const payload = action.payload
+      const fileId = typeof payload === 'object' && payload ? payload.fileId : payload
+      if (!fileId) return
+      const projectId =
+        (typeof payload === 'object' && payload ? payload.projectId : null) ??
+        state.workspace.projectId
       if (!state.openTabs.includes(fileId)) state.openTabs.push(fileId)
+      if (projectId) state.fileProjects[fileId] = projectId
       state.activeFileId = fileId
     },
 
@@ -214,6 +240,7 @@ const fileSystemSlice = createSlice({
       const index = state.openTabs.indexOf(fileId)
       if (index === -1) return
       state.openTabs.splice(index, 1)
+      delete state.fileProjects[fileId]
       if (state.activeFileId === fileId) {
         state.activeFileId = state.openTabs[index] ?? state.openTabs[index - 1] ?? null
       }
@@ -249,6 +276,7 @@ export const {
   clearWorkspaceMissing,
   clearWorkspace,
   remapPaths,
+  setFocusedContainerProject,
   setActiveFile,
   addTab,
   closeTab,
@@ -256,5 +284,18 @@ export const {
   setFolderOpen,
   collapseAll,
 } = fileSystemSlice.actions
+
+export function selectContextProjectId(state) {
+  const { activeFileId, fileProjects, focusedProjectId, workspace } = state.fileSystem
+  if (activeFileId && fileProjects[activeFileId]) return fileProjects[activeFileId]
+  if (focusedProjectId) return focusedProjectId
+  return workspace.projectId ?? null
+}
+
+export function selectActiveFileProjectId(state) {
+  const { activeFileId, fileProjects, workspace } = state.fileSystem
+  if (activeFileId && fileProjects[activeFileId]) return fileProjects[activeFileId]
+  return workspace.projectId ?? null
+}
 
 export default fileSystemSlice.reducer

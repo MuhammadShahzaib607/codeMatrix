@@ -6,6 +6,8 @@ import {
   touchProject,
   upsertProject,
 } from '../models/project.repository.js'
+import { fallbackProjectName } from '../services/agentFrameworks.js'
+import { slugifyProjectName } from '../services/agentService.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
 import { suppressWatcher } from '../utils/fileWatcher.js'
@@ -180,10 +182,10 @@ export const getTree = asyncHandler(async (req, res) => {
 export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
   const ownerId = req.user.id
 
-  // The folder is ALWAYS born anonymous and is named later, by the agent flow,
-  // from a dedicated AI naming call (never from words taken out of the prompt).
-  const isAnonymous = true
-  const displayName = 'Scratch'
+  const task = typeof req.body?.task === 'string' ? req.body.task.trim() : ''
+  const taskName = task ? slugifyProjectName(task) || fallbackProjectName(null) : null
+  const isAnonymous = !taskName
+  const displayName = taskName ?? 'Scratch'
 
   let projectId = null
   let created = false
@@ -210,12 +212,12 @@ export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
 
   // An anonymous scratch being (re)used for a TASK gets its real name now — a
   // folder rename, not a copy, so contents stay exactly where they are.
-  if (!isAnonymous) {
-    await renameWorkspaceFolder(projectId, { displayName })
+  if (taskName) {
+    await renameWorkspaceFolder(projectId, { displayName: taskName })
   }
 
   const record = getWorkspaceRecord(projectId)
-  const name = isAnonymous ? 'Scratch' : record?.folderName ?? displayName
+  const name = record?.folderName ?? displayName
 
   // One upsert: keeps lastAccessedAt/Recent Projects fresh, and flags a
   // task-named workspace as a REAL project (isScratch: false) so the next

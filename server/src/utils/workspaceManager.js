@@ -188,12 +188,15 @@ export async function listContainerEntries(ownerId, { limit = 200 } = {}) {
     if (dirent.isDirectory()) {
       let projectId = findProjectIdForFolder(container, name)
       if (!projectId) {
+        if (isScratchFolderName(name)) continue
         projectId = crypto.randomUUID()
         try {
           setWorkspaceRecord(projectId, { container, folderName: name })
         } catch {
           projectId = null
         }
+      } else if (isScratchProjectId(projectId) && isScratchFolderName(name)) {
+        continue
       }
       if (projectId) claimed.add(projectId)
       entries.push({ name, type: 'folder', projectId })

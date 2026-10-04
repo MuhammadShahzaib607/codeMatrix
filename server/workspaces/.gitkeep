@@ -1,5 +1,0 @@
-# User project folders are created here at runtime:
-#   server/workspaces/<projectId>/
-#
-# This directory is EPHEMERAL on Replit's free Autoscale tier — it is wiped
-# whenever the server restarts or wakes from sleep. See summary.txt.

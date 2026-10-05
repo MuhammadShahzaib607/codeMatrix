@@ -24,7 +24,11 @@ import RecentProjects from '../Projects/RecentProjects'
 import Tooltip from '../Common/Tooltip'
 import { CONTAINER_ID, ROOT_ID } from '../../services/fileSystemAccess'
 import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
-import { projectIdForPath, projectNameForPath } from '../../utils/containerPaths'
+import {
+  previewTargetForPath,
+  projectIdForPath,
+  projectNameForPath,
+} from '../../utils/containerPaths'
 import { resolveCreateTargetId } from '../../utils/explorerTarget'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { openPreviewTab } from '../../utils/preview'
@@ -199,15 +203,14 @@ export default function Sidebar() {
 
   const handlePreview = useCallback(
     (node) => {
-      const projectId = projectIdForPath(node.id, tree) ?? workspace.projectId
-      if (!projectId) return
-      const innerPath = node.id.split('/').slice(1).join('/')
+      const target = previewTargetForPath(node.id, tree)
+      if (!target) return
       guard(
-        () => openPreviewTab(projectId, innerPath),
+        () => openPreviewTab(target.projectId, target.innerPath),
         'Please sign in to open a live preview',
       )
     },
-    [guard, tree, workspace.projectId],
+    [guard, tree],
   )
 
   const handleCopyPath = useCallback(

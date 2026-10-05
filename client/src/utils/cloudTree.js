@@ -12,6 +12,10 @@ export function toReduxTree(serverNode, previousTree = null) {
     isOpen: serverNode.path === '' ? true : (previous?.isOpen ?? false),
   }
 
+  if (serverNode.type === 'folder' && serverNode.projectId) {
+    node.projectId = serverNode.projectId
+  }
+
   if (serverNode.type === 'folder') {
     node.children = (serverNode.children ?? []).map((child) => toReduxTree(child, previousTree))
   }
@@ -31,6 +35,7 @@ function areSameNode(a, b) {
   if (a.name !== b.name || a.type !== b.type || a.path !== b.path || a.isOpen !== b.isOpen) {
     return false
   }
+  if (a.projectId !== b.projectId) return false
   const aChildren = a.children ?? []
   const bChildren = b.children ?? []
   if (aChildren.length !== bChildren.length) return false

@@ -7226,6 +7226,9 @@ headless-Chrome pass.
 OPEN ITEMS
   - Run the multi-folder Explorer through a real signed-in browser session
     (socket updates, optimistic rows, terminal cwd, preview) to close the loop.
+    The preview PATH RESOLUTION itself is now FIXED and route/socket-verified —
+    see the "Live Preview Path Resolution After the Unified Container" entry
+    below.
   - Restart the dev server after removing client/.env.local so Vite drops the
     stale override; the already-running :5173 instance serves
     VITE_API_BASE_URL=http://localhost:4000 and is already correct.
@@ -7238,3 +7241,111 @@ STATUS SUMMARY
     narrow width).
   - Unified multi-folder Explorer: server API + socket VERIFIED; browser E2E
     outstanding.
+  - Live preview after the container change: path resolution FIXED and verified
+    (7/7 unit, 12 live-route checks, 1 live socket reload); the browser
+    click-through is still outstanding.
+================================================================================
+AI Code Editor — Live Preview Path Resolution After the Unified Container
+        (2026-10-05)
+================================================================================
+
+STATUS: complete. Client-only fix, verified by a pure-module test (7/7), a live
+        preview-route run against the real Express app (12 checks) and a live
+        socket reload run (1/1). oxlint 0/0 and vite build pass. The full
+        signed-in browser click-through was not run (see below).
+
+--------------------------------------------------------------------------------
+ROOT CAUSE
+--------------------------------------------------------------------------------
+The unified container made every tree node's id/path CONTAINER-relative
+("todo-app/index.html") while the preview route serves ONE project at
+/preview/:projectId/<project-relative-path>. The resolver for that mapping
+already existed (utils/containerPaths.projectIdForPath), and the Sidebar preview
+handler already stripped the top segment. But GET /api/workspace/container/tree
+tags each top-level project folder with `projectId`, and toReduxTree did NOT
+copy that field, so projectIdForPath returned null for every path. Preview then
+fell back to the FOCUSED project's id while keeping the full container path:
+
+    /preview/<focusedId>/todo-app/index.html
+
+The server resolved that against the focused project's folder and answered
+"\"todo-app/index.html\" was not found in this workspace." (FILE_MISSING). The
+same null projectId also silently broke the focus-follow used by the terminal,
+export and the agent, plus the two searches' project scoping.
+
+--------------------------------------------------------------------------------
+FIX (client only; the server preview route was already correct)
+--------------------------------------------------------------------------------
+  client/src/utils/cloudTree.js   toReduxTree now carries a folder node's
+     projectId, and areSameNode compares it so structural sharing cannot keep a
+     stale untagged node.
+  client/src/utils/containerPaths.js   NEW previewTargetForPath(path, nodes)
+     returns { projectId, innerPath } — the top segment's project id plus the
+     path INSIDE that project ('' for the folder itself, which serves its
+     index.html); null when the path belongs to no project.
+  client/src/components/Sidebar/Sidebar.jsx   "Open with Live Server" uses
+     previewTargetForPath (no more focused-project fallback).
+  client/src/components/Topbar/LivePreviewButton.jsx   resolves each HTML file's
+     own project id + inner path; the picker lists only resolvable pages, and the
+     "focused project root index.html" step is now project-relative.
+
+The preview URL format is UNCHANGED (/preview/:projectId/<project-relative-path>
+?token=): only the values put into it are corrected. Relative assets still
+resolve under /preview/<projectId>/ and protectPreview still sets the
+path-scoped cm_preview_<projectId> cookie; the injected live-reload script still
+embeds the project id we now pass.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  client/src/utils/cloudTree.js
+  client/src/utils/containerPaths.js
+  client/src/components/Sidebar/Sidebar.jsx
+  client/src/components/Topbar/LivePreviewButton.jsx
+  summary.txt   this entry + the STATUS SUMMARY/OPEN ITEMS update in the
+                unified-container entry above.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output)
+--------------------------------------------------------------------------------
+  - Pure-module test (real cloudTree + containerPaths, deleted after): 7/7 —
+    projectId preserved on project folders; container paths resolve to the right
+    project id; previewTargetForPath strips the top segment (nested
+    frontend/pages/about.html -> pages/about.html); a folder maps to innerPath
+    ''; a path outside any project returns null; siblings resolve to different
+    project ids.
+  - Live preview route (node server.js on a spare port, isolated
+    WORKSPACES_ROOT, MONGODB_URI empty, a container with sibling frontend/ and
+    backend/ projects):
+      * GET /preview/pid-frontend/index.html -> 200 text/html, injected reload
+        script with PROJECT_ID="pid-frontend", Set-Cookie
+        cm_preview_pid-frontend; Path=/preview/pid-frontend; HttpOnly
+      * css/style.css and js/main.js with the COOKIE ONLY -> 200 text/css and
+        text/javascript
+      * nested pages/about.html -> 200 ; /preview/pid-frontend/ -> 200 index.html
+      * sibling /preview/pid-backend/index.html -> 200
+      * missing file -> 404 FILE_MISSING ; ".." traversal -> 400 INVALID_PATH ;
+        no token -> 401 ; garbage token -> 401 ; another project's cookie -> 401
+      * the OLD URL shape /preview/pid-backend/frontend/index.html -> 404
+        "\"frontend/index.html\" was not found in this workspace." (the reported
+        bug, reproduced)
+  - Live reload (socket.io-client): after preview:watch {projectId:pid-frontend}
+    an on-disk edit emitted preview:reload {projectId:pid-frontend}.
+  - oxlint: 0 warnings, 0 errors (80 files). vite build: OK (2030 modules).
+  - All temporary test files and the isolated workspace root were removed.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED
+--------------------------------------------------------------------------------
+  - A full signed-in browser session (MongoDB + Vite + a real click on Preview):
+    the unit, route and socket layers were verified with a real server, but the
+    click-through in the running UI was not executed here.
+  - Ownership enforcement: the test server ran without MongoDB, so
+    authorizeProject skipped its check. That middleware is unchanged from the
+    phase that verified it 15/15.
+  - Root-absolute asset URLs (/css/style.css) still do NOT load from a previewed
+    page because the preview is mounted only at /preview/<projectId>/; this is
+    the pre-existing connection-check rule ("never a leading slash") and was not
+    changed.
+  - Live reload was verified at the socket-event level, not by watching a real
+    browser tab reload.

@@ -38,3 +38,11 @@ export function projectNameForPath(path, nodes = []) {
   }
   return null
 }
+
+export function previewTargetForPath(path, nodes = []) {
+  const projectId = projectIdForPath(path, nodes)
+  if (!projectId) return null
+  const value = String(path ?? '')
+  const top = topSegmentOf(value)
+  return { projectId, innerPath: value.slice(top.length).replace(/^\/+/, '') }
+}

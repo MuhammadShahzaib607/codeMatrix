@@ -21,6 +21,7 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
+body,
 body.app {
   margin: 0;
   min-height: 100vh;

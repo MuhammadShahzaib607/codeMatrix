@@ -1,5 +1,13 @@
+import path from 'node:path'
 import { DEFAULT_THEME_ID, getThemePreset, fontsHref } from './themes.js'
 import { SECTION_TYPES } from './snippets.js'
+
+export function relativeHref(fromFile, target) {
+  const fromDir = path.posix.dirname(String(fromFile ?? '').replace(/\\/g, '/'))
+  const to = String(target ?? '').replace(/\\/g, '/')
+  const relative = path.posix.relative(fromDir === '.' ? '' : fromDir, to)
+  return relative || path.posix.basename(to)
+}
 
 export const LEGAL_PAGE = /\b(privacy|terms|terms-and-conditions|terms-conditions|cookie|cookies|legal|sitemap|disclaimer|impressum)\b/i
 export const LEGAL_LINK = /\b(privacy|terms|cookie|cookies|legal|sitemap|disclaimer|impressum)\b/i
@@ -64,18 +72,19 @@ export function normalizeScaffoldInput(input) {
 }
 
 export function buildPageShell({ brand, tagline, theme, pages, page, description }) {
+  const href = (target) => relativeHref(page.file, target)
   const isLegalPage = (entry) => LEGAL_PAGE.test(entry.file) || LEGAL_PAGE.test(entry.navLabel)
   const primaryPages = pages.filter((entry) => !isLegalPage(entry))
   const legalPages = pages.filter(isLegalPage)
   const navPages = primaryPages.length > 0 ? primaryPages : pages
   const legalLinks = legalPages
-    .map((entry) => `<a class="footer-link" href="${entry.file}">${entry.navLabel}</a>`)
+    .map((entry) => `<a class="footer-link" href="${href(entry.file)}">${entry.navLabel}</a>`)
     .join('\n        ')
 
   const navLinks = navPages
     .map((entry) => {
       const isCurrent = entry.file === page.file
-      return `          <li class="nav-item"><a class="nav-link${isCurrent ? ' is-active' : ''}" href="${entry.file}"${isCurrent ? ' aria-current="page"' : ''}>${entry.navLabel}</a></li>`
+      return `          <li class="nav-item"><a class="nav-link${isCurrent ? ' is-active' : ''}" href="${href(entry.file)}"${isCurrent ? ' aria-current="page"' : ''}>${entry.navLabel}</a></li>`
     })
     .join('\n')
 
@@ -94,14 +103,14 @@ export function buildPageShell({ brand, tagline, theme, pages, page, description
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="${fontsHref(theme.fonts)}">
-  <link rel="stylesheet" href="css/base.css">
-  <link rel="stylesheet" href="css/theme.css">
+  <link rel="stylesheet" href="${href('css/base.css')}">
+  <link rel="stylesheet" href="${href('css/theme.css')}">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="site-header">
     <div class="container site-header__inner">
-      <a class="brand" href="${pages[0]?.file ?? 'index.html'}">
+      <a class="brand" href="${href(pages[0]?.file ?? 'index.html')}">
         <span class="brand__mark" aria-hidden="true">${initialMark(brand)}</span>
         <span class="brand__name">${brand}</span>
       </a>
@@ -114,7 +123,7 @@ export function buildPageShell({ brand, tagline, theme, pages, page, description
         <ul class="nav-list">
 ${navLinks}
         </ul>
-        <a class="btn btn--primary btn--sm nav-cta" href="${ctaHref}">Start a project</a>
+        <a class="btn btn--primary btn--sm nav-cta" href="${href(ctaHref)}">Start a project</a>
       </nav>
     </div>
   </header>
@@ -129,7 +138,7 @@ ${slots}
   <footer class="site-footer">
     <div class="container site-footer__grid">
       <div class="footer-brand">
-        <a class="brand" href="${pages[0]?.file ?? 'index.html'}">
+        <a class="brand" href="${href(pages[0]?.file ?? 'index.html')}">
           <span class="brand__mark" aria-hidden="true">${initialMark(brand)}</span>
           <span class="brand__name">${brand}</span>
         </a>
@@ -141,15 +150,15 @@ ${slots}
       <div class="footer-col">
         <h2 class="footer-col__title">Explore</h2>
         <ul class="footer-col__list">
-${navPages.map((entry) => `          <li><a class="footer-link" href="${entry.file}">${entry.navLabel}</a></li>`).join('\n')}
+${navPages.map((entry) => `          <li><a class="footer-link" href="${href(entry.file)}">${entry.navLabel}</a></li>`).join('\n')}
         </ul>
       </div>
       <div class="footer-col">
         <h2 class="footer-col__title">Services</h2>
         <ul class="footer-col__list">
-          <li><a class="footer-link" href="${pages[0]?.file ?? 'index.html'}#services">Web design</a></li>
-          <li><a class="footer-link" href="${pages[0]?.file ?? 'index.html'}#services">Development</a></li>
-          <li><a class="footer-link" href="${pages[0]?.file ?? 'index.html'}#services">SEO and content</a></li>
+          <li><a class="footer-link" href="${href(pages[0]?.file ?? 'index.html')}#services">Web design</a></li>
+          <li><a class="footer-link" href="${href(pages[0]?.file ?? 'index.html')}#services">Development</a></li>
+          <li><a class="footer-link" href="${href(pages[0]?.file ?? 'index.html')}#services">SEO and content</a></li>
         </ul>
       </div>
       <div class="footer-col">
@@ -163,13 +172,13 @@ ${navPages.map((entry) => `          <li><a class="footer-link" href="${entry.fi
     </div>
     <div class="container site-footer__bottom">
       <p class="footer-note">&copy; <span data-year>2026</span> ${brand}. All rights reserved.</p>
-      <p class="footer-note footer-legal">${legalLinks.length > 0 ? `\n        ${legalLinks}\n        ` : ''}<a class="footer-link" href="${pages[0]?.file ?? 'index.html'}">Back to top of site</a></p>
+      <p class="footer-note footer-legal">${legalLinks.length > 0 ? `\n        ${legalLinks}\n        ` : ''}<a class="footer-link" href="${href(pages[0]?.file ?? 'index.html')}">Back to top of site</a></p>
     </div>
   </footer>
   <button class="back-to-top" type="button" aria-label="Back to top">
     <svg class="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
   </button>
-  <script src="js/main.js" defer></script>
+  <script src="${href('js/main.js')}" defer></script>
 </body>
 </html>
 `

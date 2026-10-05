@@ -188,8 +188,12 @@ function normalizeNavHref(pageFile, href) {
     return fragment || ''
   }
   if (REMOTE.test(target) || IGNORED_SCHEMES.test(value)) return ''
-  target = target.replace(/^\.\//, '')
-  return `${target}${fragment}`
+  // Resolve depth-aware links ("../index.html" from a subfolder page) to the
+  // project-relative path so a nav/footer is compared by TARGET, not by how it
+  // is spelled from each page's folder.
+  const resolved = posixJoin(pageFile, target)
+  if (!resolved) return ''
+  return `${resolved}${fragment}`
 }
 
 function navItemsOf(html) {
@@ -283,7 +287,10 @@ export async function connectionCheck({
 
   let requested = null
   if (Array.isArray(files) && files.length > 0) requested = files.map(cleanPath).filter(Boolean)
-  let htmlFiles = requested ? requested.filter((file) => HTML_EXT.test(file)) : all.filter((file) => HTML_EXT.test(file))
+  const allHtml = all.filter((file) => HTML_EXT.test(file))
+  // Always include every existing page, not just the planned ones: a page the
+  // agent wrote outside its plan must not slip past the checks.
+  let htmlFiles = requested ? [...new Set([...requested.filter((file) => HTML_EXT.test(file)), ...allHtml])] : allHtml
   htmlFiles = [...new Set(htmlFiles)].slice(0, MAX_HTML_FILES)
 
   const cache = new Map()
@@ -332,6 +339,43 @@ export async function connectionCheck({
     if (html === null) continue
     checked.push(file)
 
+    if (!/<html\b[^>]*\blang\s*=/i.test(html)) {
+      problems.push(`"${file}" has no lang attribute on <html> — add lang="en".`)
+      problemFiles.add(file)
+    }
+    if (!/<meta\b[^>]*\bcharset\s*=/i.test(html)) {
+      problems.push(`"${file}" has no <meta charset="utf-8"> in <head>.`)
+      problemFiles.add(file)
+    }
+    if (!/<meta\b[^>]*\bname\s*=\s*["']viewport["']/i.test(html)) {
+      problems.push(`"${file}" has no viewport meta tag — add <meta name="viewport" content="width=device-width, initial-scale=1">.`)
+      problemFiles.add(file)
+    }
+    if (!/<title\b[^>]*>\s*\S[\s\S]*?<\/title>/i.test(html)) {
+      problems.push(`"${file}" has no non-empty <title> in <head>.`)
+      problemFiles.add(file)
+    }
+
+    if (isAppProject) {
+      if (/<footer\b/i.test(html)) {
+        problems.push(
+          `"${file}": this is a utility APP, so it must not have a <footer>. A tool is a single screen — delete the marketing footer (brand blurb, quick links, Privacy/Terms links) with edit_file.`,
+        )
+        problemFiles.add(file)
+      }
+      if (/(?:\bclass\s*=\s*["'][^"']*\bhero\b|\bid\s*=\s*["'](?:hero|page-hero)["'])/i.test(html)) {
+        problems.push(
+          `"${file}": this is a utility APP — a hero or marketing section is not allowed. Keep only the functional UI.`,
+        )
+        problemFiles.add(file)
+      }
+      const headerBlock = /<header\b[\s\S]*?<\/header>/i.exec(html)?.[0] ?? ''
+      if (/<nav\b/i.test(headerBlock)) {
+        problems.push(`"${file}": this is a utility APP — the app bar must not contain a <nav>. Delete the navbar links.`)
+        problemFiles.add(file)
+      }
+    }
+
     const counts = tagCounts(html)
     for (const tag of ['header', 'footer']) {
       if (counts[tag].open > 1) {
@@ -377,12 +421,6 @@ export async function connectionCheck({
         continue
       }
 
-      if (bare.startsWith('..')) {
-        problems.push(`"${file}" line ${ref.line}: "${value}" points outside the project.`)
-        problemFiles.add(file)
-        continue
-      }
-
       if (!LOCAL_EXT.test(bare)) continue
 
       const target = posixJoin(file, bare)
@@ -424,6 +462,19 @@ export async function connectionCheck({
         `"${file}" does not load any script, but this project has JS files (${jsAll.slice(0, 3).join(', ')}). Add <script src="..."></script> before </body>.`,
       )
       problemFiles.add(file)
+    }
+  }
+
+  if (isAppProject) {
+    const legalPages = all.filter((file) => SECONDARY_PAGE.test(file))
+    if (legalPages.length > 0) {
+      details.legalPages = legalPages
+      for (const file of legalPages) problemFiles.add(file)
+      problems.push(
+        `This is a utility APP, so it must not ship legal/secondary pages. Delete ${legalPages.join(
+          ', ',
+        )} — an app has no Privacy or Terms pages unless the user explicitly asks for them.`,
+      )
     }
   }
 

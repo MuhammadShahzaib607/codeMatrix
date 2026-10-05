@@ -142,6 +142,12 @@ export async function quickCheck({
     return content
   }
 
+  // A utility app (css/app.css, no css/base.css) is a single screen and must
+  // NOT be told to add a marketing footer; the prompt forbids one. Requiring a
+  // footer here is exactly what pushed apps into adding one.
+  const appProject =
+    (await read('css/app.css')) !== null && (await read('css/base.css')) === null
+
   const checked = []
   for (const file of planned) {
     const content = await read(file)
@@ -181,7 +187,7 @@ export async function quickCheck({
     if (!/<header\b/i.test(content)) {
       problems.push(`"${file}" has no <header> — a page is incomplete without its site header.`)
     }
-    if (!/<footer\b/i.test(content)) {
+    if (!appProject && !/<footer\b/i.test(content)) {
       problems.push(`"${file}" has no <footer> landmark — the page is incomplete without its footer.`)
     }
     const h1Count = (content.match(/<h1\b/gi) || []).length

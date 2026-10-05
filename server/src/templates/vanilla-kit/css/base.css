@@ -1624,3 +1624,41 @@ body.has-fixed-header {
     transform: none;
   }
 }
+
+.content-block {
+  max-width: var(--container-narrow);
+}
+
+.content-block h2,
+.content-block h3 {
+  margin-top: var(--space-6);
+}
+
+.content-block p,
+.content-block li {
+  color: var(--muted);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: var(--space-5) 0;
+  font-size: var(--step--1);
+}
+
+.table th,
+.table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.table th {
+  color: var(--text);
+  font-weight: 700;
+  background: var(--surface-2);
+}
+
+.table tbody tr:hover {
+  background: var(--surface-hover);
+}

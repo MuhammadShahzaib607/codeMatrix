@@ -11,7 +11,7 @@ import { reactPrompt } from './stacks/react.js'
 import {
   vanillaCompactDesignSystem,
   vanillaCompactPrompt,
-  vanillaDesignSystem,
+  vanillaFullDesignSystem,
   vanillaPrompt,
 } from './stacks/vanilla.js'
 import { vuePrompt } from './stacks/vue.js'
@@ -26,7 +26,7 @@ const STACKS = {
     label: 'HTML/CSS/JS (Vanilla)',
     full: vanillaPrompt,
     compact: vanillaCompactPrompt,
-    designSystem: vanillaDesignSystem,
+    designSystem: vanillaFullDesignSystem,
     compactDesignSystem: vanillaCompactDesignSystem,
   },
   react: { label: 'React', full: reactPrompt },

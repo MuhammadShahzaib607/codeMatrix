@@ -102,5 +102,30 @@ export const vanillaDesignSystem = `The kit is the design system — read it, do
 - Both runtimes are guarded by element existence, so you never need to touch them.
 If the user asks for a genuinely custom widget, add ONLY the missing rules in css/<page>.css (site) or at the END of css/app.css (app), using the existing tokens with var().`
 
+export const vanillaDesignRules = `DESIGN SYSTEM RULES — apply to every page you write:
+- TOKENS ONLY: colours, spacing, radius, shadow and type sizes come from the kit's :root variables (var(--space-4), var(--primary), var(--radius)…). Never hardcode a random hex, px or font size. The 8px spacing scale is 4/8/12/16/24/32/48/64.
+- TYPOGRAPHY: one clear hierarchy; use at most two families (heading + body); body line-height 1.5–1.7; fluid headings with clamp() from the kit's --step-* scale. Never mix unrelated font sizes or weights.
+- COLOUR + CONTRAST: one primary, one accent, neutral surfaces. Text must reach WCAG AA contrast against its background (about 4.5:1 for body). Never set a text colour equal or close to its background. Every interactive element needs a visible :focus-visible state.
+- LAYOUT: mobile-first, CSS Grid and Flexbox, a max-width container with consistent horizontal padding, consistent vertical section spacing, breakpoints near 480/768/1024/1280, no horizontal scroll at 360px, touch targets at least 44px.
+- COMPONENTS: buttons (primary, secondary/ghost, danger) with hover, active, disabled and focus states; an input and a button on the same row must have IDENTICAL height (set both to the same min-height); icon-only buttons need an aria-label AND a visible label where space allows; cards with consistent padding; explicit empty states; subtle shadows and transitions. Use the kit classes; add only the missing rules with var() tokens.
+- ACCESSIBILITY: semantic header/nav/main/section/footer; alt text; a <label> for every input; keyboard-operable controls; honour prefers-reduced-motion (the kit already does).
+- WORKING BEHAVIOUR: every button, input and form must actually work through js/main.js (site) or js/app.js (app) — no dead UI, no placeholder text, no lorem ipsum. Persist with localStorage where it helps, validate input, and show empty and error states.
+
+APP vs WEBSITE — DO NOT CROSS THE LINE:
+- APP (todo, calculator, notes, timer, converter, quiz, dashboard, kanban, small game): a SINGLE screen. At most a compact top bar with the app title. NO nav, NO hero, NO marketing footer, NO Privacy/Terms pages, NO Quick Links. Only add a second screen or nav if the user explicitly asked.
+- WEBSITE (landing, portfolio, business, blog, shop, restaurant, agency): nav, hero, sections and footer on every page; add Privacy/Terms only when the user asks.
+
+PER-TYPE BLUEPRINTS (layout + must-haves):
+- Todo: centered card on a themed background; title; input + Add button of EQUAL height; task list with a checkbox, edit and delete per item; filters All/Active/Completed; remaining count; Clear completed; empty state; localStorage; Enter adds.
+- Calculator: centered calculator body; display; a button grid with distinct number/operator/equals/clear styling; keyboard support; divide-by-zero handling; responsive sizing.
+- Landing: sticky header + nav; hero (headline, subtext, CTA); features grid; stats or social proof; pricing/about as relevant; CTA band; footer; consistent section rhythm; responsive mobile menu.
+- Multi-page website: shared header + footer on EVERY page; active nav state; breadcrumbs styled as an inline list; the same stylesheet on every page.
+- Dashboard/admin: sidebar or top bar; stat cards; table or chart area; responsive collapse.
+- Others: portfolio (grid of work + about + contact), blog (post cards + article page), restaurant (menu + hours + reservation), notes app (list + editor + localStorage).
+
+SELF-REVIEW BEFORE YOU FINISH (fix anything that fails): every page links the same stylesheet; no class in the HTML is undefined in the CSS; no page falls back to browser-default styling; nothing overflows at 360px; headings and body text are readable (contrast); every interactive element works.
+`
+
 export const vanillaCompactPrompt = vanillaPrompt
-export const vanillaCompactDesignSystem = vanillaDesignSystem
+export const vanillaCompactDesignSystem = `${vanillaDesignSystem}\n\n${vanillaDesignRules}`
+export const vanillaFullDesignSystem = `${vanillaDesignSystem}\n\n${vanillaDesignRules}`

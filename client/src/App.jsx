@@ -34,7 +34,6 @@ import { clearFileContentCache } from './services/fileContentCache'
 import { writeSettings } from './services/settingsStorage'
 import { clearWorkspaceRef } from './services/workspaceStorage'
 import { getTheme } from './utils/themes'
-import { isCloudWorkspace } from './utils/workspace'
 import './App.css'
 
 export default function App() {
@@ -120,15 +119,6 @@ export default function App() {
     }
     dispatch(loadWorkspaceTsConfig({ projectId: workspace.projectId }))
   }, [workspace.projectId, dispatch])
-
-  // Terminals only reset for a REAL imported project: entering the scratch
-  // workspace must not tear down terminals that already run in that same folder
-  // (the Explorer and the terminal share scratch-<userId>).
-  const cloudProjectId = isCloudWorkspace(workspace) ? workspace.projectId : null
-  useEffect(() => {
-    if (!cloudProjectId) return
-    dispatch(resetTerminals())
-  }, [cloudProjectId, dispatch])
 
   useEffect(() => {
     if (isAuthenticated) return

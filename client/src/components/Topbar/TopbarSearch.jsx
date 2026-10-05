@@ -1,8 +1,9 @@
 import { FileCode, Folder, Search } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import { addTab, setFolderOpen } from '../../features/fileSystemSlice'
+import { addTab, focusContainerProject, setFolderOpen } from '../../features/fileSystemSlice'
 import { revealTreeNode, setActiveSidebarView } from '../../features/uiSlice'
+import { projectIdForPath, projectNameForPath } from '../../utils/containerPaths'
 import { collectAncestorFolderIds, flattenTreeNodes } from '../../utils/tree'
 
 export const TOPBAR_SEARCH_INPUT_ID = 'topbar-quick-open-input'
@@ -35,6 +36,16 @@ export default function TopbarSearch() {
       if (target.type === 'folder') {
         dispatch(setFolderOpen({ id: target.id, isOpen: true }))
       } else {
+        const projectId = projectIdForPath(target.id, tree)
+        if (projectId) {
+          dispatch(
+            focusContainerProject({
+              projectId,
+              name: projectNameForPath(target.id, tree),
+              source: String(projectId).startsWith('scratch-') ? 'scratch' : 'cloud',
+            }),
+          )
+        }
         dispatch(addTab(target.id))
       }
       dispatch(revealTreeNode(target.id))

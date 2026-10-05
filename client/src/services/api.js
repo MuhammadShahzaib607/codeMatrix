@@ -202,6 +202,51 @@ export const workspaceApi = {
     return request('/api/workspace/container')
   },
 
+  // The WHOLE container as one tree (every project folder + top-level file),
+  // with container-relative paths. This is the Explorer's single tree.
+  getContainerTree() {
+    return request('/api/workspace/container/tree')
+  },
+
+  getContainerFile(filePath) {
+    return request(`/api/workspace/container/file?path=${encodeURIComponent(filePath)}`)
+  },
+
+  saveContainerFile(filePath, content) {
+    return request('/api/workspace/container/file', {
+      method: 'PUT',
+      body: JSON.stringify({ path: filePath, content }),
+    })
+  },
+
+  createContainerPath(path, type) {
+    return request('/api/workspace/container/create', {
+      method: 'POST',
+      body: JSON.stringify({ path, type }),
+    })
+  },
+
+  deleteContainerPath(path) {
+    return request('/api/workspace/container/delete', {
+      method: 'DELETE',
+      body: JSON.stringify({ path }),
+    })
+  },
+
+  renameContainerPath(oldPath, newPath) {
+    return request('/api/workspace/container/rename', {
+      method: 'PATCH',
+      body: JSON.stringify({ oldPath, newPath }),
+    })
+  },
+
+  duplicateContainerPath(sourcePath, targetFolderPath) {
+    return request('/api/workspace/container/duplicate', {
+      method: 'POST',
+      body: JSON.stringify({ sourcePath, targetFolderPath }),
+    })
+  },
+
   // A top-level FOLDER is a new project; a top-level FILE lives beside the
   // projects in the container.
   createContainerEntry(name, type) {

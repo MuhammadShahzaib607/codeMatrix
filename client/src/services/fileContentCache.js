@@ -2,24 +2,19 @@ import { workspaceApi } from './api'
 
 const cache = new Map()
 
-function keyOf(projectId, path) {
-  return `${projectId}:${path}`
-}
-
 export function clearFileContentCache() {
   cache.clear()
 }
 
-export function setCachedFileContent(projectId, path, content) {
-  if (!projectId || !path) return
-  cache.set(keyOf(projectId, path), content)
+export function setCachedFileContent(path, content) {
+  if (!path) return
+  cache.set(path, content)
 }
 
-export async function getFileContent(projectId, path) {
-  const key = keyOf(projectId, path)
-  if (cache.has(key)) return cache.get(key)
+export async function getFileContent(path) {
+  if (cache.has(path)) return cache.get(path)
 
-  const data = await workspaceApi.getFile(projectId, path)
-  cache.set(key, data.content)
+  const data = await workspaceApi.getContainerFile(path)
+  cache.set(path, data.content)
   return data.content
 }

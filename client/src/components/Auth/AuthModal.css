@@ -125,6 +125,7 @@
 }
 
 .auth-input {
+  width: 100%;
   height: 34px;
   padding: 0 10px;
   border: 1px solid var(--border);
@@ -142,6 +143,45 @@
 
 .auth-input.is-invalid {
   border-color: var(--danger);
+}
+
+.auth-input-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.auth-input-wrap.has-toggle .auth-input {
+  padding-right: 38px;
+}
+
+.auth-password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.auth-password-toggle:hover {
+  background: var(--hover-tint);
+  color: var(--text-strong);
+}
+
+.auth-password-toggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .auth-field-error {

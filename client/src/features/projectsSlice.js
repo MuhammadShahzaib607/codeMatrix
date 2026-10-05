@@ -48,10 +48,18 @@ export const openRecentProject = createAsyncThunk(
   'projects/openRecent',
   async ({ projectId, name }, { dispatch, rejectWithValue }) => {
     try {
-      const data = await workspaceApi.getTree(projectId)
-      const tree = [toReduxTree(data.tree)]
-      const resolvedName = data.name ?? name ?? 'Project'
-      if (data.isScratch) {
+      // The Explorer always renders the WHOLE container, so opening a project
+      // means focusing it (terminal/preview/export/agent follow it) while the
+      // tree stays container-wide. A lost project answers 404 WORKSPACE_MISSING
+      // from the container tree's ownership-guarded route.
+      const container = await workspaceApi.getContainerTree()
+      const entry = (container.tree?.children ?? []).find(
+        (child) => child.projectId === projectId,
+      )
+      const resolvedName = entry?.name ?? name ?? 'Project'
+      const isScratch = String(projectId).startsWith('scratch-')
+      const tree = [toReduxTree(container.tree)]
+      if (isScratch) {
         dispatch(setScratchWorkspace({ projectId, name: resolvedName, tree }))
       } else {
         dispatch(setCloudWorkspace({ projectId, name: resolvedName, tree }))

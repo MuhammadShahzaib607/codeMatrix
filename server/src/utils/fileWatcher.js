@@ -315,12 +315,115 @@ export function getWatchedProjectIds() {
   return [...watchers.keys()]
 }
 
+// ---------------------------------------------------------------------------
+// Container watching. The Explorer's tree is the user's whole container, so a
+// new TOP-LEVEL project folder (and changes inside any project) must refresh it
+// live. The per-project watcher cannot see a folder created beside the project,
+// so the container gets its own reference-counted chokidar watcher.
+// ---------------------------------------------------------------------------
+
+// containerPath -> { watcher, refs, timer, eventCount, suppressUntil, notify }
+const containerWatchers = new Map()
+
+/** Drops container notifications caused by our own API mutation for a window. */
+export function suppressContainerWatcher(containerPath, ms = SUPPRESS_MS) {
+  const entry = containerWatchers.get(containerPath)
+  if (!entry) return
+  entry.suppressUntil = Math.max(entry.suppressUntil ?? 0, Date.now() + ms)
+}
+
+function scheduleContainerNotify(containerPath) {
+  const entry = containerWatchers.get(containerPath)
+  if (!entry) return
+  entry.eventCount += 1
+  if (entry.timer) clearTimeout(entry.timer)
+  entry.timer = setTimeout(() => {
+    entry.timer = null
+    const coalesced = entry.eventCount
+    entry.eventCount = 0
+    if (entry.suppressUntil && Date.now() < entry.suppressUntil) return
+    try {
+      entry.notify(containerPath)
+      console.log(`[watcher] container: ${coalesced} fs event(s) -> 1 treeChanged`)
+    } catch (error) {
+      console.warn(`[watcher] container notify failed: ${error?.message ?? error}`)
+    }
+  }, DEBOUNCE_MS)
+}
+
+/** Starts (or joins) the watcher for a user's container folder. */
+export function startWatchingContainer(containerPath, notify) {
+  if (typeof containerPath !== 'string' || !containerPath) return false
+  const existing = containerWatchers.get(containerPath)
+  if (existing) {
+    existing.refs += 1
+    if (typeof notify === 'function') existing.notify = notify
+    return true
+  }
+  if (!fs.existsSync(containerPath)) return false
+
+  const resolvedRoot = path.resolve(containerPath)
+  let watcher
+  try {
+    watcher = chokidar.watch(containerPath, {
+      ignoreInitial: true,
+      persistent: true,
+      followSymlinks: false,
+      depth: MAX_WATCH_DEPTH,
+      ignored: (target) => {
+        if (path.resolve(target) === resolvedRoot) return false
+        return shouldIgnore(containerPath, target)
+      },
+    })
+  } catch (error) {
+    console.warn(`[watcher] could not watch container: ${error?.message ?? error}`)
+    return false
+  }
+
+  containerWatchers.set(containerPath, {
+    watcher,
+    refs: 1,
+    timer: null,
+    eventCount: 0,
+    suppressUntil: 0,
+    notify,
+  })
+
+  for (const event of ['add', 'addDir', 'unlink', 'unlinkDir', 'change']) {
+    watcher.on(event, (target) => {
+      if (typeof target !== 'string') return
+      if (shouldIgnore(containerPath, target)) return
+      scheduleContainerNotify(containerPath)
+    })
+  }
+  watcher.on('error', (error) => {
+    console.warn(`[watcher] container error: ${error?.message ?? error}`)
+  })
+
+  return true
+}
+
+/** Releases one container reference; closes the watcher on the last one. */
+export function stopWatchingContainer(containerPath) {
+  const entry = containerWatchers.get(containerPath)
+  if (!entry) return false
+  entry.refs -= 1
+  if (entry.refs > 0) return true
+  containerWatchers.delete(containerPath)
+  if (entry.timer) clearTimeout(entry.timer)
+  Promise.resolve(entry.watcher.close()).catch(() => {})
+  return true
+}
+
+
 export async function closeAllWatchers() {
   const entries = [...watchers.values()]
+  const containerEntries = [...containerWatchers.values()]
   watchers.clear()
   heldWatchers.clear()
+  containerWatchers.clear()
   await Promise.all(
-    entries.map(async (entry) => {
+    [...entries, ...containerEntries].map(async (entry) => {
       if (entry.timer) clearTimeout(entry.timer)
       if (entry.previewTimer) clearTimeout(entry.previewTimer)
       try {

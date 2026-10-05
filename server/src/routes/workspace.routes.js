@@ -19,6 +19,17 @@ router.get('/container', workspaceController.listContainer)
 router.post('/container/entry', workspaceController.createContainerEntry)
 router.post('/container/paste', workspaceController.pasteToContainer)
 
+// The whole container as ONE tree, plus its file operations. A path whose first
+// segment names a project folder is delegated to that project server-side, so
+// the client can treat the entire container as a single workspace.
+router.get('/container/tree', workspaceController.getContainerTreeHandler)
+router.get('/container/file', workspaceController.readContainerFile)
+router.put('/container/file', workspaceController.saveContainerFile)
+router.post('/container/create', workspaceController.createContainerEntryAt)
+router.delete('/container/delete', workspaceController.deleteContainerEntryAt)
+router.patch('/container/rename', workspaceController.renameContainerEntryAt)
+router.post('/container/duplicate', workspaceController.duplicateContainerEntryAt)
+
 router.use('/:projectId', validateProjectId, authorizeProject)
 
 router.post('/:projectId/import', workspaceController.importProject)

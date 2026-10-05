@@ -5,7 +5,9 @@ let connected = false
 
 export async function connectDatabase() {
   if (!env.mongoUri) {
-    console.warn('[db] MONGODB_URI is not set — project metadata will not be persisted.')
+    console.warn(
+      '[db] NOT connected: MONGODB_URI is not set in server/.env — auth and projects are unavailable.',
+    )
     return false
   }
 
@@ -16,7 +18,7 @@ export async function connectDatabase() {
     return true
   } catch (error) {
     connected = false
-    console.error(`[db] MongoDB connection failed: ${error.message}`)
+    console.error(`[db] NOT connected: ${error.message}`)
     return false
   }
 }

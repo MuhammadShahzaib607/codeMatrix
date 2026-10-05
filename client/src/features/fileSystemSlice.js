@@ -219,6 +219,25 @@ const fileSystemSlice = createSlice({
       state.focusedProjectId = action.payload ?? null
     },
 
+    /**
+     * Focuses a project inside the container WITHOUT touching the tree or the
+     * open tabs: the whole point of the container Explorer is that every folder
+     * stays usable at once, so clicking into another project must never close
+     * the files already open from a sibling. Terminal, preview, export and the
+     * agent follow the focused project.
+     */
+    focusContainerProject(state, action) {
+      const { projectId = null, name = null, source = null } = action.payload ?? {}
+      state.focusedProjectId = projectId
+      if (!projectId) return
+      state.workspace = {
+        ...state.workspace,
+        projectId,
+        name: name ?? state.workspace.name,
+        source: source ?? state.workspace.source,
+      }
+    },
+
     setActiveFile(state, action) {
       state.activeFileId = action.payload
     },
@@ -277,6 +296,7 @@ export const {
   clearWorkspace,
   remapPaths,
   setFocusedContainerProject,
+  focusContainerProject,
   setActiveFile,
   addTab,
   closeTab,
@@ -296,6 +316,11 @@ export function selectActiveFileProjectId(state) {
   const { activeFileId, fileProjects, workspace } = state.fileSystem
   if (activeFileId && fileProjects[activeFileId]) return fileProjects[activeFileId]
   return workspace.projectId ?? null
+}
+
+export function selectFocusedProjectId(state) {
+  const { focusedProjectId, workspace } = state.fileSystem
+  return focusedProjectId ?? workspace.projectId ?? null
 }
 
 export default fileSystemSlice.reducer

@@ -1,28 +1,20 @@
 import { ChevronsUp, FilePlus, FolderPlus, Info } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
 import { recordExplorerAction } from '../../features/explorerHistorySlice'
 import { deleteExplorerEntry } from '../../features/explorerHistoryThunks'
-import { addTab, collapseAll, setActiveFile, setFolderOpen } from '../../features/fileSystemSlice'
 import {
-  fetchProjectTree,
-  fetchRecentProjects,
-  openRecentProject,
-} from '../../features/projectsSlice'
+  addTab,
+  collapseAll,
+  focusContainerProject,
+  setActiveFile,
+  setFolderOpen,
+} from '../../features/fileSystemSlice'
+import { showToast } from '../../features/uiSlice'
 import {
-  closeDeleteProjectModal,
-  openDeleteProjectModal,
-  showToast,
-} from '../../features/uiSlice'
-import {
-  createContainerEntry,
   createWorkspaceEntry,
-  deleteWorkspaceProject,
   duplicateWorkspaceEntry,
-  loadContainer,
-  openScratchWorkspace,
-  pasteIntoContainer,
   refreshWorkspaceTree,
   renameWorkspaceEntry,
 } from '../../features/workspaceThunks'
@@ -32,10 +24,11 @@ import RecentProjects from '../Projects/RecentProjects'
 import Tooltip from '../Common/Tooltip'
 import { CONTAINER_ID, ROOT_ID } from '../../services/fileSystemAccess'
 import { baseNameOf, joinPath, parentPathOf } from '../../utils/cloudTree'
-import { containerSiblings, resolveCreateTargetId } from '../../utils/explorerTarget'
+import { projectIdForPath, projectNameForPath } from '../../utils/containerPaths'
+import { resolveCreateTargetId } from '../../utils/explorerTarget'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { openPreviewTab } from '../../utils/preview'
-import { hasActiveWorkspace, isAnonymousScratchWorkspace } from '../../utils/workspace'
+import { hasActiveWorkspace } from '../../utils/workspace'
 import FileTree from './FileTree'
 import './Sidebar.css'
 
@@ -44,62 +37,28 @@ export default function Sidebar() {
   const guard = useAuthGuard()
   const tree = useSelector((state) => state.fileSystem.tree)
   const workspace = useSelector((state) => state.fileSystem.workspace)
-  const containerRawEntries = useSelector((state) => state.fileSystem.container.entries)
-  const projectTrees = useSelector((state) => state.projects.trees)
   const clipboard = useSelector((state) => state.clipboard)
-  const isDeleteProjectOpen = useSelector((state) => state.ui.isDeleteProjectModalOpen)
-  // A scratch workspace counts as an active workspace: everything below treats
-  // it exactly like an imported project.
+  const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
   const hasProject = hasActiveWorkspace(workspace)
-  // Deletion is available for EVERY workspace type — a scratch workspace's root
-  // folder is deletable exactly like a named project (the server authorizes a
-  // record-less scratch by its owner).
-  const canDeleteProject = hasProject
 
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(null)
-
-  /**
-   * With a still-anonymous scratch workspace the on-disk "Scratch" folder is an
-   * implementation detail, so its ROOT ROW is not rendered at all: its children
-   * are promoted to the top level, exactly like VS Code with no folder open.
-   * The folder stays on disk (it is still the terminal's cwd) — the user simply
-   * never sees a folder called "Scratch". Once the workspace has a real name the
-   * root row comes back under that name.
-   */
-  const rootNode = tree.find((node) => node.id === ROOT_ID) ?? tree[0] ?? null
-  const hideRootRow = isAnonymousScratchWorkspace(workspace)
-  const treeNodes = hideRootRow ? (rootNode?.children ?? []) : tree
-
-  /**
-   * The Explorer's TOP LEVEL: every entry of the user's container except the
-   * active project itself, which is the tree rendered below (its children are
-   * promoted while the workspace is still an anonymous scratch). That is what
-   * makes "nothing selected -> create outside the project root" possible: the
-   * top level is a real folder, not a virtual one.
-   */
-  const containerEntries = containerSiblings(containerRawEntries, workspace.projectId)
-  const showContainer = hasProject
-  // Sibling projects are expanded by DEFAULT, so every project's files are
-  // directly visible and clickable the moment the app opens — no "select
-  // project" step. This list only records the ones the user collapsed.
-  const [collapsedProjects, setCollapsedProjects] = useState([])
-  const requestedTreesRef = useRef(new Set())
-  const [isPreparing, setIsPreparing] = useState(false)
-  // Node awaiting confirmation from the delete modal (file or folder).
   const [pendingDelete, setPendingDelete] = useState(null)
 
-  // The active project id can change asynchronously (scratch workspace
-  // bootstrap) while submit handlers from an older render are still mounted, so
-  // the mutations read it from a ref that always holds the latest value.
-  const projectIdRef = useRef(workspace.projectId)
-  useEffect(() => {
-    projectIdRef.current = workspace.projectId
-  }, [workspace.projectId])
+  // The Explorer's root is the user's CONTAINER; its own row is hidden and its
+  // children (every project folder and top-level file) are promoted to the top
+  // level, so each project is a normal, fully usable branch.
+  const rootNode = tree.find((node) => node.id === ROOT_ID) ?? tree[0] ?? null
+  const treeNodes = rootNode?.children ?? []
 
-  // Stable identities for every callback handed to the memoized tree rows, so a
-  // background tree refresh (chokidar auto-refresh) does not force the whole
-  // Explorer to re-render just because a new function object was created.
+  // Load the container tree whenever the user is signed in (and after a
+  // reconnect). The tree is container-wide, so this does not depend on which
+  // project is focused.
+  useEffect(() => {
+    if (!isAuthenticated) return
+    dispatch(refreshWorkspaceTree({}))
+  }, [isAuthenticated, dispatch])
+
   const reportError = useCallback(
     (message) => {
       dispatch(showToast({ message, type: 'error' }))
@@ -109,106 +68,41 @@ export default function Sidebar() {
 
   const handleCancelCreate = useCallback(() => setCreating(null), [])
 
-  // Keep the top level in step with the active workspace — including the moment
-  // the agent adopts a scratch workspace (source flips scratch -> cloud), when
-  // the project folder's real name may have changed.
-  useEffect(() => {
-    if (!hasProject) return
-    dispatch(loadContainer())
-  }, [dispatch, hasProject, workspace.source, workspace.projectId, workspace.name])
-
-  // Fetch every sibling project's tree ONCE, in the background, so the top level
-  // can show each project's files inline. A failed fetch is remembered in the
-  // ref and never retried in a loop, so an unreachable project cannot spin.
-  useEffect(() => {
-    if (!showContainer) return
-    for (const entry of containerEntries) {
-      const projectId = entry?.projectId
-      if (!projectId || entry.type !== 'folder') continue
-      if (projectTrees[projectId] || requestedTreesRef.current.has(projectId)) continue
-      requestedTreesRef.current.add(projectId)
-      dispatch(fetchProjectTree({ projectId }))
-    }
-  }, [containerEntries, projectTrees, dispatch, showContainer])
-
-  // Clicking the tree's empty area (or pressing Escape) drops the selection, so
-  // the next New File / New Folder goes to the workspace ROOT again.
   const clearSelection = useCallback(() => setSelectedId(null), [])
 
-  // Stable identity so the memoized FileTree is not re-rendered by this prop.
-  const requestDeleteProject = useCallback(
-    () => dispatch(openDeleteProjectModal()),
-    [dispatch],
+  /** Makes `path`'s project the focused one (terminal/preview/export/agent). */
+  const focusForPath = useCallback(
+    (path) => {
+      const projectId = projectIdForPath(path, tree)
+      if (!projectId) return
+      dispatch(
+        focusContainerProject({
+          projectId,
+          name: projectNameForPath(path, tree),
+          source: String(projectId).startsWith('scratch-') ? 'scratch' : 'cloud',
+        }),
+      )
+    },
+    [dispatch, tree],
   )
 
-  // Fresh-instance mirrors for the two handlers that genuinely need live
-  // component state (clipboard, workspace). The refs are updated in an effect
-  // (never during render) so the stable wrappers below can be handed to the
-  // memoized FileTree without capturing stale values.
-  const pasteRef = useRef(null)
-  const requestCreateRef = useRef(null)
-  const previewRef = useRef(null)
-
-  /**
-   * Makes sure there is a workspace to write into and returns its project id —
-   * or null when the bootstrap failed. With no imported project it opens (or
-   * reuses) the per-user scratch workspace on the server, the very same folder
-   * the terminal runs in.
-   *
-   * It is deliberately called from submitCreate (AFTER the user names the new
-   * item) and never from the "New File"/"New Folder" click itself: clicking the
-   * button must not create ANYTHING yet — see beginCreatingIn.
-   */
-  const ensureWorkspaceReady = useCallback(async () => {
-    if (projectIdRef.current) return projectIdRef.current
-    setIsPreparing(true)
-    try {
-      // The server REUSES the user's existing scratch workspace (or opens a free
-      // one), so clicking New File twice never creates two conflicting scratches.
-      const data = await dispatch(openScratchWorkspace()).unwrap()
-      return data?.projectId ?? null
-    } catch (error) {
-      reportError(`Could not open a scratch workspace: ${error.message}`)
-      return null
-    } finally {
-      setIsPreparing(false)
-    }
-  }, [dispatch, reportError])
-
-  /**
-   * Rule A — where a new item goes:
-   *   - a FOLDER row is selected  -> inside it (the project ROOT row counts);
-   *   - a FILE row is selected    -> in that file's parent folder;
-   *   - NOTHING is selected       -> the TOP LEVEL, beside the project folder
-   *     (CONTAINER_ID). With no workspace at all we keep ROOT_ID so the existing
-   *     "first write bootstraps a scratch workspace" flow is untouched.
-   */
   function resolveTargetParentId() {
-    return resolveCreateTargetId({ selectedId, tree, hasProject })
+    return resolveCreateTargetId({ selectedId, tree })
   }
 
-  /**
-   * Starts an inline "name your new file/folder" row at `parentId`.
-   *
-   * Nothing is created here and no default name is ever used: the temporary
-   * input row is all the user sees until they type a name and press Enter. A
-   * scratch workspace is bootstrapped later, in submitCreate, so clicking the
-   * button can never leave a surprise folder (e.g. "Scratch") behind.
-   */
-  function beginCreatingIn(parentId, type) {
+  function beginCreatingIn(rawParentId, type) {
+    // ROOT_ID and CONTAINER_ID both mean "the top level" now.
+    const parentId = !rawParentId || rawParentId === ROOT_ID ? CONTAINER_ID : rawParentId
     setCreating({ parentId, type })
-    if (parentId && parentId !== CONTAINER_ID && parentId !== ROOT_ID) {
+    if (parentId !== CONTAINER_ID) {
       dispatch(setFolderOpen({ id: parentId, isOpen: true }))
     }
   }
 
-  // Creating a file is a server-side operation, so sign-in comes first — the
-  // same guard the Import/Export/Save buttons use.
   function startCreating(type) {
     guard(() => beginCreatingIn(resolveTargetParentId(), type), 'Please sign in to create files')
   }
 
-  /** "New File" / "New Folder" from a folder's context menu. */
   function handleRequestCreate(parentId, type) {
     guard(() => beginCreatingIn(parentId, type), 'Please sign in to create files')
   }
@@ -230,59 +124,38 @@ export default function Sidebar() {
   )
 
   /**
-   * Paste into a folder: a CUT is a server-side move (rename endpoint), a COPY
-   * is a server-side duplicate (POST /duplicate). Only a file/folder reference
-   * travels through Redux — never content.
-   *
-   * The target is the FOLDER being pasted INTO (its own path), never the source
-   * item's path. A CUT is consumed (the source moved, so the clipboard is
-   * cleared); a COPY is kept, exactly like VS Code, so the same item can be
-   * pasted into several folders in a row without copying it again.
+   * Copy / Cut -> Paste, by CONTAINER-relative path. A cut is a server-side
+   * move, a copy a server-side duplicate; only the path travels through Redux.
    */
   async function handlePaste(folderNode) {
-    const activeProjectId = projectIdRef.current
     const sourcePath = clipboard.path
-    if (!activeProjectId || !sourcePath) return
+    if (!sourcePath) return
 
-    // Pasting onto the TOP LEVEL copies the file beside the project folders. A
-    // top-level folder would BE a project, so that case is refused with an
-    // explanation instead of silently doing something else.
-    if (folderNode?.id === CONTAINER_ID) {
-      if (clipboard.type === 'folder') {
-        dispatch(
-          showToast({
-            message: 'A top-level folder is a project — use New Folder to create one.',
-            type: 'info',
-          }),
-        )
-        return
-      }
-      try {
-        const result = await dispatch(
-          pasteIntoContainer({ projectId: activeProjectId, sourcePath }),
-        ).unwrap()
-        dispatch(clearClipboard())
-        dispatch(showToast({ message: `Copied ${result.name} to the top level`, type: 'success' }))
-      } catch (error) {
-        reportError(`Could not copy ${baseNameOf(sourcePath)}: ${error.message}`)
-      }
+    const isTopLevel = !folderNode || folderNode.id === CONTAINER_ID || folderNode.id === ROOT_ID
+    const targetFolderPath = isTopLevel ? '' : folderNode.id
+
+    if (isTopLevel && clipboard.type === 'folder') {
+      dispatch(
+        showToast({
+          message: 'A top-level folder is a project — use New Folder to create one.',
+          type: 'info',
+        }),
+      )
       return
     }
 
-    const targetFolderPath = folderNode?.id === ROOT_ID ? '' : (folderNode?.id ?? '')
     const name = baseNameOf(sourcePath)
 
     if (clipboard.mode === 'cut') {
-      if (parentPathOf(sourcePath) === targetFolderPath) {
+      const currentParent = parentPathOf(sourcePath)
+      if (currentParent === targetFolderPath) {
         dispatch(showToast({ message: `${name} is already in that folder.`, type: 'info' }))
         dispatch(clearClipboard())
         return
       }
       const newPath = joinPath(targetFolderPath, name)
       try {
-        await dispatch(
-          renameWorkspaceEntry({ projectId: activeProjectId, oldPath: sourcePath, newPath }),
-        ).unwrap()
+        await dispatch(renameWorkspaceEntry({ oldPath: sourcePath, newPath })).unwrap()
         dispatch(recordExplorerAction({ kind: 'move', oldPath: sourcePath, newPath }))
         dispatch(clearClipboard())
         dispatch(showToast({ message: `Moved ${name}`, type: 'success' }))
@@ -294,7 +167,7 @@ export default function Sidebar() {
 
     try {
       const result = await dispatch(
-        duplicateWorkspaceEntry({ projectId: activeProjectId, sourcePath, targetFolderPath }),
+        duplicateWorkspaceEntry({ sourcePath, targetFolderPath }),
       ).unwrap()
       dispatch(
         recordExplorerAction({
@@ -304,145 +177,57 @@ export default function Sidebar() {
           newPath: result.newPath,
         }),
       )
-      // The clipboard is intentionally NOT cleared after a copy-paste: the user
-      // must be able to paste the SAME item into several folders (A, B, C) in a
-      // row. Clearing it here made every paste after the first a silent no-op,
-      // because handlePaste bails out when clipboard.path is null.
       dispatch(showToast({ message: `Copied ${name} → ${result.newPath}`, type: 'success' }))
     } catch (error) {
       reportError(`Could not copy ${name}: ${error.message}`)
     }
   }
 
-  /**
-   * "Open with Live Server" for a .html file: opens a new browser tab at
-   * /preview/:projectId/<path>?token=<jwt>. The current token is read at click
-   * time by buildPreviewUrl, so it is always fresh.
-   */
+  /** Opens a file from ANY project folder. Focus follows the file's project. */
+  const handleOpenFile = useCallback(
+    (node) => {
+      if (!node) return
+      const filePath = node.path ?? node.id
+      if (!filePath) return
+      focusForPath(filePath)
+      setSelectedId(filePath)
+      dispatch(addTab(filePath))
+      dispatch(setActiveFile(filePath))
+    },
+    [dispatch, focusForPath],
+  )
+
   const handlePreview = useCallback(
     (node) => {
-      const activeProjectId = projectIdRef.current
-      if (!activeProjectId) return
+      const projectId = projectIdForPath(node.id, tree) ?? workspace.projectId
+      if (!projectId) return
+      const innerPath = node.id.split('/').slice(1).join('/')
       guard(
-        () => openPreviewTab(activeProjectId, node.path ?? node.id),
+        () => openPreviewTab(projectId, innerPath),
         'Please sign in to open a live preview',
       )
     },
-    [guard],
+    [guard, tree, workspace.projectId],
   )
 
-  /** A top-level FILE belongs to no project — say so instead of faking an open. */
-  const handleInspectContainerFile = useCallback(
-    (entry) => {
+  const handleCopyPath = useCallback(
+    async (node) => {
+      const relativePath = node.id === ROOT_ID ? '' : node.id
+      const copied = await copyTextToClipboard(relativePath)
       dispatch(
         showToast({
-          message: `${entry.name} is at the top level, beside your projects — open it from the terminal.`,
-          type: 'info',
+          message: copied
+            ? `Copied path: ${relativePath || '/'}`
+            : 'Could not access the clipboard.',
+          type: copied ? 'success' : 'error',
         }),
       )
     },
     [dispatch],
   )
 
-  /**
-   * A top-level FOLDER is another project: opening it makes it the active
-   * workspace, so the terminal, preview, export, search and the agent all follow
-   * it. The current project stays on disk untouched as a sibling.
-   */
-  const handleOpenContainerProject = useCallback(
-    (entry) => {
-      if (!entry?.projectId) return
-      setCollapsedProjects((list) => list.filter((id) => id !== entry.projectId))
-      if (entry.projectId === projectIdRef.current) return
-      guard(async () => {
-        try {
-          await dispatch(
-            openRecentProject({ projectId: entry.projectId, name: entry.name }),
-          ).unwrap()
-          setSelectedId(null)
-          dispatch(showToast({ message: `Opened project ${entry.name}`, type: 'success' }))
-        } catch (error) {
-          reportError(`Could not open ${entry.name}: ${error.message}`)
-        }
-      }, 'Please sign in to open a project')
-    },
-    [dispatch, guard, reportError],
-  )
-
-  /**
-   * Collapse / expand a sibling project's inline file list. This is pure
-   * browsing: it deliberately does NOT change the active project, so files from
-   * several projects can stay visible at once and any one of them can be opened
-   * with a single click.
-   */
-  const handleToggleContainerProject = useCallback((entry) => {
-    if (!entry?.projectId) return
-    setCollapsedProjects((list) =>
-      list.includes(entry.projectId)
-        ? list.filter((id) => id !== entry.projectId)
-        : [...list, entry.projectId],
-    )
-  }, [])
-
-  /**
-   * Opens a file that lives inside a SIBLING project: that project becomes the
-   * active one (terminal cwd, agent runs, preview, export and search follow it)
-   * and the file opens as a tab — one click, with no separate "activate" step.
-   */
-  const handleOpenContainerFile = useCallback(
-    (entry, file) => {
-      if (!entry?.projectId || !file) return
-      const filePath = file.path ?? file.id
-      if (!filePath) return
-      guard(async () => {
-        if (entry.projectId !== projectIdRef.current) {
-          try {
-            await dispatch(
-              openRecentProject({ projectId: entry.projectId, name: entry.name }),
-            ).unwrap()
-          } catch (error) {
-            reportError(`Could not open ${entry.name}: ${error.message}`)
-            return
-          }
-        }
-        setSelectedId(filePath)
-        dispatch(addTab(filePath))
-        dispatch(setActiveFile(filePath))
-        dispatch(showToast({ message: `Opened ${file.name} in ${entry.name}`, type: 'success' }))
-      }, 'Please sign in to open a project file')
-    },
-    [dispatch, guard, reportError],
-  )
-
-  const handleCopyPath = useCallback(async (node) => {
-    const relativePath = node.id === ROOT_ID ? '' : node.id
-    const copied = await copyTextToClipboard(relativePath)
-    dispatch(
-      showToast({
-        message: copied ? `Copied path: ${relativePath || '/'}` : 'Could not access the clipboard.',
-        type: copied ? 'success' : 'error',
-      }),
-    )
-  }, [dispatch])
-
-  // Keep the mirrors current after every commit so the stable wrappers always
-  // call the latest handler.
-  useEffect(() => {
-    pasteRef.current = handlePaste
-    requestCreateRef.current = handleRequestCreate
-    previewRef.current = handlePreview
-  })
-
-  const stablePaste = useCallback((folderNode) => pasteRef.current?.(folderNode), [])
-  const stableRequestCreate = useCallback(
-    (parentId, type) => requestCreateRef.current?.(parentId, type),
-    [],
-  )
-  const stablePreview = useCallback((node) => previewRef.current?.(node), [])
-
   const handleRefreshTree = useCallback(() => {
-    const activeProjectId = projectIdRef.current
-    if (activeProjectId) dispatch(refreshWorkspaceTree({ projectId: activeProjectId }))
+    dispatch(refreshWorkspaceTree({}))
   }, [dispatch])
 
   const handleCollapseAll = useCallback(() => {
@@ -454,61 +239,47 @@ export default function Sidebar() {
       const { parentId, type } = creating ?? {}
       setCreating(null)
 
-      // An empty name cancels silently: Escape and confirming an empty field
-      // must both leave the workspace untouched (never a default-named folder).
       const name = String(rawName ?? '').trim()
       if (!name) return
 
-      // TOP LEVEL: the item is created beside the project folder. A folder here
-      // is a NEW PROJECT (registry + MongoDB metadata, no file contents).
-      if (parentId === CONTAINER_ID) {
-        try {
-          const result = await dispatch(createContainerEntry({ name, type })).unwrap()
+      const atTopLevel = !parentId || parentId === CONTAINER_ID || parentId === ROOT_ID
+      const newPath = atTopLevel ? name : joinPath(parentId, name)
+
+      try {
+        const result = await dispatch(createWorkspaceEntry({ path: newPath, type })).unwrap()
+        dispatch(recordExplorerAction({ kind: 'create', path: newPath, type }))
+        const projectId = result?.projectId ?? projectIdForPath(newPath, tree)
+        if (projectId) {
           dispatch(
-            showToast({
-              message:
-                type === 'folder'
-                  ? `Created project “${result.name}” at the top level`
-                  : `Created ${result.name} at the top level`,
-              type: 'success',
+            focusContainerProject({
+              projectId,
+              name: projectNameForPath(newPath, tree) ?? name,
+              source: String(projectId).startsWith('scratch-') ? 'scratch' : 'cloud',
             }),
           )
-        } catch (error) {
-          reportError(`Could not create ${name}: ${error.message}`)
         }
-        return
-      }
-
-      // First real write: bootstrap the workspace NOW (scratch if nothing is
-      // imported). ensureWorkspaceReady returns the id directly, because the
-      // projectIdRef effect has not run yet inside this same async handler.
-      const activeProjectId = await ensureWorkspaceReady()
-      if (!activeProjectId) return
-
-      const parentPath = parentId === ROOT_ID || parentId == null ? '' : parentId
-      const newPath = joinPath(parentPath, name)
-      try {
-        await dispatch(
-          createWorkspaceEntry({ projectId: activeProjectId, path: newPath, type }),
-        ).unwrap()
-        dispatch(recordExplorerAction({ kind: 'create', path: newPath, type }))
+        dispatch(
+          showToast({
+            message:
+              type === 'folder'
+                ? `Created folder “${name}”`
+                : `Created ${name}`,
+            type: 'success',
+          }),
+        )
       } catch (error) {
         reportError(`Could not create ${name}: ${error.message}`)
       }
     },
-    [creating, dispatch, ensureWorkspaceReady, reportError],
+    [creating, dispatch, reportError, tree],
   )
 
   const handleRename = useCallback(
     async (node, nextName) => {
-      const activeProjectId = projectIdRef.current
-      if (!activeProjectId || node.id === ROOT_ID) return
-
+      if (node.id === ROOT_ID) return
       const newPath = joinPath(parentPathOf(node.id), nextName)
       try {
-        await dispatch(
-          renameWorkspaceEntry({ projectId: activeProjectId, oldPath: node.id, newPath }),
-        ).unwrap()
+        await dispatch(renameWorkspaceEntry({ oldPath: node.id, newPath })).unwrap()
         dispatch(recordExplorerAction({ kind: 'rename', oldPath: node.id, newPath }))
       } catch (error) {
         reportError(`Could not rename ${node.name}: ${error.message}`)
@@ -517,7 +288,6 @@ export default function Sidebar() {
     [dispatch, reportError],
   )
 
-  /** Opens the confirmation modal; the delete only runs if the user confirms. */
   const requestDelete = useCallback((node) => {
     if (node.id === ROOT_ID) return
     setPendingDelete(node)
@@ -526,31 +296,15 @@ export default function Sidebar() {
   async function confirmDelete() {
     const node = pendingDelete
     setPendingDelete(null)
-    const activeProjectId = projectIdRef.current
-    if (!node || !activeProjectId || node.id === ROOT_ID) return
-
+    if (!node || node.id === ROOT_ID) return
     try {
-      await dispatch(deleteExplorerEntry({ projectId: activeProjectId, node })).unwrap()
+      await dispatch(deleteExplorerEntry({ node })).unwrap()
     } catch (error) {
       reportError(`Could not delete ${node.name}: ${error.message}`)
     }
   }
 
-  /** Deletes the ENTIRE active project (workspace folder + DB record). */
-  async function confirmDeleteProject() {
-    const activeProjectId = projectIdRef.current
-    const name = workspace.name
-    if (!activeProjectId) return
-    try {
-      await dispatch(deleteWorkspaceProject({ projectId: activeProjectId })).unwrap()
-      dispatch(fetchRecentProjects())
-      dispatch(showToast({ message: `Deleted project ${name}.`, type: 'success' }))
-    } catch (error) {
-      reportError(`Could not delete the project: ${error.message}`)
-    } finally {
-      dispatch(closeDeleteProjectModal())
-    }
-  }
+  const showEmptyState = treeNodes.length === 0
 
   return (
     <aside className="sidebar">
@@ -562,7 +316,6 @@ export default function Sidebar() {
               type="button"
               className="icon-btn-sm"
               aria-label="New file"
-              disabled={isPreparing}
               onClick={() => startCreating('file')}
             >
               <FilePlus size={16} />
@@ -573,7 +326,6 @@ export default function Sidebar() {
               type="button"
               className="icon-btn-sm"
               aria-label="New folder"
-              disabled={isPreparing}
               onClick={() => startCreating('folder')}
             >
               <FolderPlus size={16} />
@@ -593,19 +345,17 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {!hasProject && (
+      {showEmptyState && (
         <div className="sidebar-notice">
           <Info size={14} />
           <span>
-            No project imported — <strong>New File</strong> starts a scratch workspace, or click{' '}
+            No files yet — <strong>New Folder</strong> creates a project folder, or click{' '}
             <strong>Import Folder</strong> to import a folder from your device.
           </span>
         </div>
       )}
 
-      {/* Explorer empty state: the user's existing projects, so reopening the
-          app offers them instead of silently starting a fresh scratch. */}
-      {!hasProject && (
+      {showEmptyState && (
         <div className="sidebar-recent">
           <RecentProjects variant="compact" />
         </div>
@@ -622,26 +372,16 @@ export default function Sidebar() {
           onCancelCreate={handleCancelCreate}
           onRename={handleRename}
           onDelete={requestDelete}
-          lockedId={hideRootRow ? null : ROOT_ID}
-          onRequestCreate={stableRequestCreate}
+          lockedId={null}
+          onRequestCreate={handleRequestCreate}
           onCut={handleCut}
           onCopy={handleCopy}
-          onPaste={stablePaste}
+          onPaste={handlePaste}
           onCopyPath={handleCopyPath}
-          onPreview={stablePreview}
+          onPreview={handlePreview}
           onRefresh={handleRefreshTree}
           onCollapseAll={handleCollapseAll}
-          canDeleteProject={canDeleteProject}
-          onDeleteProject={requestDeleteProject}
-          containerEntries={containerEntries}
-          activeProjectId={workspace.projectId}
-          showContainer={showContainer}
-          onOpenContainerProject={handleOpenContainerProject}
-          onInspectContainerFile={handleInspectContainerFile}
-          projectTrees={projectTrees}
-          collapsedProjects={collapsedProjects}
-          onToggleContainerProject={handleToggleContainerProject}
-          onOpenContainerFile={handleOpenContainerFile}
+          onOpenFile={handleOpenFile}
         />
       </div>
 
@@ -656,17 +396,6 @@ export default function Sidebar() {
           confirmLabel="Delete"
           onConfirm={confirmDelete}
           onCancel={() => setPendingDelete(null)}
-        />
-      )}
-
-      {isDeleteProjectOpen && canDeleteProject && (
-        <ConfirmModal
-          title={`Delete project '${workspace.name}'?`}
-          message="This will delete all files in this project permanently and cannot be undone."
-          confirmLabel="Delete project"
-          confirmPhrase={workspace.name}
-          onConfirm={confirmDeleteProject}
-          onCancel={() => dispatch(closeDeleteProjectModal())}
         />
       )}
     </aside>

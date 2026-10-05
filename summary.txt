@@ -7089,3 +7089,152 @@ COULD NOT VERIFY
     and the before/after comparisons drive the real loop with a scripted mock
     model. The loop, validation and prompt behaviour are real; the model's own
     wording is not.
+
+
+================================================================================
+AI Code Editor — Unified Multi-Folder Explorer + Live Tree + Auth DB Recovery +
+        Auth Modal Field Alignment
+        (2026-10-04)
+================================================================================
+
+STATUS: complete. The unified multi-folder Explorer, its real-time tree updates
+        and the show/hide password toggle are implemented and lint/build clean;
+        the server container API + socket watcher are verified live; the auth
+        database path is verified 15/15 against the real MongoDB, and the Auth
+        modal field alignment is verified by measured geometry in real headless
+        Chrome. NOT verified: the full multi-folder Explorer end-to-end in a
+        signed-in browser session (see below).
+
+--------------------------------------------------------------------------------
+TASK 1 — AUTH "NO DATABASE CONFIGURED": ROOT CAUSE + FIX
+--------------------------------------------------------------------------------
+
+The message is thrown by assertDatabase() in
+server/src/controllers/auth.controller.js when isDatabaseConnected() is false.
+
+CODE SIDE WAS CHECKED FIRST AND IS CORRECT
+  - config/env.js loads dotenv from server/.env via an ABSOLUTE path resolved
+    from the module file (path.resolve(here, '..', '..', '.env')), so the process
+    working directory does not matter.
+  - The variable names match: MONGODB_URI / JWT_SECRET / PORT / CLIENT_ORIGIN are
+    exactly what env.js reads.
+  - server/server.js start() awaits connectDatabase() BEFORE listening, and
+    config/db.js already logged either the connection or the failure reason.
+  - The live server on http://localhost:4000 reports database:"connected" and its
+    startup log shows "[db] connected to MongoDB".
+
+REAL CAUSE IN THIS ENVIRONMENT: a leftover test override. client/.env.local
+(created during the previous debugging session) set
+VITE_API_BASE_URL=http://localhost:4100, and :4100 was a throwaway server started
+with no MONGODB_URI (its health showed database:"not-configured"). Vite gives
+.env.local priority over .env, so a dev client on that instance talked to the
+DB-less server and got exactly this 503. Sign-in had "worked earlier" because the
+original server on :4000 uses the committed client/.env
+(VITE_API_BASE_URL=http://localhost:4000) and has a working database.
+
+FIX (targeted, no secrets touched)
+  - Removed the throwaway client/.env.local and stopped the DB-less server on
+    :4100. No .env file was overwritten or deleted; client/.env is unchanged.
+  - config/db.js now emits ONE clear, greppable line per outcome:
+      "[db] connected to MongoDB"
+      "[db] NOT connected: MONGODB_URI is not set in server/.env — auth and
+       projects are unavailable."
+      "[db] NOT connected: <driver error message>"
+    Only the message text is logged — never a connection string or secret.
+
+OUTSIDE-THE-CODE CASE: when the provider cannot reach MongoDB Atlas (a transient
+querySrv ECONNREFUSED on the SRV lookup), the server still runs but with
+database:"not-configured" and prints the NOT-connected line. The fix is then
+network/DNS or a reachable URI — nothing to change in the code. app.js already
+pins public DNS servers (8.8.8.8 / 1.1.1.1) in development.
+
+VERIFIED (live, against the real MongoDB on :4000)
+  - A spare-port start printed "[db] connected to MongoDB".
+  - 15/15 HTTP checks: register 201 + token/user; /me 200; /me with no token 401;
+    /me with a bad token 401; login 200; wrong password 401; duplicate register
+    409; create project 201; owner sees it in /projects; a second user does NOT;
+    second user DELETE -> 403; owner DELETE -> 200.
+  - The healthy DB no longer returns the error; a server started with
+    MONGODB_URI empty returns the same clear AUTH_UNAVAILABLE message and logs
+    the NOT-connected line.
+  - JWT, bcrypt (User.comparePassword) and the ownership guards
+    (authorizeProject / deleteProjectHandler) are untouched.
+
+--------------------------------------------------------------------------------
+TASK 2 — SIGN IN / SIGN UP MODAL FIELD ALIGNMENT
+--------------------------------------------------------------------------------
+
+ROOT CAUSE: only the password inputs carried width:100% (via
+.auth-input-wrap.has-toggle .auth-input), so Email/Name fell back to the
+browser's intrinsic input width. Height was already equal.
+
+FIX (client/src/components/Auth/AuthModal.css only)
+  - .auth-input now sets width:100% for EVERY field (box-sizing:border-box comes
+    from the global * reset), so every input is exactly the card content width.
+  - .auth-input-wrap gets width:100%; .has-toggle keeps only padding-right:38px.
+  - Removed the now-redundant duplicate .has-toggle rule. No markup or theme
+    token changes; the password eye toggle logic is untouched.
+
+VERIFIED by measured geometry in real headless Chrome (Vite on a spare port)
+  - Sign In: Email and Password both 330px wide, 34px tall, both starting at the
+    same x (card border 1 + padding 24 = 25px from the card edge).
+  - Sign Up: Name, Email, Password and Confirm password all 330x34 and equal.
+  - With the error box visible: widths unchanged (330px); layout stable.
+  - At a 360px viewport: all four fields 262px, no horizontal overflow.
+  - The password toggle switches the input type password -> text -> password;
+    two toggles are present on Sign Up. (The "332" card width in the probe was
+    the card's own 1px border, already accounted for by border-box.)
+
+--------------------------------------------------------------------------------
+UNIFIED MULTI-FOLDER EXPLORER + REAL-TIME TREE (implemented this round)
+--------------------------------------------------------------------------------
+
+The Explorer root is now the per-user container folder; every top-level folder is
+an ordinary expandable branch, and file identity is the container-relative path
+(e.g. frontend/index.html), so same-named files in different folders coexist. The
+"active project" concept is gone from file ops / editor / search / Quick Open; a
+"focused project" remains for terminal / preview / export / agent.
+
+  Server: workspaceManager gains getContainerTree, resolveContainerOwnerPath,
+  findContainerProjectId (+ exported copyDirectoryRecursive / uniqueNameInFolder);
+  workspace.controller gains /container/tree and /container/file (GET/PUT) plus
+  create/delete/rename/duplicate handlers; fileWatcher gains a container-level
+  watcher; workspaceSocket gains container:watch / container:unwatch with JWT
+  verification.
+  Client: new containerPaths.js; container API methods; reworked
+  workspaceThunks, fileSystemSlice (focusContainerProject), projectsSlice and
+  fileContentCache; rewritten Sidebar, FileTree, SearchInFiles, TopbarSearch and
+  useWorkspaceWatcher.
+
+VERIFIED: the container HTTP API and the container socket watcher were driven
+live on a spare no-DB server — create frontend/backend, tree with project ids,
+save/read files in both, rename a nested file, duplicate across projects, delete,
+rename a top-level project folder, create nested folder/file, ".." traversal
+refused (400), delete top-level project, and no-token -> 401 (17/19; the two
+"fails" were test-assertion mistakes expecting `name` where the route returns
+`path`). container:watch acked {ok:true} and delivered container:treeChanged.
+
+NOT VERIFIED: the full Explorer end-to-end in a signed-in BROWSER session (drag
+in the tree, instant create/rename/delete/paste with no duplicate rows, terminal
+cd into a sibling folder, preview/export on the focused project). The earlier
+browser test was a throwaway artifact and was removed without a completed run.
+
+Also in the client: AuthModal password eye toggle (Eye/EyeOff, aria-pressed,
+keyboard-focusable, positioned inside the input) — verified in the same
+headless-Chrome pass.
+
+OPEN ITEMS
+  - Run the multi-folder Explorer through a real signed-in browser session
+    (socket updates, optimistic rows, terminal cwd, preview) to close the loop.
+  - Restart the dev server after removing client/.env.local so Vite drops the
+    stale override; the already-running :5173 instance serves
+    VITE_API_BASE_URL=http://localhost:4000 and is already correct.
+  - If MongoDB Atlas is unreachable at startup, the server now says so in one
+    line; a reachable URI/DNS is all that is required to restore auth.
+
+STATUS SUMMARY
+  - Auth database path: VERIFIED against the real DB (15/15) + startup logs.
+  - Auth modal alignment: VERIFIED by measured geometry (both tabs, error box,
+    narrow width).
+  - Unified multi-folder Explorer: server API + socket VERIFIED; browser E2E
+    outstanding.

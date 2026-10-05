@@ -66,7 +66,7 @@ async function captureSnapshot(projectId, node) {
   await mapWithConcurrency(files, SNAPSHOT_CONCURRENCY, async (filePath, index) => {
     let content = ''
     try {
-      const data = await workspaceApi.getFile(projectId, filePath)
+      const data = await workspaceApi.getContainerFile(filePath)
       content = data?.content ?? ''
     } catch {
       // A file we cannot read is restored empty rather than failing the undo.
@@ -85,14 +85,14 @@ async function restoreSnapshot(projectId, snapshot) {
   )
   for (const folderPath of folders) {
     try {
-      await workspaceApi.createEntry(projectId, folderPath, 'folder')
+      await workspaceApi.createContainerPath(folderPath, 'folder')
     } catch (error) {
       // 409 = the folder already exists (a parent was recreated first). Harmless.
       if (error?.status !== 409) throw error
     }
   }
   for (const file of snapshot.files ?? []) {
-    await workspaceApi.saveFile(projectId, file.path, file.content ?? '')
+    await workspaceApi.saveContainerFile(file.path, file.content ?? '')
   }
 }
 

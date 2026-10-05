@@ -267,6 +267,82 @@ export async function createContainerProject(ownerId, displayName, projectId = n
   return { projectId: id, name: folder.folderName, container, path: folder.path }
 }
 
+/**
+ * The full Explorer tree of a user's container: every project folder and every
+ * top-level file, with CONTAINER-RELATIVE paths ("frontend/src/index.js"). This
+ * is the single tree the client renders, so the Explorer's top level is the real
+ * container instead of one active project.
+ */
+export async function getContainerTree(ownerId, options = {}) {
+  const container = workspaceOwnerKey(ownerId)
+  const containerPath = ensureOwnerContainer(ownerId)
+  const rootName = options.name || container
+  return walkDirectory(containerPath, rootName, '')
+}
+
+function cleanContainerRelative(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+}
+
+/**
+ * Resolves a CONTAINER-RELATIVE path to its absolute location on disk, with the
+ * same traversal guard as every other path builder. Returns the first path
+ * segment (`top`), the rest (`inner`), the absolute path and the normalized
+ * relative path.
+ */
+export function resolveContainerOwnerPath(ownerId, relativePath) {
+  const containerPath = ensureOwnerContainer(ownerId)
+  const cleaned = cleanContainerRelative(relativePath)
+  const segments = cleaned.split('/').filter(Boolean)
+  if (segments.length === 0) {
+    throw new ApiError(400, 'A path is required.', 'INVALID_PATH')
+  }
+
+  const top = segments[0]
+  const inner = segments.slice(1).join('/')
+  const absolute = path.resolve(containerPath, ...segments)
+  const relative = path.relative(containerPath, absolute)
+
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new ApiError(400, `Path "${relativePath}" is outside of your workspace.`, 'INVALID_PATH')
+  }
+
+  return {
+    containerPath,
+    top,
+    inner,
+    absolute,
+    relative: relative.split(path.sep).join('/'),
+  }
+}
+
+/**
+ * The project a top-level container folder belongs to. A folder that appeared
+ * outside the app (terminal) is registered on first sight, exactly like the
+ * container listing does, so a path into it is still usable.
+ */
+export function findContainerProjectId(ownerId, topName) {
+  const container = workspaceOwnerKey(ownerId)
+  const existing = findProjectIdForFolder(container, topName)
+  if (existing) return existing
+
+  if (isScratchFolderName(topName)) return null
+  const folderPath = path.join(ensureOwnerContainer(ownerId), topName)
+  if (!fs.existsSync(folderPath)) return null
+  try {
+    if (!fs.statSync(folderPath).isDirectory()) return null
+  } catch {
+    return null
+  }
+
+  const projectId = crypto.randomUUID()
+  setWorkspaceRecord(projectId, { container, folderName: topName })
+  return projectId
+}
+
 function folderPathFor(container, folderName) {
   return container
     ? path.join(WORKSPACES_ROOT, container, folderName)
@@ -846,7 +922,7 @@ export async function renamePathInWorkspace(projectId, oldRelativePath, newRelat
  * large folder (e.g. one containing a node_modules-like tree) froze the entire
  * server — including the terminal — until it finished.
  */
-async function copyDirectoryRecursive(fromAbsolute, toAbsolute, progress) {
+export async function copyDirectoryRecursive(fromAbsolute, toAbsolute, progress) {
   await fsp.mkdir(toAbsolute, { recursive: true })
   const entries = await fsp.readdir(fromAbsolute, { withFileTypes: true })
 
@@ -870,7 +946,7 @@ async function copyDirectoryRecursive(fromAbsolute, toAbsolute, progress) {
  * overwrites and never fails — duplicating an item into a folder that already
  * has one of that name just produces "a (copy).txt".
  */
-async function uniqueNameInFolder(folderAbsolute, name) {
+export async function uniqueNameInFolder(folderAbsolute, name) {
   const exists = (candidate) =>
     fsp.access(path.join(folderAbsolute, candidate)).then(
       () => true,

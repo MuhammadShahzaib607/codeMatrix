@@ -3,12 +3,14 @@ import { useDispatch, useSelector } from 'react-redux'
 import { markChangedOnDisk, removeContent } from '../features/editorSlice'
 import { applyFsChanges } from '../features/fileSystemSlice'
 import { readWorkspaceFile, refreshWorkspaceTree } from '../features/workspaceThunks'
+import { getAuthToken } from '../services/api'
 import { getSocket } from '../services/socket'
+import { projectFolderNameForId } from '../utils/containerPaths'
 import { hasActiveWorkspace } from '../utils/workspace'
 
 // The server already debounces its chokidar notify (750ms), but a second short
 // debounce on the client coalesces anything that still arrives in quick
-// succession — including events triggered by our own save — into one GET /tree.
+// succession — including events triggered by our own save — into one tree fetch.
 const REFRESH_DEBOUNCE_MS = 400
 
 // Reconciliation for agent-driven changes: the incremental update lands
@@ -19,28 +21,67 @@ const RECONCILE_MS = 500
 
 export default function useWorkspaceWatcher() {
   const dispatch = useDispatch()
-  // Depend on primitives only: the workspace object identity changes on every
-  // tree refresh, which would otherwise tear the watcher down and rebuild it.
   const projectId = useSelector((state) => state.fileSystem.workspace.projectId)
   const source = useSelector((state) => state.fileSystem.workspace.source)
+  const tree = useSelector((state) => state.fileSystem.tree)
+  const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
   const openTabs = useSelector((state) => state.fileSystem.openTabs)
   const unsavedFileIds = useSelector((state) => state.editor.unsavedFileIds)
   const timerRef = useRef(null)
   const reconcileRef = useRef(null)
+  const treeRef = useRef(tree)
   const tabsRef = useRef({ openTabs: [], unsavedFileIds: [] })
+
+  useEffect(() => {
+    treeRef.current = tree
+  }, [tree])
 
   useEffect(() => {
     tabsRef.current = { openTabs, unsavedFileIds }
   }, [openTabs, unsavedFileIds])
 
+  // The Explorer's tree is the user's WHOLE container, so it is watched at the
+  // container level: a new sibling folder created by the terminal (or another
+  // project) refreshes it live, not just changes inside the focused project.
   useEffect(() => {
-    if (!hasActiveWorkspace({ projectId, source })) return undefined
+    if (!isAuthenticated) return undefined
+
+    const socket = getSocket()
+    const watchContainer = () => socket.emit('container:watch', { token: getAuthToken() })
+    watchContainer()
+
+    function handleConnect() {
+      watchContainer()
+    }
+
+    function scheduleRefresh() {
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null
+        dispatch(refreshWorkspaceTree({}))
+      }, REFRESH_DEBOUNCE_MS)
+    }
+
+    socket.on('connect', handleConnect)
+    socket.on('container:treeChanged', scheduleRefresh)
+
+    return () => {
+      socket.off('connect', handleConnect)
+      socket.off('container:treeChanged', scheduleRefresh)
+      socket.emit('container:unwatch')
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+    }
+  }, [isAuthenticated, dispatch])
+
+  useEffect(() => {
+    if (!projectId || !hasActiveWorkspace({ projectId, source })) return undefined
 
     const socket = getSocket()
     socket.emit('workspace:watch', { projectId })
 
-    // A reconnect (server restart, tunnel hiccup) drops the rooms the socket was
-    // in, so the watch subscription is re-sent on every connect.
     function handleConnect() {
       socket.emit('workspace:watch', { projectId })
     }
@@ -50,24 +91,36 @@ export default function useWorkspaceWatcher() {
       if (timerRef.current) clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => {
         timerRef.current = null
-        dispatch(refreshWorkspaceTree({ projectId }))
+        dispatch(refreshWorkspaceTree({}))
       }, REFRESH_DEBOUNCE_MS)
     }
 
     function handleTreeChanged(payload) {
-      if (payload?.projectId !== projectId) return
+      if (payload?.projectId && payload.projectId !== projectId) return
       scheduleRefresh()
     }
 
     /**
-     * The agent's own tool results. Files appear one by one: the tree is patched
-     * in place (with new folders opened) and one throttled refetch runs behind
-     * it as reconciliation.
+     * The agent's own tool results, emitted with PROJECT-relative paths. The
+     * Explorer tree is container-relative, so each path is prefixed with the
+     * project's folder name; the tree is patched in place and one throttled
+     * refetch runs behind it as reconciliation.
      */
     function handleFsChanged(payload) {
-      if (payload?.projectId !== projectId) return
-      const changes = Array.isArray(payload.changes) ? payload.changes : []
-      if (changes.length === 0) return
+      if (payload?.projectId && payload.projectId !== projectId) return
+      const rawChanges = Array.isArray(payload.changes) ? payload.changes : []
+      if (rawChanges.length === 0) return
+
+      const folderName = projectFolderNameForId(projectId, treeRef.current)
+      const prefix = folderName ? `${folderName}/` : ''
+      const changes = rawChanges
+        .map((change) => ({
+          ...change,
+          path: prefix && !String(change.path ?? '').startsWith(prefix)
+            ? `${prefix}${String(change.path ?? '').replace(/^\/+/, '')}`
+            : change.path,
+        }))
+        .filter((change) => change.path)
 
       dispatch(applyFsChanges({ changes }))
 
@@ -81,19 +134,17 @@ export default function useWorkspaceWatcher() {
         if (change.type === 'unlink' || change.type === 'unlinkDir') continue
         if (!openIds.includes(change.path)) continue
         if (dirtyIds.includes(change.path)) {
-          // Never throw away what the user typed: keep the buffer and mark the
-          // tab so the change on disk is visible instead of silent.
           dispatch(markChangedOnDisk(change.path))
           continue
         }
-        dispatch(readWorkspaceFile({ projectId, path: change.path, fileId: change.path }))
+        dispatch(readWorkspaceFile({ path: change.path, fileId: change.path }))
       }
 
       if (!reconcileRef.current) {
-        dispatch(refreshWorkspaceTree({ projectId }))
+        dispatch(refreshWorkspaceTree({}))
         reconcileRef.current = setTimeout(() => {
           reconcileRef.current = null
-          dispatch(refreshWorkspaceTree({ projectId }))
+          dispatch(refreshWorkspaceTree({}))
         }, RECONCILE_MS)
       }
     }
@@ -106,10 +157,6 @@ export default function useWorkspaceWatcher() {
       socket.off('workspace:treeChanged', handleTreeChanged)
       socket.off('workspace:fsChanged', handleFsChanged)
       socket.emit('workspace:unwatch', { projectId })
-      if (timerRef.current) {
-        clearTimeout(timerRef.current)
-        timerRef.current = null
-      }
       if (reconcileRef.current) {
         clearTimeout(reconcileRef.current)
         reconcileRef.current = null

@@ -171,32 +171,104 @@ const PROBE_SCRIPT = `<script>
     var crumbs = document.querySelector('.breadcrumbs');
     out.breadcrumbListStyle = crumbs ? getComputedStyle(crumbs).listStyleType : '';
     var controls = [].slice.call(document.querySelectorAll('input:not([type="hidden"]), select, textarea, .btn, button'));
-    var grouped = {};
+    var controlGroups = [];
     controls.forEach(function (control) {
       var box = control.getBoundingClientRect();
       if (box.height < 8 || !control.parentNode) return;
       var parent = control.parentNode;
-      var key = parent.className ? String(parent.className) : String(parent.tagName);
-      (grouped[key] = grouped[key] || []).push(Math.round(box.height));
+      var group = null;
+      for (var i = 0; i < controlGroups.length; i += 1) {
+        if (controlGroups[i].parent === parent) { group = controlGroups[i]; break; }
+      }
+      if (!group) {
+        group = { parent: parent, label: parent.className ? String(parent.className).split(/\s+/)[0] : String(parent.tagName).toLowerCase(), rows: {} };
+        controlGroups.push(group);
+      }
+      var band = String(Math.round(box.top / 6));
+      (group.rows[band] = group.rows[band] || []).push(Math.round(box.height));
     });
     out.unequalControlRows = [];
-    Object.keys(grouped).forEach(function (key) {
-      var heights = grouped[key];
-      if (heights.length < 2) return;
-      var min = Math.min.apply(null, heights);
-      var max = Math.max.apply(null, heights);
-      if (max - min > 1) out.unequalControlRows.push({ group: key, heights: heights });
+    controlGroups.forEach(function (group) {
+      Object.keys(group.rows).forEach(function (band) {
+        var heights = group.rows[band];
+        if (heights.length < 2) return;
+        var min = Math.min.apply(null, heights);
+        var max = Math.max.apply(null, heights);
+        if (max - min > 1) out.unequalControlRows.push({ group: group.label, heights: heights });
+      });
     });
+    var unequalCardRows = [];
+    [].slice.call(document.querySelectorAll('[class*="grid"]')).forEach(function (grid) {
+      var layout = getComputedStyle(grid).display;
+      if (layout !== 'grid' && layout !== 'flex') return;
+      var cards = [].slice.call(grid.children).filter(function (child) {
+        var box = child.getBoundingClientRect();
+        return box.width > 60 && box.height > 40;
+      });
+      if (cards.length < 2) return;
+      var rows = {};
+      cards.forEach(function (child) {
+        var box = child.getBoundingClientRect();
+        var band = String(Math.round(box.top / 6));
+        var cls = child.className ? String(child.className).split(/\s+/)[0] : String(child.tagName).toLowerCase();
+        (rows[band] = rows[band] || []).push({ height: Math.round(box.height), cls: cls });
+      });
+      Object.keys(rows).forEach(function (band) {
+        var row = rows[band];
+        if (row.length < 2) return;
+        var heights = row.map(function (item) { return item.height; });
+        var min = Math.min.apply(null, heights);
+        var max = Math.max.apply(null, heights);
+        if (max - min > 12) unequalCardRows.push({ group: row[0].cls, heights: heights });
+      });
+    });
+    out.unequalCardRows = unequalCardRows;
     var iconNoLabel = 0;
     [].slice.call(document.querySelectorAll('button')).forEach(function (button) {
       var text = (button.textContent || '').trim();
       if (!text && button.querySelector('svg, img') && !button.getAttribute('aria-label') && !button.getAttribute('title') && !button.getAttribute('aria-labelledby')) iconNoLabel += 1;
     });
     out.iconButtonsMissingLabel = iconNoLabel;
+    var emptyBoxes = [];
+    [].slice.call(document.querySelectorAll('article, .card, .hero__card, .info-card, .service-card, .feature, .value-card, .process-step, .stat, .testimonial, .cta-banner, .blog-card, .pricing-card, .panel')).forEach(function (box) {
+      var rect = box.getBoundingClientRect();
+      if (rect.width < 80 || rect.height < 40) return;
+      var hasMedia = !!box.querySelector('svg, img, video, canvas, iframe, input, textarea, select, button, [data-icon]');
+      var text = String(box.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!hasMedia && text.length < 3) {
+        var cls = box.className ? String(box.className).split(/\s+/)[0] : box.tagName.toLowerCase();
+        emptyBoxes.push(cls + ' (' + Math.round(rect.width) + 'x' + Math.round(rect.height) + ')');
+      }
+    });
+    out.emptyBoxes = emptyBoxes;
+    var unhydratedIcons = 0;
+    [].slice.call(document.querySelectorAll('[data-icon]')).forEach(function (node) {
+      var svg = node.querySelector('svg');
+      if (!svg) { unhydratedIcons += 1; return; }
+      var ibox = svg.getBoundingClientRect();
+      if (ibox.width < 4 || ibox.height < 4) unhydratedIcons += 1;
+    });
+    out.unhydratedIcons = unhydratedIcons;
+    var narrowQuotes = [];
+    [].slice.call(document.querySelectorAll('blockquote, .testimonial__quote')).forEach(function (quote) {
+      var qbox = quote.getBoundingClientRect();
+      var parent = quote.parentElement;
+      if (!parent) return;
+      var pcs = getComputedStyle(parent);
+      var pbox = parent.getBoundingClientRect();
+      var content = pbox.width - (parseFloat(pcs.paddingLeft) || 0) - (parseFloat(pcs.paddingRight) || 0) - (parseFloat(pcs.borderLeftWidth) || 0) - (parseFloat(pcs.borderRightWidth) || 0);
+      if (content < 180) return;
+      if (qbox.width < content - 12) narrowQuotes.push(Math.round(qbox.width));
+    });
+    out.narrowQuotes = narrowQuotes;
     var footer = document.querySelector('footer');
     if (footer) {
       var footerContent = footer.querySelector('.container') || footer.firstElementChild;
-      var mainContent = document.querySelector('main .container');
+      var mainContainers = [].slice.call(document.querySelectorAll('main .container'));
+      var mainContent = null;
+      mainContainers.forEach(function (candidate) {
+        if (!mainContent || candidate.getBoundingClientRect().width > mainContent.getBoundingClientRect().width) mainContent = candidate;
+      });
       if (!mainContent) {
         var mainEl = document.querySelector('main');
         if (mainEl) {
@@ -375,8 +447,27 @@ function evaluateReport(report, file, problems) {
     const first = report.unequalControlRows[0]
     problems.push(`"${file}" has controls on the same row with different heights (${first.group}: ${first.heights.join(', ')}px). Give buttons and inputs on one row the SAME rendered height.`)
   }
+  if (Array.isArray(report.unequalCardRows) && report.unequalCardRows.length > 0) {
+    const first = report.unequalCardRows[0]
+    problems.push(`"${file}" has cards in the same grid row with different heights (${first.group}: ${first.heights.join(', ')}px) — make the cards equal height with no empty space at the bottom: display: flex; flex-direction: column; height: 100% on the card and margin-top: auto on its footer/meta.`)
+  }
   if (report.iconButtonsMissingLabel > 0) {
     problems.push(`"${file}" has ${report.iconButtonsMissingLabel} icon-only button(s) with no accessible name — add an aria-label (plus visible text where space allows).`)
+  }
+  if (Array.isArray(report.emptyBoxes) && report.emptyBoxes.length > 0) {
+    problems.push(
+      `"${file}" has ${report.emptyBoxes.length} visible card/box with no text, icon or media inside (${report.emptyBoxes.slice(0, 3).join(', ')}) — an empty box must never ship; fill it with real content (icon, title, text) or remove it.`,
+    )
+  }
+  if (report.unhydratedIcons > 0) {
+    problems.push(
+      `"${file}" has ${report.unhydratedIcons} icon(s) that did not render as a visible inline SVG (js/icons.js is missing/not loaded, the name is unknown, or the icon has zero size) — every data-icon must resolve to a visible icon.`,
+    )
+  }
+  if (Array.isArray(report.narrowQuotes) && report.narrowQuotes.length > 0) {
+    problems.push(
+      `"${file}" testimonial/quote text is squeezed into a too-narrow column (${report.narrowQuotes.slice(0, 3).join('px, ')}px wide) — reset the blockquote margin and padding to 0 and let the quote fill the full card width.`,
+    )
   }
   if (report.footerWidthDelta != null && report.footerWidthDelta > 8) {
     problems.push(`"${file}" footer content does not align with the page container (${report.footerWidthDelta}px difference) — use the same container width and horizontal padding.`)
@@ -423,9 +514,13 @@ export async function visualSanityCheck({ projectId = null, root = null, files =
   const checked = []
   const reports = []
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-visual-'))
-  const multiWidthFiles = new Set(narrow ? htmlFiles.slice(0, 2) : [])
+  const multiWidthOrdered = (() => {
+    const preferred = htmlFiles.find((file) => /(^|\/)index\.html?$/i.test(file))
+    return preferred ? [preferred, ...htmlFiles.filter((file) => file !== preferred)] : htmlFiles
+  })()
+  const multiWidthFiles = new Set(narrow ? multiWidthOrdered.slice(0, 3) : [])
 
-  for (const file of htmlFiles.slice(0, 4)) {
+  for (const file of htmlFiles.slice(0, 8)) {
     let html
     try {
       html = await fs.readFile(path.join(workspaceRoot, file), 'utf8')

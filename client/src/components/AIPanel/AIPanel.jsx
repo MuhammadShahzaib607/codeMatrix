@@ -10,10 +10,12 @@ import {
   FilePlus2,
   FolderCog,
   Globe,
+  ImagePlus,
   Info,
   KeyRound,
   ListChecks,
   Loader2,
+  Paperclip,
   Pencil,
   Play,
   RefreshCw,
@@ -42,8 +44,14 @@ import {
   stopAgentTask,
 } from '../../features/aiSlice'
 import { openSettings } from '../../features/settingsSlice'
-import { openAuthModal } from '../../features/uiSlice'
+import { openAuthModal, showToast } from '../../features/uiSlice'
 import useAuthGuard from '../../hooks/useAuthGuard'
+import {
+  ACCEPT_ATTRIBUTE,
+  MAX_IMAGES,
+  pickImageFiles,
+  processImageFile,
+} from '../../utils/imageAttachments'
 import {
   frameworkFor,
   loadModelPreference,
@@ -70,6 +78,8 @@ const ACTION_ICONS = {
   create_file: FilePlus,
   append_to_file: FilePlus2,
   edit_file: Pencil,
+  edit_section: Pencil,
+  vision: ImagePlus,
   read_file: Eye,
   list_directory: Search,
   delete_file: Trash2,
@@ -139,15 +149,38 @@ function ActionLine({ entry }) {
         ? 'timeout'
         : `exit ${details.exitCode ?? 0}`
       : ''
+  const report = entry.type === 'vision' && typeof details.report === 'string' ? details.report : null
+  const fullError =
+    entry.status === 'error'
+      ? typeof details.result === 'string' && details.result.length > 120
+        ? details.result
+        : typeof details.error === 'string' && details.error.length > 0
+          ? details.error
+          : null
+      : null
 
   return (
-    <div className={`ai-line is-${entry.type} ${isRunning ? 'is-running' : ''}`} title={detailsText(entry)}>
-      <span className="ai-line-icon">
-        {isRunning ? <Loader2 size={12} className="ai-spin" /> : <Icon size={12} />}
-      </span>
-      <span className="ai-line-text">{entry.description}</span>
-      {meta && <span className="ai-line-meta">{meta}</span>}
-    </div>
+    <>
+      <div className={`ai-line is-${entry.type} ${isRunning ? 'is-running' : ''}`} title={detailsText(entry)}>
+        <span className="ai-line-icon">
+          {isRunning ? <Loader2 size={12} className="ai-spin" /> : <Icon size={12} />}
+        </span>
+        <span className="ai-line-text">{entry.description}</span>
+        {meta && <span className="ai-line-meta">{meta}</span>}
+      </div>
+      {report && (
+        <details className="ai-vision-report">
+          <summary>Screenshot analysis</summary>
+          <pre>{report}</pre>
+        </details>
+      )}
+      {fullError && (
+        <details className="ai-line-error">
+          <summary>View full error</summary>
+          <pre>{fullError}</pre>
+        </details>
+      )}
+    </>
   )
 }
 
@@ -349,6 +382,26 @@ export default function AIPanel() {
   // `running` has re-rendered true.
   const sendingRef = useRef(false)
   const [clock, setClock] = useState(() => Date.now())
+  const [attachments, setAttachments] = useState([])
+  const [processingImages, setProcessingImages] = useState(0)
+  const [dragActive, setDragActive] = useState(false)
+  const [enlargedImage, setEnlargedImage] = useState(null)
+  const attachInputRef = useRef(null)
+  const attachmentsRef = useRef([])
+  const dragDepthRef = useRef(0)
+
+  useEffect(() => {
+    attachmentsRef.current = attachments
+  }, [attachments])
+
+  useEffect(() => {
+    if (!enlargedImage) return undefined
+    function handleEscape(event) {
+      if (event.key === 'Escape') setEnlargedImage(null)
+    }
+    document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
+  }, [enlargedImage])
 
   const {
     keys,
@@ -498,13 +551,17 @@ export default function AIPanel() {
 
   function handleSend(event) {
     event?.preventDefault?.()
-    const task = draft.trim()
+    const hasImages = attachments.length > 0
+    const task =
+      draft.trim() ||
+      (hasImages ? 'Review the attached screenshot(s) and fix the problems shown.' : '')
     if (!task || running || sendingRef.current) return
 
     if (!isAuthenticated) {
       guard(() => {}, 'Please sign in to use the AI assistant')
       return
     }
+    const images = attachments
 
     // No workspace check here on purpose: with nothing imported the thunk opens
     // (or reuses) the scratch workspace and starts the run against it. An empty
@@ -513,7 +570,9 @@ export default function AIPanel() {
     sendingRef.current = true
     const run = () => {
       setDraft('')
-      dispatch(startAgentTask({ projectId, task, resume }))
+      setAttachments([])
+      attachmentsRef.current = []
+      dispatch(startAgentTask({ projectId, task, resume, images }))
         .unwrap()
         .catch(() => {
           // The failure is already rendered as an agent error bubble in the
@@ -529,6 +588,91 @@ export default function AIPanel() {
 
   function handleSuggestion(text) {
     setDraft(text)
+  }
+
+  function removeAttachment(id) {
+    attachmentsRef.current = attachmentsRef.current.filter((image) => image.id !== id)
+    setAttachments((current) => current.filter((image) => image.id !== id))
+  }
+
+  async function addImageFiles(fileList) {
+    const files = pickImageFiles(fileList)
+    if (files.length === 0) return
+    const capacity = Math.max(0, MAX_IMAGES - attachmentsRef.current.length)
+    if (capacity === 0) {
+      dispatch(
+        showToast({ message: `You can attach up to ${MAX_IMAGES} images per message.`, type: 'info' }),
+      )
+      return
+    }
+    if (files.length > capacity) {
+      dispatch(
+        showToast({
+          message: `Up to ${MAX_IMAGES} images per message — ${files.length - capacity} extra ignored.`,
+          type: 'info',
+        }),
+      )
+    }
+    for (const file of files.slice(0, capacity)) {
+      setProcessingImages((count) => count + 1)
+      try {
+        const image = await processImageFile(file)
+        attachmentsRef.current = [...attachmentsRef.current, image]
+        setAttachments((current) => [...current, image])
+      } catch (error) {
+        dispatch(showToast({ message: error.message, type: 'error' }))
+      } finally {
+        setProcessingImages((count) => count - 1)
+      }
+    }
+  }
+
+  function handlePaste(event) {
+    const items = event.clipboardData?.items
+    if (!items || items.length === 0) return
+    const files = []
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) files.push(file)
+      }
+    }
+    if (files.length > 0) {
+      event.preventDefault()
+      addImageFiles(files)
+    }
+  }
+
+  function isFileDrag(event) {
+    return Array.from(event.dataTransfer?.types ?? []).includes('Files')
+  }
+
+  function handleDragEnter(event) {
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    dragDepthRef.current += 1
+    setDragActive(true)
+  }
+
+  function handleDragOver(event) {
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  function handleDragLeave(event) {
+    if (!isFileDrag(event)) return
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragActive(false)
+  }
+
+  function handleDrop(event) {
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    dragDepthRef.current = 0
+    setDragActive(false)
+    if (!showComposer || running) return
+    addImageFiles(event.dataTransfer?.files)
   }
 
   function handleContinue() {
@@ -567,7 +711,19 @@ export default function AIPanel() {
   }, [draft, showComposer])
 
   return (
-    <aside className="ai-panel">
+    <aside
+      className={`ai-panel ${dragActive ? 'is-dragging' : ''}`}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {dragActive && (
+        <div className="ai-drop-overlay" aria-hidden="true">
+          <ImagePlus size={22} />
+          <span>Drop images to attach</span>
+        </div>
+      )}
       <div className="ai-header">
         <Sparkles size={16} className="ai-header-icon" />
         <span className="ai-header-title">AI Agent</span>
@@ -698,6 +854,22 @@ export default function AIPanel() {
                 </div>
                 <div className="ai-bubble">
                   <p className="ai-text">{entry.text}</p>
+                  {Array.isArray(entry.images) && entry.images.length > 0 && (
+                    <div className="ai-message-images">
+                      {entry.images.map((image) => (
+                        <button
+                          key={image.id ?? image.dataUrl}
+                          type="button"
+                          className="ai-message-image"
+                          title="Enlarge"
+                          aria-label={`Enlarge ${image.name || 'attached image'}`}
+                          onClick={() => setEnlargedImage(image)}
+                        >
+                          <img src={image.dataUrl} alt={image.name || 'Attached screenshot'} />
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {typeof entry.durationMs === 'number' && (
                     <p className="ai-summary-meta">Took {formatDuration(entry.durationMs)}</p>
                   )}
@@ -887,9 +1059,62 @@ export default function AIPanel() {
         </div>
       )}
 
+      {showComposer && (attachments.length > 0 || processingImages > 0) && (
+        <div className="ai-attachments" aria-label="Attached images">
+          {attachments.map((image) => (
+            <div key={image.id} className="ai-attachment">
+              <button
+                type="button"
+                className="ai-attachment-thumb"
+                title="Click to enlarge"
+                aria-label={`Enlarge ${image.name}`}
+                onClick={() => setEnlargedImage(image)}
+              >
+                <img src={image.dataUrl} alt={image.name} />
+              </button>
+              <button
+                type="button"
+                className="ai-attachment-remove"
+                title="Remove image"
+                aria-label={`Remove ${image.name}`}
+                onClick={() => removeAttachment(image.id)}
+              >
+                <X size={11} />
+              </button>
+            </div>
+          ))}
+          {Array.from({ length: Math.min(processingImages, MAX_IMAGES) }).map((_, index) => (
+            <div key={`processing-${index}`} className="ai-attachment is-processing" aria-hidden="true">
+              <Loader2 size={14} className="ai-spin" />
+            </div>
+          ))}
+        </div>
+      )}
+
       {showComposer && (
         <>
           <form className="ai-composer" onSubmit={handleSend}>
+            <input
+              ref={attachInputRef}
+              type="file"
+              accept={ACCEPT_ATTRIBUTE}
+              multiple
+              hidden
+              onChange={(event) => {
+                addImageFiles(event.target.files)
+                event.target.value = ''
+              }}
+            />
+            <button
+              type="button"
+              className="ai-attach"
+              title="Attach images (png, jpg, webp)"
+              aria-label="Attach images"
+              disabled={running}
+              onClick={() => attachInputRef.current?.click()}
+            >
+              <Paperclip size={15} />
+            </button>
             <textarea
               ref={textareaRef}
               className="ai-input ai-textarea"
@@ -901,6 +1126,7 @@ export default function AIPanel() {
                 running ? 'The agent is working…' : 'Describe the task for the agent…'
               }
               onChange={(event) => setDraft(event.target.value)}
+              onPaste={handlePaste}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
@@ -924,13 +1150,37 @@ export default function AIPanel() {
                 className="ai-send"
                 title="Run task"
                 aria-label="Send task"
-                disabled={!draft.trim()}
+                disabled={!draft.trim() && attachments.length === 0}
               >
                 <Send size={16} />
               </button>
             )}
           </form>
         </>
+      )}
+
+      {enlargedImage && (
+        <div
+          className="ai-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Attached image preview"
+          onClick={() => setEnlargedImage(null)}
+        >
+          <button
+            type="button"
+            className="ai-lightbox-close"
+            aria-label="Close preview"
+            onClick={() => setEnlargedImage(null)}
+          >
+            <X size={18} />
+          </button>
+          <img
+            src={enlargedImage.dataUrl}
+            alt={enlargedImage.name || 'Attached screenshot'}
+            onClick={(event) => event.stopPropagation()}
+          />
+        </div>
       )}
     </aside>
   )

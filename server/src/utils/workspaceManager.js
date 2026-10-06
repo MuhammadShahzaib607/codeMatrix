@@ -761,13 +761,27 @@ export async function deleteWorkspaceFolder(projectId) {
   return true
 }
 
+function writeFileAtomicSync(absolute, content) {
+  const data = typeof content === 'string' ? content : String(content ?? '')
+  const temp = `${absolute}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`
+  try {
+    fs.writeFileSync(temp, data, 'utf8')
+    fs.renameSync(temp, absolute)
+  } catch (error) {
+    try {
+      fs.rmSync(temp, { force: true })
+    } catch {}
+    throw error
+  }
+}
+
 export function writeFileToWorkspace(projectId, relativeFilePath, content = '') {
   assertWorkspaceExists(projectId)
   const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFilePath)
   if (!relative) throw new ApiError(400, 'A file path is required.', 'INVALID_PATH')
 
   fs.mkdirSync(path.dirname(absolute), { recursive: true })
-  fs.writeFileSync(absolute, typeof content === 'string' ? content : String(content ?? ''), 'utf8')
+  writeFileAtomicSync(absolute, content)
   return relative
 }
 
@@ -791,11 +805,14 @@ export function appendFileToWorkspace(projectId, relativeFilePath, content = '')
   if (!relative) throw new ApiError(400, 'A file path is required.', 'INVALID_PATH')
 
   fs.mkdirSync(path.dirname(absolute), { recursive: true })
-  fs.appendFileSync(
-    absolute,
-    typeof content === 'string' ? content : String(content ?? ''),
-    'utf8',
-  )
+  const addition = typeof content === 'string' ? content : String(content ?? '')
+  let existing = ''
+  try {
+    existing = fs.readFileSync(absolute, 'utf8')
+  } catch {
+    existing = ''
+  }
+  writeFileAtomicSync(absolute, existing + addition)
   return relative
 }
 

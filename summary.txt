@@ -7349,3 +7349,672 @@ WHAT COULD NOT BE VERIFIED
     changed.
   - Live reload was verified at the socket-event level, not by watching a real
     browser tab reload.
+================================================================================
+AI Code Editor — Professional Vanilla Output: Deep-Path Scaffolding, Design
+Rules, and Strengthened Quality Checks (2026-10-05)
+================================================================================
+
+STATUS: complete and verified. Depth-correct scaffold links, an always-themed
+        app body, the full shared component set, a concise design-system block
+        in the vanilla prompt, and additive connection/visual check rules all
+        land. Verified with a 25/25 harness against the real scaffold module and
+        the real checks (including real headless Chrome). oxlint 0/0, vite build
+        OK, node --check OK. NOT verified: a full live/mock agent-pipeline run —
+        no provider key is available (see the entry below).
+
+--------------------------------------------------------------------------------
+ROOT CAUSES FOUND (before any change)
+--------------------------------------------------------------------------------
+  1. privacy.html / terms.html linked css/theme.css + css/app.css correctly but
+     used classes (app-header, app-title, page-hero*, breadcrumbs,
+     section-header*, content-block) defined in NEITHER stylesheet, so they
+     rendered default serif/white/unstyled. connectionCheck DID detect the 14
+     missing classes and visualSanity DID detect the serif body, but the pipeline
+     only walked the planned/written file subset and the app gate used lenient
+     missing-class thresholds, so the failures escaped.
+  2. scaffold_app itself writes NO nav, hero, footer or legal pages; the model
+     hand-appended a marketing footer/nav/legal pages. quickCheck forced every
+     page to have a <header> AND a <footer> unconditionally, which pushed apps
+     into adding a footer, and vanillaGate only banned those for apps when the
+     plan type or app.css/base.css told it to.
+  3. The generator put whole sections on a single long line, so any edit_file
+     old_string reproduced with reformatting/indentation could not match.
+
+--------------------------------------------------------------------------------
+WHAT CHANGED
+--------------------------------------------------------------------------------
+PART 2 — scaffolding
+  server/src/templates/vanilla-kit/scaffold.js   NEW relativeHref(fromFile,
+     target); buildPageShell now emits depth-correct hrefs for base.css,
+     theme.css, js/main.js, nav/brand/cta, footer and legal links, so a page in
+     pages/ links ../css/base.css, ../js/main.js, ../index.html.
+  server/src/templates/vanilla-kit/app-kit.js    body.app -> body, body.app, so
+     the app kit always themes <body>.
+  server/src/templates/vanilla-kit/css/base.css  appended .content-block and
+     .table (+ their children), and later the icon/testimonial rules.
+
+PART 3 — prompt
+  server/src/agent/prompts/stacks/vanilla.js   NEW vanillaDesignRules (tokens,
+     typography, colour/contrast, layout, components, accessibility, working
+     behaviour, APP vs WEBSITE, per-type blueprints, self-review checklist) plus
+     vanillaCompactDesignSystem / vanillaFullDesignSystem exports.
+  server/src/agent/prompts/index.js   designSystem -> vanillaFullDesignSystem,
+     compactDesignSystem -> vanillaCompactDesignSystem.
+
+PART 4 — checks
+  server/src/agent/quality/quickCheck.js   app-aware footer requirement (no
+     footer demanded for css/app.css projects).
+  server/src/agent/quality/connectionCheck.js   checks ALL existing HTML pages
+     (not just planned ones), head tags (lang/charset/viewport/title), app bans
+     (footer, hero, header nav, legal pages), allows legitimate ../ paths and
+     resolves depth-aware nav hrefs.
+  server/src/agent/quality/visualSanity.js   new probe metrics (theme bg, body/
+     heading contrast, nav/breadcrumb list-style, unequal control rows grouped
+     by REAL parent row, icon-only buttons without a label, footer alignment/gap,
+     empty boxes, squeezed quotes), all pages collected recursively, ../ assets
+     resolved, widths 1280/768/375.
+
+PART 5 — repaired the broken todo-app workspace through the kit (that workspace
+     is no longer present in the tree).
+
+================================================================================
+AI Code Editor — Aura Glow Repair + Icon System + Reliable, Cheap Edits
+        (2026-10-05)
+================================================================================
+
+STATUS: complete for TASK 1 and TASK 3 and the core of TASK 2; verified by
+        connectionCheck + quickCheck + real headless-Chrome visualSanity on the
+        real aura-glow project (all pass), 10/10 helper unit tests, 9/9 tool
+        functional tests, 7/7 negative-detection tests, oxlint 0/0 and vite
+        build OK. NOT verified: a live provider run; the committed mock harness
+        is stale against the current token-budget guard.
+
+--------------------------------------------------------------------------------
+TASK 2 DIAGNOSIS — why the "fix the testimonials" run failed
+--------------------------------------------------------------------------------
+  * The kit writes each section on ONE long line. The model reproduced the
+    snippet with newlines/indentation, so edit_file's exact match failed; its
+    only fallbacks were CRLF-conversion and whole-string trim, neither of which
+    handled reformatted whitespace.
+  * On failure edit_file answered "Read the file with read_file and copy the
+    exact snippet" and nothing else, so the model re-read (read_file truncates
+    at 8000 chars, with no outline and no line numbers) and retried the same
+    text.
+  * There was no section-addressed edit and no cheap outline/line-range read, so
+    a targeted follow-up still needed the whole file each turn — the 21-request,
+    365K-token run.
+  * Writes were not atomic (fs.writeFileSync/appendFileSync), so a budget stop
+    mid-write could truncate a page.
+
+--------------------------------------------------------------------------------
+WHAT CHANGED
+--------------------------------------------------------------------------------
+TASK 1 — aura-glow repaired (server/workspaces/u-6ac206d781c7e207307dab35/aura-glow)
+  * index.html: filled the empty hero__card with a real product-highlight card,
+    fixed the hero stat values, rebuilt the testimonials (quote mark + 5-star
+    rating + icons), and added the three missing sections (stats, faq, cta) so
+    hero/services/features/testimonials/stats/faq/cta are all present.
+  * css/base.css: reset the blockquote margin/padding, made .testimonial a flex
+    column with .testimonial__meta pinned (margin-top:auto), plus the icon rules.
+  * all five pages: added icons to the feature/service/value/team/info cards and
+    the blog meta; completed the truncated contact-info section; linked
+    js/icons.js.
+  * Added the kit asset js/icons.js to the project.
+
+TASK 3 — icon system
+  server/src/templates/vanilla-kit/icons.js   NEW shared registry (79 inline
+    Lucide-style SVG icons) + the client hydration script (swaps <i data-icon>
+    for an inline SVG on load, re-hydrates on DOM mutations, unknown names fall
+    back to 'circle'); exports hasIcon/iconNames/ICON_FALLBACK.
+  scaffold.js / app-kit.js    write js/icons.js and link it on every page.
+  snippets.js    SECTION_ICONS now emit <i class="icon" data-icon="...">.
+  css/base.css   .icon (1em) + .icon--sm/--md/--lg, .icon-badge(+--circle/--lg),
+    and the testimonial/quote rules.
+  prompts/stacks/vanilla.js   a compact ICONS rule and an EDITING rule (prefer
+    edit_section; never retry a failed old_string).
+  connectionCheck.js   unknown data-icon names, data-icon without js/icons.js,
+    and empty icon slots are problems.
+  visualSanity.js   a visible card/box with no text/icon/media fails, and a
+    blockquote narrower than its card's content width (squeezed quote) fails.
+
+TASK 2 — reliable, cheap edits
+  agentService.js   NEW helpers: normalizeEol, uniqueRange, a whitespace-
+    insensitive matcher (squeezes all whitespace, with uniqueness detection),
+    closestSnippet (failure now returns the nearest line with line numbers),
+    fileOutline, sliceLines, findSectionBlock (balanced-tag scan by
+    id/data-section).
+    edit_file now normalizes line endings, matches exact then whitespace-
+    insensitive, and on failure returns the closest snippet plus a pointer to
+    edit_section instead of a bare error.
+    NEW tool edit_section { path, id, content, action, position } replaces or
+    inserts a whole balanced section by id with NO old text; keeps the same
+    document-integrity guard.
+    read_file gains outline:true (line numbers + section ids) and
+    start_line/end_line.
+    Loop breaker: two consecutive failed edits on one file inject guidance to
+    switch to outline + edit_section.
+  workspaceManager.js   writeFileToWorkspace and appendFileToWorkspace are now
+    ATOMIC (write to a temp file, then rename).
+  client/src/components/AIPanel/AIPanel.jsx and features/aiSlice.js   register
+    edit_section (icon + write-line collapse).
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/templates/vanilla-kit/icons.js                NEW
+  server/src/templates/vanilla-kit/scaffold.js
+  server/src/templates/vanilla-kit/app-kit.js
+  server/src/templates/vanilla-kit/snippets.js
+  server/src/templates/vanilla-kit/index.js
+  server/src/templates/vanilla-kit/css/base.css
+  server/src/agent/prompts/stacks/vanilla.js
+  server/src/agent/prompts/index.js
+  server/src/agent/quality/connectionCheck.js
+  server/src/agent/quality/visualSanity.js
+  server/src/agent/quality/quickCheck.js
+  server/src/services/agentService.js
+  server/src/utils/workspaceManager.js
+  client/src/components/AIPanel/AIPanel.jsx
+  client/src/features/aiSlice.js
+  server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/*   (the repaired site)
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output)
+--------------------------------------------------------------------------------
+  - aura-glow: connectionCheck ok=true, quickCheck ok=true, visualSanity ok=true
+    with no problems; all five pages rendered in real headless Chrome at
+    1280/768/375. index.html has hero+services+features+testimonials+stats+faq+
+    cta, exactly one <h1>, no empty hero card, 32 data-icon uses.
+  - Kit scaffolds: js/icons.js written and linked from root and subfolder pages
+    (js/icons.js / ../js/icons.js) and the app shell; 79 icons; an unknown name
+    falls back.
+  - Helper unit tests (real helpers, files deleted after): 10/10.
+  - Tool functional tests (real executeTool against a temp workspace, deleted
+    after): 9/9 — edit_section replace by id, missing-id outline, exact and
+    whitespace-tolerant edit_file, closest-snippet failure, read_file outline,
+    line range, integrity rejection and acceptance.
+  - Negative detection (real checks, deleted after): 7/7 — undefined class,
+    unknown data-icon, data-icon without icons.js, empty icon slot, missing
+    stylesheet, empty visible card, squeezed quote.
+  - oxlint: 0 warnings / 0 errors (80 files). vite build: OK. node --check on
+    every changed server file.
+  - All temporary test files were removed.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED
+--------------------------------------------------------------------------------
+  - A live provider run, and a mock-pipeline run to completion: no API key is
+    present, and the committed mock harness (server/tmp-vanilla-agent-test.mjs)
+    is stale against the current per-minute token-budget guard — it aborts with
+    "Groq has no per-minute token budget left" because its 8K-tpm model is below
+    the now-larger prompt. The loop wiring was instead read directly in
+    agentService.js (quickCheck -> autofixConnections -> connectionCheck ->
+    visualSanity -> vanillaGate, with repair rounds and blockFinishing), and each
+    gate was exercised on real artifacts.
+  - The "fresh landing page = ~4 requests / 44K tokens, no pauses" claim after
+    these prompt additions: MEASURED_LANDING_PAGE_TOKENS is unchanged and the new
+    design rules add ~936 prompt tokens, but the request/token count was not
+    re-measured (it needs a provider).
+  - Live visual taste of a real model's output (mock runs cannot judge this).
+  - The wide "cards in feature/service/value/step/contact sections without an
+    icon" warning: implemented as a precise EMPTY-icon-slot check plus the
+    rendered empty-box check rather than a broad card scan, to avoid
+    false-positive gate failures.
+
+OPEN ITEMS
+  - Run the aura-glow repair and a follow-up edit request through a real (or a
+    refreshed mock) provider and confirm the request/token counts.
+  - Optionally refresh server/tmp-vanilla-agent-test.mjs against the current
+    budget guard so the committed mock harness runs again.
+
+STATUS SUMMARY
+  - Aura Glow repair: VERIFIED in real headless Chrome (connectionCheck,
+    quickCheck, visualSanity all pass at 1280/768/375).
+  - Icon system (js/icons.js + .icon/.icon-badge + scaffold + prompt + checks):
+    VERIFIED by kit output tests and 7/7 negative checks.
+  - edit_file/edit_section/read_file reliability + atomic writes: VERIFIED by
+    10/10 helper + 9/9 tool tests; the live token/request improvement is
+    outstanding.
+================================================================================
+AI Code Editor — Screenshot Attachments via a Background Vision Step, and
+        Robust HTML Section Editing (2026-10-05)
+================================================================================
+
+STATUS: complete and verified for every part that can be exercised locally
+        (oxlint 0/0, vite build OK, node --check OK, 12/12 section-tool tests,
+        8/8 vision mock-provider tests, 6/6 image-validation tests, aura-glow
+        connectionCheck + quickCheck + visualSanity all pass with real headless
+        Chrome). NOT verified: a live Mistral vision call (no provider key in
+        this environment) and a live end-to-end agent run for the 2x2 request
+        (no provider key). See the bottom for the honest list.
+
+--------------------------------------------------------------------------------
+TASK 1 — IMAGE ATTACHMENTS IN THE AI AGENT PANEL
+--------------------------------------------------------------------------------
+
+CLIENT — files created
+  client/src/utils/imageAttachments.js
+    MAX_IMAGES = 5, ACCEPTED_IMAGE_TYPES = png/jpeg/webp, MAX_SOURCE_BYTES =
+    12MB, MAX_DIMENSION = 1600, OUTPUT_QUALITY = 0.85.
+    processImageFile(file) validates the type and size, decodes via
+    createImageBitmap (Image fallback), downscales the longest side to 1600px on
+    a canvas, re-encodes to JPEG and returns { id, name, dataUrl, mime, width,
+    height, bytes }. pickImageFiles(list) filters a FileList to accepted images.
+
+CLIENT — modified
+  components/AIPanel/AIPanel.jsx
+    - Paperclip button next to the input opens a hidden <input type=file
+      multiple accept="image/png,image/jpeg,image/webp"> (aria-labels on every
+      control).
+    - Ctrl+V with an image in the clipboard attaches it (onPaste keeps text
+      paste working; only image items are intercepted).
+    - Drag and drop: dragenter/over/leave/drop on the panel, with a dashed
+      "Drop images to attach" overlay while dragging; text drags are ignored.
+    - Thumbnails above the input: click to enlarge (modal lightbox, Escape
+      closes), an x to remove each, and a spinner slot per image still
+      processing. Sent messages keep their thumbnails in the chat bubble.
+    - Max 5 per message: extras are ignored with a toast. Oversized/invalid
+      files are rejected with a clear toast.
+    - Send is enabled with images only, text only, or both; images-only sends a
+      default "Review the attached screenshot(s)…" task.
+    - Send/Stop, Continue/reconnect and the usage meters are unchanged.
+    - Failed tool actions, and a failed vision step, now expose their COMPLETE
+      message under a collapsible "View full error" (the old line truncated the
+      reason at 160 chars).
+    - The vision step lands in the action stream as "Analyzing … screenshot(s)…"
+      then "Analysis ready", with the report in a collapsible block.
+
+  features/aiSlice.js
+    startAgentTask accepts `images`, dispatches agentStarted({ task, images }),
+    stores the thumbnails on the user timeline entry, and sends the data URLs in
+    the agent:run payload.
+
+  components/AIPanel/AIPanel.css
+    additive rules for the attachment strip, thumbnails, remove button, attach
+    button, message thumbnails, lightbox, drop overlay and the two collapsible
+    blocks. .ai-panel gained position: relative.
+
+SERVER — files created
+  server/src/services/visionService.js
+    sanitizeImagePayload(rawImages) validates count (<=5), data-URL shape, mime
+    (png/jpeg/webp) and decoded size (<=6MB) server-side and returns valid
+    images plus human-readable problems.
+    analyzeScreenshots({ images, task, keys, userId, taskId, emitUsage }) picks
+    the user's Mistral key(s), lists each key's models and walks a
+    vision-capable chain — mistral-large-latest, mistral-medium-latest,
+    mistral-small-latest, pixtral-large-latest, pixtral-12b-2409 — sending the
+    images as base64 data URLs in a chat-completions content array
+    ({ type: "image_url", image_url: <data URL> }). It records usage per call
+    (recordUsageEvent), emits the usage snapshot, marks a key invalid/cooling on
+    401/429 and returns a compact structured text report (SCREENS / PROBLEMS /
+    LOCATION / EXPECTED), capped at 1600 chars. No vision-capable key (or a
+    total failure) throws a clear coded error instead of silently dropping the
+    images.
+
+SERVER — modified
+  services/agentService.js
+    runAgent takes `images`, sanitizes them, emits the vision action pair and,
+    when a report comes back, injects it into the user message as
+    "SCREENSHOT ANALYSIS (…) — the images themselves are NOT available to you".
+    The coding model never receives image data. Vision usage is recorded against
+    the run's taskId, so it lands in "This task" and the per-key budget.
+  socket/agentSocket.js   forwards payload.images into runAgent.
+  server.js               Socket.IO maxHttpBufferSize raised to 25MB so base64
+                          screenshots fit in one agent:run frame.
+
+--------------------------------------------------------------------------------
+TASK 2 — RELIABLE HTML SECTION EDITING (diagnosis + repair + hardening)
+--------------------------------------------------------------------------------
+
+DIAGNOSIS OF THE aura-glow FAILURE (evidence: the file on disk)
+  - server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/index.html had an
+    UNCLOSED <section id="testimonials">: the third testimonial's SVG <path>
+    was cut mid-attribute (d="M12 2l3.09 6.) and the following
+    <section id="stats"> started immediately, with no </section>, </figure> or
+    </div> in between. The browser therefore parsed the stats <section> as a
+    child of the testimonials .grid → the "By the numbers / Trusted by beauty
+    lovers" heading block appeared as a third grid column. That is exactly the
+    reported symptom.
+  - findSectionBlock() matched <section id="testimonials"> and, finding no
+    closing tag, returned end = end-of-file. A replace therefore deleted the
+    stats, faq and cta sections, </main> and the footer, so the document
+    integrity check (exactly one <header>/<footer>/<h1> and a closing </html>)
+    rejected the write. The message was the raw integrity error.
+  - describeFailure() then sliced the reason to 160 chars and to the FIRST line,
+    which is why the UI showed "that section edit would leave index.html i…".
+    The full text existed in details.result but the panel had no way to open it.
+  - The 8-request / 155.6K-token loop: every rejected edit answered with a
+    generic "read the file and copy the exact snippet", the model re-read the
+    whole file (truncated at 8000 chars, no outline), retried, failed again, and
+    the loop kept going until the budget cap.
+
+WHAT CHANGED
+  server/src/utils/htmlStructure.js (NEW)
+    A real HTML scanner that ignores tags inside comments, <!doctype>/<?…>,
+    <script>/<style>/<textarea>/<title> raw text and attribute values (it is
+    quote-aware, so `title="a > b"` cannot confuse it). On top of it:
+      - findSectionBlock(): id/data-section match by the balanced element of the
+        SAME tag name; returns { start, end, tagName, line, endLine } or
+        { unbalanced: true } when no closing tag exists.
+      - sectionLineRange(): the line range of one section.
+      - sectionStructureProblems(): structural (container-tag) balance PLUS a
+        nested-section check — a <section id="x"> inside another section fails
+        with "sits inside".
+  server/src/services/agentService.js
+    - findSectionBlock now comes from htmlStructure (comment/script/attribute
+      aware) instead of the old regex scan.
+    - edit_section refuses an unbalanced target with a precise message (id,
+      opening line, "never closed") instead of eating the rest of the file.
+    - A replacement that would introduce NEW structural problems is rejected
+      with the exact problems (what is unbalanced, expected tag, line numbers)
+      and the instruction to resend the complete section; the file is not
+      written. Document integrity is still enforced too.
+    - read_file gained section: "<id>" — it returns ONLY that section with line
+      numbers, so a targeted follow-up never re-reads the whole file.
+    - describeFailure's reason cap raised 160 → 400 chars.
+    - The budget hard-stop no longer interrupts a failing edit: while an edit
+      streak is pending it auto-continues once with a focused instruction, and
+      the 70% "wrap up" guidance is skipped mid-edit.
+  server/src/agent/prompts/stacks/vanilla.js
+    - The EDITING rule now spells out read_file { path, section: "<id>" }.
+    - NEW LAYOUT-ONLY rule: for "2 rows and 2 columns" / "equal-height cards",
+      change the CSS (grid-template-columns: repeat(2, minmax(0,1fr)),
+      align-items: stretch, card display:flex; flex-direction:column;
+      height:100%, meta margin-top:auto) with append_to_file and touch the
+      markup only to get the right card count (exactly 4) — never rewrite the
+      whole section.
+  server/src/agent/quality/visualSanity.js (additive)
+    New probe metric unequalCardRows: cards in the same rendered grid row whose
+    heights differ by more than 12px now fail with the equal-height / no-empty-
+    space fix.
+  server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/index.html (REPAIRED)
+    The truncated testimonials section was rebuilt into a well-formed
+    <section id="testimonials"> with its own heading and FOUR testimonial cards
+    (2x2 grid class), each with a 5-star rating, quote and author. The stats
+    section is untouched and now sits after it as a sibling. The document is
+    balanced and valid again. No other project or file was touched.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  client/src/utils/imageAttachments.js                    NEW
+  client/src/components/AIPanel/AIPanel.jsx
+  client/src/components/AIPanel/AIPanel.css
+  client/src/features/aiSlice.js
+  server/src/services/visionService.js                    NEW
+  server/src/utils/htmlStructure.js                       NEW
+  server/src/services/agentService.js
+  server/src/socket/agentSocket.js
+  server/server.js
+  server/src/agent/prompts/stacks/vanilla.js
+  server/src/agent/quality/visualSanity.js
+  server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/index.html (repair)
+  summary.txt
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output)
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings / 0 errors (client, 81 files). vite build: OK (2031
+    modules). node --check on every changed server file: OK.
+  - Section tools (real executeTool against a temp file in the aura-glow
+    workspace, file deleted after): 12/12 — outline lists the section ids;
+    read_file { section } returns ONLY that section (and its line range) and
+    excludes the next one; a balanced edit_section replace succeeds; a
+    deliberately unbalanced replace is rejected with a message naming the
+    section and the problem and a line number; the file is byte-for-byte
+    unchanged after the rejection; a replacement that nests another section is
+    rejected with the "sits inside" message; a missing id is rejected with the
+    outline.
+  - htmlStructure: the real broken aura-glow file reported the unclosed
+    <main>/<section>/<div>/<figure> chain; the repaired file reports NO problems
+    and findSectionBlock resolves testimonials (lines 48-110), stats (111), faq
+    (112) and cta (113) as separate siblings. A tricky document with tags inside
+    comments, a script and a title attribute scans clean.
+  - aura-glow after repair, REAL headless Chrome: connectionCheck ok=true,
+    quickCheck ok=true, visualSanity ok=true (the new unequal-card-row check
+    included) with no problems.
+  - Vision step (real runAgent + real providerClient against a local mock
+    Mistral server): 8/8 — the vision request runs FIRST and carries the base64
+    data URL in a content array; the model used is mistral-large-latest; the
+    vision tokens are counted in the task totals (1320 for the mock response);
+    the report text reaches the coding model inside the user message; NO coding
+    request body contains "data:image"; the coding model still runs.
+  - Image validation + no-vision fallback: 6/6 — extras above 5 are ignored with
+    a message, a non-allowed mime and a malformed data URL are rejected, a jpeg
+    is accepted, and with only non-Mistral keys analyzeScreenshots throws a clear
+    NO_VISION_MODEL error instead of dropping the images.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - A LIVE Mistral vision call and its real report quality: no API key and no
+    reachable provider in this environment. The mock proves the transport,
+    ordering, token counting and isolation; it cannot judge the model's wording.
+  - A LIVE end-to-end agent run of "make testimonials 2 rows and 2 columns" and
+    its request/token count, plus a live deliberately-unbalanced edit through the
+    model: same reason. The tool-level rejection and the file-unchanged guarantee
+    ARE verified.
+  - The client attachment UI was not driven in a real browser here (no running
+    client/session in this environment): button / Ctrl+V / drag-and-drop, the
+    6th-image toast and the lightbox are code-reviewed and lint/build clean but
+    not click-tested.
+  - The 12MB client size cap and the 1600px downscale are pure client logic and
+    were not exercised in a browser.
+  - Unauthenticated agent:run rejection is unchanged from the phase that verified
+    it; it was not re-run here.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Run the vision pipeline and the "testimonials 2x2" request through a real
+    Mistral key and confirm the live report quality, request count and token
+    cost with images attached.
+  - Drive the attachment UI in a signed-in browser (button, Ctrl+V, drag-drop,
+    6th-image rejection, remove, enlarge) to close the loop.
+  - Optional: refresh server/tmp-vanilla-agent-test.mjs against the current
+    budget guard (still stale from the previous phase).
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY
+--------------------------------------------------------------------------------
+  - Screenshot attachments UI (button / paste / drag-drop / thumbnails /
+    lightbox / limits): IMPLEMENTED, oxlint + build clean; NOT browser-verified.
+  - Server vision step (Mistral chain, structured report, usage + budget,
+    text-only fallback, no image data to the coding model): VERIFIED by 8/8
+    mock-provider tests and 6/6 validation tests; live model output outstanding.
+  - Section addressing + precise errors + validate-before-write + atomic writes:
+    VERIFIED by 12/12 tool tests and the real broken→repaired aura-glow file.
+  - aura-glow repair (testimonials and stats separated, document balanced):
+    VERIFIED by connectionCheck + quickCheck + visualSanity in real headless
+    Chrome; preview click-through at 375/768/1280 not run here (the checks
+    render those widths).
+================================================================================
+AI Code Editor — Targeted Edits That Cannot Expand, Forbidden-Write Instructions,
+        a Cheap Resilient Vision Step, and aura-glow Green Checks (2026-10-05)
+================================================================================
+
+STATUS: complete and verified. A follow-up edit is now scoped to the files the
+        task names, cannot create an unrelated page, and gets a precise
+        instruction (not a retry) when a write is impossible. The "token budget
+        at 76% wrap up" message no longer appears for a small edit. aura-glow
+        passes connectionCheck + quickCheck + visualSanity + vanillaGate in real
+        headless Chrome with real privacy/terms pages. The vision step honours
+        Retry-After, falls back across models, and reports a readable message.
+        Verified by a 16/16 mock-provider harness (deleted after the run) plus
+        oxlint 0/0, vite build OK and node --check OK. NOT verified: live
+        Mistral limits and live model vision output (no provider key here).
+
+--------------------------------------------------------------------------------
+TASK 1 — WHY privacy.html ENTERED A TESTIMONIALS RUN (root cause)
+--------------------------------------------------------------------------------
+  * The stack prompt's FIRST rule is "your first reply is the plan JSON only"
+    and the follow-up block says "READ FIRST, THEN PLAN, THEN WRITE". So on
+    EVERY run, including a one-line edit, the model emits a whole-site plan
+    (index/about/shop/privacy/terms + missing sections). The loop adopted that
+    plan verbatim and plannedFileIssues() then demanded those unrelated files
+    and sections. That is what expanded a testimonials edit into about.html,
+    shop.html and privacy.html.
+  * AGENT.md (project history) preserved the earlier failed "add privacy/terms"
+    run, including "Last error: privacy.html does not exist (use create_file)",
+    so the model read it as unfinished work.
+  * The failed write itself was NOT the app-vs-website legal-page ban: aura-glow
+    is a website (css/base.css, no css/app.css) and legal pages are allowed. The
+    create_file for privacy.html was rejected by the document-integrity check in
+    validateWriteContent ("... was NOT written, because the document is
+    incomplete") because the model sent a partial page. describeFailure() then
+    sliced the reason to 400 chars/first line, so the UI showed a cut-off text
+    even though details.result held the full error.
+  * The rule conflict to fix: connectionCheck forbids legal pages for an APP,
+    while the vanilla prompt told the model to "create the real page" for a
+    privacy/terms link. Two rules could demand opposite things.
+
+--------------------------------------------------------------------------------
+TASK 2 — TARGETED EDITS, NON-RETRYABLE FAILURES, BUDGET (what changed)
+--------------------------------------------------------------------------------
+server/src/services/agentService.js
+  * NEW isTargetedEditTask(task, snapshot) / namedExistingFiles(task, files):
+    an existing project + a task that is not asking for a NEW page and either
+    names an existing file or uses an edit verb is a TARGETED EDIT.
+  * Plan scoping: when targeted, the model's whole-site plan is DISCARDED and
+    plan/planDoc are limited to the named files (sections only when the task
+    names an existing section id). No unrelated file or section can be required.
+  * The user message for a targeted edit says so explicitly (change only the
+    named files/sections; never create a page a link points at).
+  * Write guard: during a targeted edit, create_file for a path the task did not
+    name is REFUSED with a "remove or repoint the link instead" instruction.
+  * removePlannedPath(): a file proven impossible (missing for edit_file, or a
+    forbidden write) is dropped from plan/planDoc immediately.
+  * Non-retryable failures now append a specific instruction to the tool result:
+    a missing file gets "call create_file ONCE, or drop it from the task"; a
+    forbidden write gets "do not retry it; remove or repoint the link".
+  * planAckPending: after the plan JSON is parsed the model is told to implement
+    it. Without this a scoped (empty-file) plan finished the run with no change.
+  * Budget: the 70% "wrap up" guidance is skipped for a targeted edit, and the
+    100% hard stop auto-continues once for a targeted edit instead of cutting it
+    off mid-change.
+  * Full error in the UI: the tool event's result cap was raised 2000 -> 8000
+    chars, so the panel's "View full error" shows the complete failure text.
+
+server/src/agent/quality/connectionCheck.js
+  * A link to a legal/secondary page in an APP now reports "Remove or repoint
+    that link; do not create the page." instead of a generic missing-file error,
+    so the two rules can no longer demand opposite things.
+
+server/src/agent/prompts/stacks/vanilla.js
+  * The privacy/terms rules are now CONDITIONAL on project type: WEBSITE -> a
+    requested legal page is created and linked from the footer legal row; APP ->
+    never create it, remove or repoint any existing legal link. Applied to both
+    the main rule block and the follow-up block.
+
+--------------------------------------------------------------------------------
+TASK 2 — aura-glow REPAIRED THE RIGHT WAY
+--------------------------------------------------------------------------------
+  * privacy.html and terms.html were ADDED as real pages (page-hero + honest
+    policy text, shared header/footer, one h1, linked css/base.css + theme.css +
+    js/icons.js + js/main.js), and the footer legal row on all EIGHT pages now
+    links Privacy Policy + Terms & Conditions. Creating a legal page on a
+    WEBSITE succeeds, which is the corrected rule.
+  * shop.html had three dead in-page anchors (#face-makeup/#eye-makeup/
+    #lip-makeup) that made vanillaGate fail with 3 problems and sent the agent
+    into repeated repair rounds. Added a real "Our Product Range" section with
+    three id-carrying cards, so the anchors resolve.
+  * css/base.css: .team-grid used repeat(3, 1fr) and overflowed at 375px (its
+    responsive override sat BEFORE the base rule, so it never applied). Changed
+    to repeat(auto-fit, minmax(240px, 1fr)) — the same rule the kit ships.
+  * Result (real headless Chrome): connectionCheck ok, quickCheck ok,
+    visualSanity ok (1280/768/375, 7 pages), vanillaGate ok.
+
+--------------------------------------------------------------------------------
+TASK 3 — VISION: CHEAP, RESILIENT, VISIBLE
+--------------------------------------------------------------------------------
+server/src/services/visionService.js
+  * MAX_REPORT_CHARS 1600 -> 1200; maxCompletionTokens 700 -> 500.
+  * On 429 it now HONOURS Retry-After once (bounded: 20s per wait, 30s total)
+    and retries the same model, then moves to the next vision-capable model on
+    the key, then throws VISION_FAILED with a readable message that names the
+    limit, the wait and the fallback: "The Mistral per-minute token limit was
+    reached during analysis (waited 1s) ... Your images were not dropped ...".
+  * The vision call already runs only when images exist and is never gated by
+    the coding task's token budget.
+server/src/services/agentService.js
+  * A failed vision step now also emits a plain note with the full message, so
+    the limit is visible in the stream, not only under "View full error".
+client/src/utils/imageAttachments.js
+  * Downscale 1600 -> 1280px, JPEG quality 0.85 -> 0.8 (cheaper images, same
+    readability).
+  * A new message already starts with a fresh task budget (taskId is minted per
+    run in the socket and clearTaskTotals() runs before the vision step); no
+    stale budget from a failed run is reused.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/services/agentService.js
+  server/src/services/visionService.js
+  server/src/agent/quality/connectionCheck.js
+  server/src/agent/prompts/stacks/vanilla.js
+  client/src/utils/imageAttachments.js
+  server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/  (privacy.html,
+    terms.html NEW; shop.html, index.html, about.html, blog.html, contact.html,
+    css/base.css)
+  summary.txt
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output)
+--------------------------------------------------------------------------------
+  - Mock-provider harness (real runAgent + real providerClient against a local
+    OpenAI-compatible mock; deleted after the run): 16/16.
+      * Targeted edit: the plan event is "TARGETED EDIT — scoped to ..." and
+        never lists privacy.html/terms.html; 0 unrelated files planned.
+      * A create_file for an unplanned file was refused with the targeted-edit
+        instruction and the file was NOT created.
+      * An edit_file on a missing file returned the exact failure; the run did
+        not retry it and went on to make the real change.
+      * 2x2 run: "make testimonials 2 rows and 2 columns" -> 3 coding requests,
+        3960 tokens, four testimonial cards in a grid--2, no wrap-up message,
+        completed cleanly.
+      * Vision 1 image: 429 -> waited -> retried -> fell back to
+        mistral-medium-latest and returned a report.
+      * Vision 5 images: every vision model 429 -> clear visible error + note,
+        images not dropped, fresh task budget (no stale state).
+  - aura-glow, real headless Chrome: connectionCheck ok, quickCheck ok,
+    visualSanity ok, vanillaGate ok (0 problems).
+  - oxlint: 0 warnings / 0 errors (81 files). vite build: OK. node --check on
+    every changed server file: OK.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - A live Mistral vision call and the real Mistral per-minute limits: no
+    provider key and no reachable provider here. The mock proves transport,
+    Retry-After handling, model fallback and token counting, not real model
+    limits or report wording.
+  - A live end-to-end agent run on a real provider (the request/token numbers
+    above are mock-measured).
+  - The client attachment UI (button / paste / drag-drop / lightbox) was not
+    click-tested in a browser this round; oxlint + build are clean.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Run the vision pipeline and the "testimonials 2x2" request through a real
+    Mistral key to confirm live limits, report quality and real token cost.
+  - server/tmp-vanilla-agent-test.mjs is still stale against the current budget
+    guard; refresh or delete it.
+  - Drive the attachment UI in a signed-in browser to close the loop.
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY
+--------------------------------------------------------------------------------
+  - Root cause of privacy.html planning/writing: FOUND and FIXED (whole-site
+    plan on a follow-up + no scoping + retry-instead-of-instruction), verified by
+    the mock harness.
+  - Targeted edits cannot expand, and impossible writes get an instruction:
+    VERIFIED 16/16.
+  - Small edits no longer hit wrap-up / budget interruption: VERIFIED (3
+    requests, 3960 tokens, no wrap-up).
+  - aura-glow checks pass cleanly with real privacy/terms pages: VERIFIED in
+    real headless Chrome (all four checks).
+  - Vision Retry-After + model fallback + visible limit message: VERIFIED with a
+    mock provider; live output outstanding.
+================================================================================

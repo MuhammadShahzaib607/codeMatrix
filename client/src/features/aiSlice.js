@@ -28,7 +28,7 @@ import { openScratchWorkspace } from './workspaceThunks'
 // Tool calls that write a file. Consecutive writes to the SAME path collapse
 // into one feed line, so "Writing index.html…" simply becomes "Wrote
 // index.html" instead of one row per appended part.
-const WRITE_TYPES = new Set(['create_file', 'append_to_file', 'edit_file'])
+const WRITE_TYPES = new Set(['create_file', 'append_to_file', 'edit_file', 'edit_section'])
 
 const initialState = {
   keys: [],
@@ -220,11 +220,12 @@ export const updateApiKey = createAsyncThunk(
  */
 export const startAgentTask = createAsyncThunk(
   'ai/startTask',
-  async ({ projectId, task, resume = false }, { dispatch, getState, rejectWithValue }) => {
+  async ({ projectId, task, resume = false, images = [] }, { dispatch, getState, rejectWithValue }) => {
     const { ai, settings } = getState()
+    const attachments = Array.isArray(images) ? images : []
 
     // Optimistic user row + running state, so the request shows immediately.
-    dispatch(agentStarted({ task }))
+    dispatch(agentStarted({ task, images: attachments }))
 
     try {
       // The agent only needs a workspace to write into, and one ALWAYS exists:
@@ -266,6 +267,7 @@ export const startAgentTask = createAsyncThunk(
             provider: modelParts(ai.modelChoice).provider,
             providerPreference: ai.providerPreference,
             keyId: ai.selectedKeyId,
+            images: attachments.map((image) => image?.dataUrl ?? image).filter(Boolean),
             resume: resume && Boolean(activeProjectId),
             strictRules: (settings?.agent?.strictRules ?? [])
               .filter((rule) => rule.enabled)
@@ -360,7 +362,12 @@ const aiSlice = createSlice({
       state.switchingTo = null
       state.startedAt = null
       state.runId = null
-      state.timeline.push({ id: nanoid(), kind: 'user', text: action.payload.task })
+      state.timeline.push({
+        id: nanoid(),
+        kind: 'user',
+        text: action.payload.task,
+        images: Array.isArray(action.payload.images) ? action.payload.images : [],
+      })
     },
 
     agentRunStarted(state, action) {

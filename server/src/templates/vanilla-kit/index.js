@@ -10,6 +10,7 @@ import {
 } from './scaffold.js'
 import { APP_CSS, APP_JS, appStylesheet, buildAppFiles, extractKitTokens } from './app-kit.js'
 import { SECTION_SNIPPETS, SECTION_TYPES, SLOT_PATTERN } from './snippets.js'
+import { ICON_FALLBACK, ICONS_SCRIPT, hasIcon, iconNames } from './icons.js'
 import { DEFAULT_THEME_ID, THEME_PRESETS, getThemePreset, themePresetIds } from './themes.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -79,6 +80,10 @@ export {
   APP_CSS,
   APP_JS,
   DEFAULT_THEME_ID,
+  ICON_FALLBACK,
+  ICONS_SCRIPT,
+  hasIcon,
+  iconNames,
   LEGAL_LINK,
   LEGAL_PAGE,
   SECTION_SNIPPETS,

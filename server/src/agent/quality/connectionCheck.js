@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getWorkspacePath } from '../../utils/workspaceManager.js'
-import { LEGAL_LINK, loadKitClasses } from '../../templates/vanilla-kit/index.js'
+import { LEGAL_LINK, hasIcon, iconNames, loadKitClasses } from '../../templates/vanilla-kit/index.js'
 import { APP_STYLESHEET, SECONDARY_PAGE } from './thresholds.js'
 
 const IGNORED_SCHEMES = /^(mailto:|tel:|sms:|data:|javascript:|blob:)/i
@@ -431,8 +431,14 @@ export async function connectionCheck({
       }
 
       if (checkExistence && !allSet.has(target)) {
+        // A legal/secondary page must never be created for an APP. Point the
+        // model at the LINK, not at the page, so the two rules cannot demand
+        // opposite things.
+        const forbiddenLegal = isAppProject && SECONDARY_PAGE.test(target)
         problems.push(
-          `"${file}" line ${ref.line} links to "${value}", which does not exist in the project (resolved to "${target}").`,
+          forbiddenLegal
+            ? `"${file}" line ${ref.line} links to "${value}" — a legal/secondary page, which this utility APP must NOT ship. Remove or repoint that link with edit_file; do not create the page.`
+            : `"${file}" line ${ref.line} links to "${value}", which does not exist in the project (resolved to "${target}").`,
         )
         details.missingFiles.push({ file, value, target, line: ref.line })
         problemFiles.add(file)
@@ -462,6 +468,42 @@ export async function connectionCheck({
         `"${file}" does not load any script, but this project has JS files (${jsAll.slice(0, 3).join(', ')}). Add <script src="..."></script> before </body>.`,
       )
       problemFiles.add(file)
+    }
+
+    const dataIcons = [...html.matchAll(/\bdata-icon\s*=\s*["']([^"']+)["']/gi)]
+      .map((match) => String(match[1] ?? '').trim())
+      .filter(Boolean)
+    if (dataIcons.length > 0) {
+      const unknown = [...new Set(dataIcons)].filter((name) => !hasIcon(name))
+      if (unknown.length > 0) {
+        details.unknownIcons = details.unknownIcons ?? []
+        details.unknownIcons.push({ file, names: unknown })
+        problemFiles.add(file)
+        problems.push(
+          `"${file}" uses ${unknown.length} icon name(s) that do not exist in js/icons.js: ${unknown.slice(0, 8).join(', ')}. Use a shipped name (for example ${iconNames().slice(0, 6).join(', ')}) so the icon renders instead of the neutral fallback.`,
+        )
+      }
+      const linksIcons = [...scripts].some((script) => /(^|\/)icons\.js$/i.test(script))
+      const hasIconsFile = jsAll.some((entry) => /(^|\/)icons\.js$/i.test(entry))
+      if (!linksIcons && hasIconsFile) {
+        problemFiles.add(file)
+        problems.push(
+          `"${file}" uses data-icon but does not load js/icons.js. Add <script src="${relativeRef(file, 'js/icons.js')}" defer></script> before js/main.js so the icons are swapped in.`,
+        )
+      }
+    }
+
+    const emptyIconSlots = []
+    for (const slot of html.matchAll(/<(span|div|i)\b[^>]*class\s*=\s*["'][^"']*(?:__icon|icon-badge)[^"']*["'][^>]*>([\s\S]*?)<\/\1>/gi)) {
+      const inner = String(slot[2] ?? '')
+      if (/<svg\b/i.test(inner) || /data-icon\s*=/i.test(inner)) continue
+      emptyIconSlots.push(inner.replace(/<[^>]*>/g, '').trim().slice(0, 24) || '(empty)')
+    }
+    if (emptyIconSlots.length > 0) {
+      problemFiles.add(file)
+      problems.push(
+        `"${file}" has ${emptyIconSlots.length} empty icon slot(s) (${emptyIconSlots.slice(0, 4).join(', ')}). Every card icon must render something — put <i class="icon" data-icon="name" aria-hidden="true"></i> inside it (or an inline SVG), never leave the slot empty.`,
+      )
     }
   }
 

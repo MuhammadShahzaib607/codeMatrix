@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { DEFAULT_THEME_ID, getThemePreset, fontsHref } from './themes.js'
 import { SECTION_TYPES } from './snippets.js'
+import { ICONS_SCRIPT } from './icons.js'
 
 export function relativeHref(fromFile, target) {
   const fromDir = path.posix.dirname(String(fromFile ?? '').replace(/\\/g, '/'))
@@ -178,6 +179,7 @@ ${navPages.map((entry) => `          <li><a class="footer-link" href="${href(ent
   <button class="back-to-top" type="button" aria-label="Back to top">
     <svg class="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
   </button>
+  <script src="${href('js/icons.js')}" defer></script>
   <script src="${href('js/main.js')}" defer></script>
 </body>
 </html>
@@ -191,6 +193,7 @@ export function buildScaffoldFiles(input) {
     { path: 'css/base.css', content: null, kind: 'kit' },
     { path: 'css/theme.css', content: theme.css, kind: 'theme' },
     { path: 'js/main.js', content: null, kind: 'kit' },
+    { path: 'js/icons.js', content: ICONS_SCRIPT, kind: 'icons' },
   ]
   for (const page of pages) {
     files.push({

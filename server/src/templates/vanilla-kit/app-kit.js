@@ -1,5 +1,6 @@
 import { fontsHref, getThemePreset, DEFAULT_THEME_ID } from './themes.js'
 import { initialMark } from './scaffold.js'
+import { ICONS_SCRIPT } from './icons.js'
 
 export const APP_CSS = `
 /* ==========================================================================
@@ -561,6 +562,7 @@ export function buildAppShell({ title, description, theme, brand }) {
   <main class="app-shell" id="app">
     <!-- SLOT:app -->
   </main>
+  <script src="js/icons.js" defer></script>
   <script src="js/app.js" defer></script>
 </body>
 </html>
@@ -573,6 +575,7 @@ export function buildAppFiles(input) {
     { path: 'css/theme.css', content: theme.css, kind: 'theme' },
     { path: 'css/app.css', content: null, kind: 'app-css' },
     { path: 'js/app.js', content: APP_JS, kind: 'app-js' },
+    { path: 'js/icons.js', content: ICONS_SCRIPT, kind: 'icons' },
     {
       path: 'index.html',
       content: buildAppShell({ title, description, theme, brand }),

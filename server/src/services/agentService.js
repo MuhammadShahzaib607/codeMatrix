@@ -27,7 +27,7 @@ import {
   formatAutofixReport,
   formatConnectionReport,
 } from '../agent/quality/connectionCheck.js'
-import { GATE_MAX_REPAIR_ROUNDS } from '../agent/quality/thresholds.js'
+import { GATE_MAX_REPAIR_ROUNDS, SECONDARY_PAGE } from '../agent/quality/thresholds.js'
 import { formatVisualReport, visualSanityCheck } from '../agent/quality/visualSanity.js'
 import { clearAgentSession, getAgentSession, saveAgentSession } from './agentSessionService.js'
 import {
@@ -61,6 +61,8 @@ import {
   splitJsonPayload,
   trimTrailingNameLeak,
 } from './providerClient.js'
+import { findSectionBlock, sectionLineRange, sectionStructureProblems } from '../utils/htmlStructure.js'
+import { analyzeScreenshots, sanitizeImagePayload } from './visionService.js'
 
 export const MAX_TOOL_CALLS = 60
 // A vanilla site is 4-6 files. Anything above this is a loop, and every extra
@@ -145,6 +147,10 @@ const TOOL_ARG_SPECS = {
     example:
       '{"path":"css/theme.css","old_string":"--color-primary: #4361ee;","new_string":"--color-primary: #e94560;"}',
   },
+  edit_section: {
+    keys: 'path, id, content (optional action: replace|insert, position: before|after)',
+    example: '{"path":"index.html","id":"testimonials","content":"<section id=\"testimonials\">…</section>"}',
+  },
   scaffold_site: {
     keys: 'brand, pages',
     example: '{"brand":"Acme","pages":[{"file":"index.html","sections":["hero","services"]}]}',
@@ -153,7 +159,7 @@ const TOOL_ARG_SPECS = {
     keys: 'title, brand, palette',
     example: '{"title":"Tip Calculator","brand":"Acme","palette":"indigo-modern"}',
   },
-  read_file: { keys: 'path', example: '{"path":"index.html"}' },
+  read_file: { keys: 'path (optional outline, start_line, end_line)', example: '{"path":"index.html","outline":true}' },
   list_directory: { keys: 'path', example: '{"path":"."}' },
   delete_file: { keys: 'path', example: '{"path":"old.html"}' },
   run_command: { keys: 'command', example: '{"command":"npm run build"}' },
@@ -360,6 +366,55 @@ function appendGuidance(messages, text) {
   }
   messages.push({ role: 'user', content: text })
   return false
+}
+
+const NEW_PAGE_REQUEST =
+  /\b(?:add|create|make|build|naya|nayi|new)\b[^.\n]{0,40}\b(?:page|pages|privacy|terms|cookie|legal|sitemap|disclaimer|impressum)\b/i
+const EDIT_VERB =
+  /\b(?:edit|change|update|fix|adjust|tweak|make|set|move|remove|delete|replace|rename|resize|restyle|repair|correct|align|center|theek|thik|karo|kardo|kar\s*do|badal|hata|rakhna|rakho|bada|bara|chota|chhota|banao|ban[ae]o)\b/i
+
+// Which existing files does the task actually name? Used both to scope a
+// follow-up edit and to refuse to create an unrelated file during one.
+export function namedExistingFiles(task, files = []) {
+  const text = String(task ?? '').toLowerCase().replace(/\\/g, '/')
+  const found = []
+  for (const file of files) {
+    const lower = String(file ?? '').toLowerCase().replace(/\\/g, '/')
+    if (!lower) continue
+    const base = lower.split('/').pop()
+    const stem = base.replace(/\.[^.]+$/, '')
+    const stemPattern =
+      stem.length >= 5 ? new RegExp(`(^|[^a-z0-9])${stem.replace(/[^a-z0-9]+/g, '[-_ ]?')}([^a-z0-9]|$)`).test(text) : false
+    const hit = text.includes(lower) || (base.length >= 6 && text.includes(base)) || stemPattern
+    if (hit && !found.includes(file)) found.push(file)
+  }
+  return found
+}
+
+// A follow-up edit on an existing project: the project already has files, the
+// task is not asking for a NEW page, and it either names an existing file or
+// uses an edit verb. These runs must change only what was named — they must
+// never plan or create the rest of the site.
+export function isTargetedEditTask(task, snapshot = null) {
+  if (!snapshot) return false
+  const text = String(task ?? '').trim()
+  if (!text) return false
+  if (NEW_PAGE_REQUEST.test(text)) return false
+  const files = Array.isArray(snapshot.pages) ? snapshot.pages : []
+  if (namedExistingFiles(text, files).length > 0) return true
+  return EDIT_VERB.test(text)
+}
+
+function sectionsNamedInTask(task, sectionIds = []) {
+  const text = String(task ?? '').toLowerCase()
+  const named = []
+  for (const id of sectionIds) {
+    const clean = String(id ?? '').trim()
+    if (!clean) continue
+    const pattern = new RegExp(`(^|[^a-z0-9-])${clean.replace(/[^a-z0-9-]/gi, '')}([^a-z0-9-]|$)`, 'i')
+    if (pattern.test(text)) named.push(clean)
+  }
+  return named
 }
 
 function plannedSectionsFor(planDoc, file) {
@@ -620,11 +675,37 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read a file before editing it.',
+      description:
+        'Read a file before editing it. Pass outline: true for a compact map (line numbers, section ids, tags, total lines) instead of the whole file, section: "id" to read ONLY that one section, and start_line/end_line to read just one region. Never read the whole file for a targeted follow-up.',
       parameters: {
         type: 'object',
-        properties: { path: { type: 'string' } },
+        properties: {
+          path: { type: 'string' },
+          outline: { type: 'boolean', description: 'Return a section/tag outline with line numbers instead of the file body' },
+          section: { type: 'string', description: 'Read only the section with this id/data-section' },
+          start_line: { type: 'number', description: 'First line to read (1-based)' },
+          end_line: { type: 'number', description: 'Last line to read (inclusive)' },
+        },
         required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_section',
+      description:
+        'Change ONE whole section of an EXISTING HTML file by its id WITHOUT reproducing any old text. Use this for any section-level change, and whenever edit_file reports the old_string was not found. action "replace" (default) swaps the whole balanced <section id="..."> element for content; action "insert" places content before/after it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative path, e.g. index.html' },
+          id: { type: 'string', description: 'The section id or data-section value to change' },
+          content: { type: 'string', description: 'The new markup (a complete <section ...>…</section>)' },
+          action: { type: 'string', enum: ['replace', 'insert'] },
+          position: { type: 'string', enum: ['before', 'after'] },
+        },
+        required: ['path', 'id', 'content'],
       },
     },
   },
@@ -673,6 +754,7 @@ const TOOL_LABELS = {
   create_file: 'create_file',
   append_to_file: 'append_to_file',
   edit_file: 'edit_file',
+  edit_section: 'edit_section',
   scaffold_site: 'scaffold_site',
   scaffold_app: 'scaffold_app',
   read_file: 'read_file',
@@ -681,7 +763,7 @@ const TOOL_LABELS = {
   run_command: 'run_command',
 }
 
-const WRITE_TOOLS = new Set(['create_file', 'append_to_file', 'edit_file'])
+const WRITE_TOOLS = new Set(['create_file', 'append_to_file', 'edit_file', 'edit_section'])
 
 function truncate(text, limit) {
   const value = String(text ?? '')
@@ -780,6 +862,26 @@ function workspaceStateText(writtenThisRun) {
   return `Files already written in this run: ${files.join(', ')}.`
 }
 
+async function collectSectionIds(projectId, files) {
+  const index = new Map()
+  for (const file of Array.isArray(files) ? files : []) {
+    if (!/\.html?$/i.test(file)) continue
+    const content = await readWorkspaceFileSafe(projectId, file)
+    if (content === null) continue
+    const ids = []
+    for (const match of content.matchAll(/\bid\s*=\s*["']([A-Za-z][\w-]*)["']/g)) {
+      const id = match[1]
+      if (!ids.includes(id)) ids.push(id)
+    }
+    index.set(file, ids)
+  }
+  return index
+}
+
+function isAppWorkspace(projectId) {
+  return existsInWorkspace(projectId, 'css/app.css') && !existsInWorkspace(projectId, 'css/base.css')
+}
+
 async function readWorkspaceFileSafe(projectId, relativePath) {
   const clean = String(relativePath ?? '')
     .replace(/\\/g, '/')
@@ -808,6 +910,10 @@ function describeAction(name, args, { phase = 'running', lines = 0 } = {}) {
         return phase === 'running' ? `Filling ${filePath}…` : `Filled ${filePath} · ${lines} lines`
       }
       return phase === 'running' ? `Editing ${filePath}…` : `Edited ${filePath} · ${lines} lines`
+    case 'edit_section':
+      return phase === 'running'
+        ? `Updating section ${args.id ? `#${args.id} ` : ''}in ${filePath}…`
+        : `Updated section ${args.id ? `#${args.id} ` : ''}in ${filePath} · ${lines} lines`
     case 'scaffold_site':
       return phase === 'running'
         ? `Scaffolding ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) from the starter kit…`
@@ -835,7 +941,7 @@ function describeFailure(name, args, outcome = null) {
   const filePath = args.path ?? 'file'
   const raw = String(outcome?.text ?? '')
   const reason = raw.startsWith('Error:')
-    ? raw.replace(/^Error:\s*/, '').split('\n')[0].slice(0, 160)
+    ? raw.replace(/^Error:\s*/, '').split('\n')[0].slice(0, 400)
     : ''
   switch (name) {
     case 'create_file':
@@ -844,6 +950,8 @@ function describeFailure(name, args, outcome = null) {
       return reason ? `Failed to extend ${filePath} — ${reason}` : `Failed to extend ${filePath}`
     case 'edit_file':
       return reason ? `Failed to edit ${filePath} — ${reason}` : `Failed to edit ${filePath}`
+    case 'edit_section':
+      return reason ? `Failed to edit section in ${filePath} — ${reason}` : `Failed to edit section in ${filePath}`
     case 'scaffold_site':
       return reason ? `Failed to scaffold the site — ${reason}` : 'Failed to scaffold the site'
     case 'scaffold_app':
@@ -1184,6 +1292,100 @@ function missingParentFolders(projectId, filePath) {
   return missing
 }
 
+function normalizeEol(text) {
+  return String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
+
+function uniqueRange(text, needle) {
+  const first = text.indexOf(needle)
+  if (first === -1) return null
+  if (text.indexOf(needle, first + needle.length) !== -1) return { ambiguous: true }
+  return { start: first, end: first + needle.length }
+}
+
+function squeezeWhitespace(text) {
+  const chars = []
+  const starts = []
+  const ends = []
+  const source = String(text ?? '')
+  for (let index = 0; index < source.length; index += 1) {
+    if (/\s/.test(source[index])) continue
+    chars.push(source[index])
+    starts.push(index)
+    ends.push(index + 1)
+  }
+  return { text: chars.join(''), starts, ends }
+}
+
+function whitespaceRange(text, needle) {
+  const squeezed = squeezeWhitespace(text)
+  const pin = squeezeWhitespace(needle).text
+  if (!pin) return null
+  const first = squeezed.text.indexOf(pin)
+  if (first === -1) return null
+  if (squeezed.text.indexOf(pin, first + 1) !== -1) return { ambiguous: true }
+  return { start: squeezed.starts[first], end: squeezed.ends[first + pin.length - 1] }
+}
+
+function closestSnippet(text, needle, context = 2) {
+  const lines = String(text ?? '').split('\n')
+  const probe = normalizeEol(needle).trim().split(/\s+/).filter(Boolean)
+  const wanted = new Set(probe.slice(0, 12))
+  let best = null
+  lines.forEach((line, index) => {
+    const lineTokens = line.split(/\s+/).filter(Boolean)
+    let score = 0
+    for (const token of lineTokens) if (wanted.has(token)) score += token.length
+    if (score > 0 && (!best || score > best.score)) best = { index, score }
+  })
+  if (!best) return { line: null, excerpt: '' }
+  const from = Math.max(0, best.index - context)
+  const to = Math.min(lines.length, best.index + context + 1)
+  const excerpt = lines
+    .slice(from, to)
+    .map((line, offset) => `${String(from + offset + 1).padStart(5)} | ${line}`)
+    .join('\n')
+  return { line: best.index + 1, excerpt }
+}
+
+function fileOutline(text, filePath) {
+  const source = normalizeEol(text)
+  const lines = source.split('\n')
+  const entries = []
+  const pattern = /<([a-z][a-z0-9]*)\b([^>]*)>/i
+  lines.forEach((line, index) => {
+    const match = pattern.exec(line)
+    if (!match) return
+    const tag = String(match[1]).toLowerCase()
+    if (!['section', 'header', 'footer', 'main', 'nav', 'form', 'article', 'div', 'h1', 'h2'].includes(tag)) return
+    const attrs = match[2] ?? ''
+    const id = /\bid\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1] ?? ''
+    const cls = /\bclass\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1]?.split(/\s+/)[0] ?? ''
+    if (!id && !/^(section|header|footer|main|nav|form|h1|h2)$/.test(tag)) return
+    const label = id ? `#${id}` : cls ? `.${cls}` : ''
+    entries.push(`${String(index + 1).padStart(5)} | <${tag}${label ? ' ' + label : ''}>`)
+  })
+  return [
+    `${filePath} — ${lines.length} line(s), ${source.length} char(s)`,
+    ...entries,
+    'Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.',
+  ].join('\n')
+}
+
+function sliceLines(text, startLine, endLine, filePath = '') {
+  const lines = normalizeEol(text).split('\n')
+  const total = lines.length
+  let from = Number.isFinite(startLine) ? Math.max(1, Math.floor(startLine)) : 1
+  let to = Number.isFinite(endLine) ? Math.floor(endLine) : Math.min(total, from + 119)
+  if (from > total) from = Math.max(1, total - 1)
+  to = Math.min(total, Math.max(from, to))
+  const body = lines
+    .slice(from - 1, to)
+    .map((line, offset) => `${String(from + offset).padStart(5)} | ${line}`)
+    .join('\n')
+  return `${filePath} lines ${from}-${to} of ${total}\n${body}`
+}
+
 async function executeTool(name, rawArgs, projectId) {
   const args = normalizeToolArgs(projectId, name, rawArgs)
   switch (name) {
@@ -1192,6 +1394,12 @@ async function executeTool(name, rawArgs, projectId) {
       const filePath = String(args.path ?? '').trim()
       const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
       if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
+      if (name === 'create_file' && SECONDARY_PAGE.test(filePath) && isAppWorkspace(projectId)) {
+        return {
+          text: `Error: "${filePath}" is a legal/secondary page, and this project is a utility APP which must not ship one. Remove or repoint the footer link that points to it — do not create the page.`,
+          rejected: true,
+        }
+      }
       if (name === 'edit_file' && !existsInWorkspace(projectId, filePath)) {
         return { text: `Error: "${filePath}" does not exist (use create_file).` }
       }
@@ -1215,35 +1423,33 @@ async function executeTool(name, rawArgs, projectId) {
             rejected: true,
           }
         }
-        const candidates = [oldString]
-        if (existing.includes('\r\n') && oldString.includes('\n')) {
-          candidates.push(oldString.replace(/\n/g, '\r\n'))
-        }
-        if (oldString.trim() !== oldString) candidates.push(oldString.trim())
-        let needle = null
-        for (const candidate of candidates) {
-          if (candidate && existing.split(candidate).length - 1 === 1) {
-            needle = candidate
-            break
-          }
-        }
-        if (!needle) {
-          const occurrences = existing.split(oldString).length - 1
-          const slots = [...existing.matchAll(/<!--\s*SLOT:([a-z0-9-]+)\s*-->/g)].map(
-            (match) => `<!-- SLOT:${match[1]} -->`,
-          )
-          if (occurrences > 1) {
-            return {
-              text: `Error: old_string appears ${occurrences} times in "${filePath}", so the edit would be ambiguous. Include a few surrounding characters so it occurs exactly once.${slots.length > 0 ? ` Empty slots still in the file: ${slots.join(', ')}.` : ''}`,
-              rejected: true,
-            }
-          }
+        const normalizedExisting = normalizeEol(existing)
+        const normalizedOld = normalizeEol(oldString)
+        const slots = [...normalizedExisting.matchAll(/<!--\s*SLOT:([a-z0-9-]+)\s*-->/g)].map(
+          (match) => `<!-- SLOT:${match[1]} -->`,
+        )
+        let range = uniqueRange(normalizedExisting, normalizedOld)
+        if (range && range.ambiguous) {
           return {
-            text: `Error: old_string was not found in "${filePath}", so nothing was changed.${slots.length > 0 ? ` Replace one of these markers instead: ${slots.join(', ')}.` : ' Read the file with read_file and copy the exact snippet.'}`,
+            text: `Error: old_string appears more than once in "${filePath}", so the edit would be ambiguous. Include a few surrounding characters so it occurs exactly once, or use edit_section { path, id, content }.${slots.length > 0 ? ` Empty slots still in the file: ${slots.join(', ')}.` : ''}`,
             rejected: true,
           }
         }
-        const next = existing.replace(needle, newString)
+        if (!range) range = whitespaceRange(normalizedExisting, normalizedOld)
+        if (range && range.ambiguous) {
+          return {
+            text: `Error: old_string matches more than one place in "${filePath}" (ignoring whitespace), so the edit would be ambiguous. Use edit_section { path, id, content } instead.`,
+            rejected: true,
+          }
+        }
+        if (!range) {
+          const closest = closestSnippet(normalizedExisting, normalizedOld)
+          return {
+            text: `Error: old_string was not found in "${filePath}", so nothing was changed. The closest match is at line ${closest.line ?? '?'}:\n${closest.excerpt}\n${slots.length > 0 ? `Empty slots still in the file: ${slots.join(', ')}. ` : ''}Do NOT send the same text again — use edit_section { path, id, content } to replace the section by its id, or read_file { path, outline: true } first and copy the exact lines.`,
+            rejected: true,
+          }
+        }
+        const next = normalizedExisting.slice(0, range.start) + newString + normalizedExisting.slice(range.end)
         if (/\.html?$/i.test(filePath) && SITE_PAGE_MARKER.test(next)) {
           const integrity = documentIntegrityIssues(next)
           if (integrity) {
@@ -1448,8 +1654,125 @@ async function executeTool(name, rawArgs, projectId) {
     case 'read_file': {
       const filePath = String(args.path ?? '').trim()
       if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
-      const content = readFileFromWorkspace(projectId, filePath)
+      let content
+      try {
+        content = readFileFromWorkspace(projectId, filePath)
+      } catch (error) {
+        return { text: toolErrorMessage(name, args, error) }
+      }
+      const sectionId = String(args.section ?? args.section_id ?? '').trim()
+      if (sectionId) {
+        const range = sectionLineRange(content, sectionId)
+        if (!range) {
+          return {
+            text: `Error: no element with id/data-section "${sectionId}" was found in "${filePath}". Its outline:\n${fileOutline(content, filePath)}`,
+          }
+        }
+        return {
+          text: `Only section "${sectionId}" of "${filePath}" (lines ${range.startLine}-${range.endLine}, no other part of the file):\n${sliceLines(
+            content,
+            range.startLine,
+            range.endLine,
+            filePath,
+          )}`,
+        }
+      }
+      if (args.outline === true || args.outline === 'true' || String(args.mode ?? '').toLowerCase() === 'outline') {
+        return { text: fileOutline(content, filePath) }
+      }
+      const startLine = Number(args.start_line ?? args.startLine)
+      const endLine = Number(args.end_line ?? args.endLine)
+      if (Number.isFinite(startLine)) {
+        return { text: sliceLines(content, startLine, Number.isFinite(endLine) ? endLine : startLine + 119, filePath) }
+      }
       return { text: truncate(content, MAX_READ_CHARS) }
+    }
+    case 'edit_section': {
+      const filePath = String(args.path ?? '').trim()
+      const id = String(args.id ?? args.section ?? args.section_id ?? '').trim()
+      const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
+      if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
+      if (!id) {
+        return { text: 'Error: edit_section needs an "id" — the section id (or data-section) to change, for example "testimonials".', rejected: true }
+      }
+      if (!content.trim()) {
+        return { text: `Error: edit_section needs the new "content" for section "${id}".`, rejected: true }
+      }
+      if (!existsInWorkspace(projectId, filePath)) {
+        return { text: `Error: "${filePath}" does not exist (use create_file).`, rejected: true }
+      }
+      const existingSection = await readWorkspaceFileSafe(projectId, filePath)
+      if (existingSection === null) {
+        return { text: `Error: "${filePath}" does not exist (use create_file).`, rejected: true }
+      }
+      const normalized = normalizeEol(existingSection)
+      const block = findSectionBlock(normalized, id)
+      if (block && block.ambiguous) {
+        return { text: `Error: "${id}" is used by more than one element in "${filePath}", so the section edit would be ambiguous. Give the target section a unique id first.`, rejected: true }
+      }
+      if (!block) {
+        return {
+          text: `Error: no element with id/data-section "${id}" was found in "${filePath}". Its outline:\n${fileOutline(normalized, filePath)}`,
+          rejected: true,
+        }
+      }
+      if (block.unbalanced) {
+        return {
+          text: `Error: the section "${id}" in "${filePath}" is opened at line ${block.line} but never closed, so its boundary is unknown and the edit was rejected — nothing was written. The file is already unbalanced. Read the outline (read_file { path: "${filePath}", outline: true }), then repair that section by resending a COMPLETE balanced <${block.tagName} ...>…</${block.tagName}> with edit_section, or fix the whole file with a complete create_file.`,
+          rejected: true,
+        }
+      }
+      const action = String(args.action ?? 'replace').toLowerCase()
+      const position = String(args.position ?? 'after').toLowerCase()
+      let next
+      if (action === 'insert') {
+        const at = position === 'before' ? block.start : block.end
+        next = `${normalized.slice(0, at)}\n${content}${normalized.slice(at)}`
+      } else {
+        next = normalized.slice(0, block.start) + content + normalized.slice(block.end)
+      }
+      if (/\.html?$/i.test(filePath)) {
+        const beforeProblems = new Set(sectionStructureProblems(normalized))
+        const newProblems = sectionStructureProblems(next).filter(
+          (problem) => !beforeProblems.has(problem),
+        )
+        if (newProblems.length > 0) {
+          const range = sectionLineRange(next, id)
+          return {
+            text: `Error: that section edit would unbalance "${filePath}", so nothing was written. What is wrong with the new file:\n- ${newProblems
+              .slice(0, 6)
+              .join('\n- ')}\nThe target section is "${id}"${
+              range ? ` (lines ${range.startLine}-${range.endLine} of the new file)` : ''
+            }. Resend the COMPLETE section as one opening <${block.tagName} id="${id}"> and its matching </${block.tagName}>, with every inner element closed and no <${block.tagName}> of another section inside it. Nothing outside that section may change.`,
+            rejected: true,
+          }
+        }
+      }
+      if (/\.html?$/i.test(filePath) && SITE_PAGE_MARKER.test(next)) {
+        const integrity = documentIntegrityIssues(next)
+        if (integrity) {
+          return {
+            text: `Error: that section edit would leave "${filePath}" incomplete (${integrity}), so it was rejected. Keep exactly one <header>, <main> and <footer>, and every section inside <main>.`,
+            rejected: true,
+          }
+        }
+      }
+      const existedBefore = existsInWorkspace(projectId, filePath)
+      let savedSection
+      try {
+        savedSection = writeFileToWorkspace(projectId, filePath, next)
+      } catch (error) {
+        debugToolCall(name, filePath, next, 'error')
+        return { text: toolErrorMessage(name, args, error) }
+      }
+      debugToolCall(name, savedSection, next, 'section')
+      const slotsLeft = [...next.matchAll(/<!--\s*SLOT:([a-z0-9-]+)\s*-->/g)].map((match) => match[1])
+      return {
+        text: `Updated section #${id} in ${savedSection} (${action}).${slotsLeft.length > 0 ? ` Empty slots left: ${slotsLeft.join(', ')}.` : ''}`,
+        modelText: `ok, section ${id} ${action}, ${countLines(next)} lines`,
+        lines: countLines(next),
+        fsChanges: [{ path: savedSection, type: existedBefore ? 'change' : 'add' }],
+      }
     }
     case 'list_directory': {
       const rawPath = String(args.path ?? '.').trim()
@@ -1730,6 +2053,7 @@ export async function runAgent({
   runStartedAt = null,
   strictRules = [],
   projectHistory = false,
+  images = [],
 }) {
   const startedAt = Number.isFinite(runStartedAt) ? runStartedAt : Date.now()
   let toolCalls = 0
@@ -1785,6 +2109,56 @@ export async function runAgent({
   const cooling = new Map()
   if (taskId) clearTaskTotals(taskId)
 
+  const sanitizedImages = sanitizeImagePayload(images)
+  if (sanitizedImages.problems.length > 0) {
+    event('note', `Image attachment: ${sanitizedImages.problems.join(' ')}`, {
+      status: 'done',
+      tool: 'note',
+    })
+  }
+  let visionReport = null
+  if (sanitizedImages.images.length > 0) {
+    const visionActionId = crypto.randomUUID()
+    event('vision', `Analyzing ${sanitizedImages.images.length} screenshot(s)…`, {
+      status: 'running',
+      tool: 'vision',
+      actionId: visionActionId,
+      imageCount: sanitizedImages.images.length,
+    })
+    try {
+      const vision = await analyzeScreenshots({
+        images: sanitizedImages.images,
+        task,
+        keys,
+        userId,
+        taskId,
+        emitUsage,
+      })
+      visionReport = vision.report
+      event('vision', 'Analysis ready', {
+        status: 'done',
+        tool: 'vision',
+        actionId: visionActionId,
+        model: vision.model,
+        provider: vision.provider,
+        report: vision.report,
+        imageCount: sanitizedImages.images.length,
+      })
+    } catch (error) {
+      event('vision', 'Screenshot analysis unavailable — continuing with text only.', {
+        status: 'error',
+        tool: 'vision',
+        actionId: visionActionId,
+        error: error.message,
+        imageCount: sanitizedImages.images.length,
+      })
+      event('note', `Screenshots: ${error.message}`, {
+        status: 'done',
+        tool: 'note',
+      })
+    }
+  }
+
   const coolCandidate = (candidate, ms) => {
     cooling.set(candidateIdentity(candidate), Date.now() + Math.max(0, ms))
   }
@@ -1813,13 +2187,24 @@ export async function runAgent({
   // header/nav and footer markup of the main page, the nav/footer link lists,
   // the :root tokens and the shared class names.
   let projectSnapshotText = null
+  let projectSnapshotInfo = null
   try {
     const snapshot = await buildProjectSnapshot({ projectId, framework })
     projectSnapshotText = snapshot?.text ?? null
+    projectSnapshotInfo = snapshot ?? null
   } catch (error) {
     console.warn(`[agent] project snapshot failed: ${error?.message ?? error}`)
     projectSnapshotText = null
+    projectSnapshotInfo = null
   }
+
+  // A follow-up edit must change only what the user named. Detected from the
+  // existing project plus the task text, this flag scopes the plan, refuses to
+  // create unrelated files and never forces the rest of the site to be written.
+  const targetedEdit = !resume && isTargetedEditTask(task, projectSnapshotInfo)
+  const targetedFiles = targetedEdit
+    ? namedExistingFiles(task, projectSnapshotInfo?.pages ?? [])
+    : []
 
   let projectMemoryText = null
   if (projectHistory) {
@@ -1908,7 +2293,13 @@ export async function runAgent({
     event_('resume', 'Resuming the previous task…', { status: 'done', model: candidates[0].model, tool: 'resume' })
   } else {
     messages.push(systemMessage)
-    messages.push({ role: 'user', content: task })
+    const baseTaskForModel = visionReport
+      ? `${task}\n\nSCREENSHOT ANALYSIS (from the images the user attached — the images themselves are NOT available to you, work from this report):\n${visionReport}`
+      : task
+    const targetedNote = targetedEdit
+      ? `\n\nTARGETED EDIT — this project already exists. Do NOT plan or rebuild the rest of the site, and do NOT create new files. Change ONLY the section(s) and file(s) this task names${targetedFiles.length > 0 ? ` (${targetedFiles.join(', ')})` : ''}. Your plan JSON's "files" and "pages" must list only those files. If a link points at a page you would have to create, remove or repoint the link instead — creating unrelated pages is not part of this task.`
+      : ''
+    messages.push({ role: 'user', content: `${baseTaskForModel}${targetedNote}` })
   }
 
   const estimateInput = () => estimateTokens(condenseHistory(messages, KEEP_RECENT_MESSAGES), OPENAI_TOOLS)
@@ -2329,6 +2720,25 @@ export async function runAgent({
     }
   }
 
+  // Drop a file from the plan the moment it is proven impossible (a retry
+  // cannot fix a missing file or a forbidden write), so the plan-completeness
+  // check stops demanding work that will never succeed.
+  const removePlannedPath = (target) => {
+    const clean = String(target ?? '')
+      .replace(/\\/g, '/')
+      .replace(/^\.?\//, '')
+      .trim()
+    if (!clean) return
+    if (plan.includes(clean)) plan = plan.filter((file) => file !== clean)
+    if (planDoc) {
+      planDoc = {
+        ...planDoc,
+        files: (Array.isArray(planDoc.files) ? planDoc.files : []).filter((file) => file.path !== clean),
+        pages: (Array.isArray(planDoc.pages) ? planDoc.pages : []).filter((page) => page.file !== clean),
+      }
+    }
+  }
+
   const toolCallCapBase = vanillaMode ? VANILLA_MAX_TOOL_CALLS : MAX_TOOL_CALLS
   let toolCallCap = toolCallCapBase
 
@@ -2347,10 +2757,15 @@ export async function runAgent({
   let forceNonStreamOnce = false
   let lastFailureText = ''
   let lastFailureTool = ''
+  const failedEditsByFile = new Map()
   // A repair round that produces the SAME failure list and changes nothing on
   // disk is not progress; continuing it only burns budget.
   let lastCheckSignature = null
   let stalledContinues = 0
+  // The first reply of a run is the plan JSON alone (no tool calls). Once it
+  // has been parsed the model must be told to implement it, otherwise an edit
+  // whose scoped plan has no files would "finish" without changing anything.
+  let planAckPending = false
 
   const wrapUpHint = async (usedTokens) => {
     const remaining = await missingPlannedFiles(projectId, plan, planDoc)
@@ -2463,6 +2878,18 @@ export async function runAgent({
     // summary instead of silently burning another 300K like the old loop did.
     const usedTokens = taskId ? (getTaskTotals(taskId)?.totalTokens ?? 0) : 0
     if (usedTokens >= effectiveBudget) {
+      const pendingEdit = [...failedEditsByFile.entries()].find(([, streak]) => streak > 0)
+      if (
+        pendingEdit &&
+        consecutiveFailures < 2 &&
+        tryAutoContinue('an edit was still failing when the budget was reached')
+      ) {
+        appendGuidance(
+          messages,
+          `The token budget ran out while an edit on "${pendingEdit[0]}" was still failing — do NOT summarise yet. Next: read_file { path: "${pendingEdit[0]}", outline: true }, then fix the section with ONE complete and balanced edit_section { path: "${pendingEdit[0]}", id: "<section id>", content: "<the WHOLE section>" }. Only then stop with your summary.`,
+        )
+        continue
+      }
       const issuesNow = await plannedFileIssues(projectId, plan, planDoc)
       if (
         issuesNow.length > 0 &&
@@ -2473,6 +2900,17 @@ export async function runAgent({
           `TOKEN BUDGET reached, but work remains: ${formatIssues(issuesNow).join(
             '; ',
           )}. Continue now — one create_file per file — then stop with your short summary.`,
+        )
+        continue
+      }
+      if (
+        targetedEdit &&
+        writtenThisRun.size > 0 &&
+        tryAutoContinue('the targeted edit was still in progress at the budget')
+      ) {
+        appendGuidance(
+          messages,
+          'The budget was reached during a targeted edit. Finish ONLY the change this task named, then stop with your short summary.',
         )
         continue
       }
@@ -2502,7 +2940,8 @@ export async function runAgent({
         provider: active.providerId,
       }
     }
-    if (!wrapUpNotified && usedTokens >= effectiveBudget * TASK_WRAP_UP_RATIO) {
+    const midEdit = [...failedEditsByFile.values()].some((streak) => streak > 0)
+    if (!wrapUpNotified && !midEdit && !targetedEdit && usedTokens >= effectiveBudget * TASK_WRAP_UP_RATIO) {
       wrapUpNotified = true
       appendGuidance(messages, await wrapUpHint(usedTokens))
       note(
@@ -2530,6 +2969,45 @@ export async function runAgent({
       const jsonPlan = parsePlanJson(message.content)
       const parsed = jsonPlan ?? extractPlan(message.content)
       if (jsonPlan || parsed.files.length > 0 || parsed.projectName) {
+        if (targetedEdit) {
+          // A follow-up edit: keep only the files the task named. The model's
+          // whole-site plan is discarded here on purpose, so the plan-completeness
+          // check can never force unrelated pages or sections to be written.
+          const sectionIndex = await collectSectionIds(projectId, targetedFiles)
+          plan = targetedFiles.slice()
+          planDoc = {
+            projectName: jsonPlan?.projectName ?? parsed.projectName ?? null,
+            type: jsonPlan?.type ?? null,
+            direction: jsonPlan?.direction ?? null,
+            brand: null,
+            nav: [],
+            files: plan.map((path) => ({ path, purpose: 'targeted edit' })),
+            pages: plan.map((file) => ({
+              file,
+              sections: sectionsNamedInTask(task, sectionIndex.get(file) ?? []),
+            })),
+            requirements: jsonPlan?.requirements ?? [],
+          }
+          condensedSpec = truncate(planSpecText(planDoc), 600)
+          persistSession('plan')
+          event_(
+            'plan',
+            `TARGETED EDIT — scoped to ${
+              plan.length > 0 ? plan.join(', ') : 'the sections named in the task'
+            }; no other file will be created or required.`,
+            {
+              status: 'done',
+              model,
+              provider: active.providerId,
+              tool: 'plan',
+              projectName: planDoc.projectName,
+              projectType: planDoc.type,
+              direction: planDoc.direction,
+              targeted: true,
+            },
+          )
+          planAckPending = true
+        } else {
         plan = jsonPlan ? jsonPlan.files.map((file) => file.path) : parsed.files
         planDoc = jsonPlan
           ? {
@@ -2575,10 +3053,25 @@ export async function runAgent({
             direction: jsonPlan?.direction ?? null,
           },
         )
+        planAckPending = true
+        }
       }
     }
 
     const calls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+    if (calls.length > 0) planAckPending = false
+    if (calls.length === 0 && planAckPending) {
+      planAckPending = false
+      messages.push(message)
+      appendGuidance(
+        messages,
+        targetedEdit
+          ? 'Plan received. Now MAKE the change the task asked for: read_file { path, outline: true } if needed, then edit_section { path, id, content } to replace the target section. Do not create new files.'
+          : 'Plan received. Now implement it, starting with the first file, using the tools.',
+      )
+      note('Plan received — implementing it now…')
+      continue
+    }
     if (calls.length === 0) {
       const issues = await plannedFileIssues(projectId, plan, planDoc)
       const missing = issues.map((issue) => issue.path)
@@ -2898,6 +3391,23 @@ export async function runAgent({
       })
       if (ruleBlock) rejection = ruleBlock.message
 
+      // A targeted edit must not expand: refuse to CREATE a file the task did
+      // not name (privacy.html and friends), and tell the model what to do
+      // with the link instead of retrying.
+      if (
+        !rejection &&
+        targetedEdit &&
+        name === 'create_file' &&
+        filePath &&
+        !existsInWorkspace(projectId, filePath) &&
+        !targetedFiles.includes(filePath) &&
+        namedExistingFiles(task, [filePath]).length === 0
+      ) {
+        rejection = `Error: this is a targeted edit — do not create new files. "${filePath}" is not part of the task. Change only ${
+          targetedFiles.length > 0 ? targetedFiles.join(', ') : 'the file(s) the task names'
+        }. If a link points at "${filePath}", remove or repoint the link instead of creating the page.`
+      }
+
       // Cap the appends per file. Growing one stylesheet through 31 tiny
       // append calls is exactly the loop that burned ~510K tokens on a 3-page
       // site, and the file was still broken afterwards.
@@ -2947,6 +3457,36 @@ export async function runAgent({
         batchFailures += 1
         lastFailureText = String(outcome.text ?? '').slice(0, 240)
         lastFailureTool = name
+        // A file that does not exist can never be fixed by retrying the SAME
+        // edit. Say so once, drop it from the plan, and let the model either
+        // create it or move on.
+        const failureText = String(outcome.text ?? '')
+        const missingTarget = /does not exist \(use create_file\)/i.test(failureText)
+        const forbiddenTarget = /targeted edit — do not create new files|legal\/secondary page/i.test(failureText)
+        if (missingTarget && filePath) {
+          removePlannedPath(filePath)
+          outcome.noteText = `"${filePath}" does not exist. Do NOT retry an edit on it. Either call create_file { path: "${filePath}", content: "<the complete file>" } ONCE, or drop it from the task and continue with the rest.`
+        } else if (forbiddenTarget && filePath) {
+          removePlannedPath(filePath)
+          outcome.noteText = `The write to "${filePath}" is not allowed in this task and will never succeed. Do not retry it. Remove or repoint the link that points at "${filePath}", then finish the change the user actually asked for.`
+        }
+      }
+
+      if (name === 'edit_file' || name === 'edit_section') {
+        if (failed) {
+          const streak = (failedEditsByFile.get(filePath) ?? 0) + 1
+          failedEditsByFile.set(filePath, streak)
+          if (streak >= 2) {
+            failedEditsByFile.set(filePath, 0)
+            appendGuidance(
+              messages,
+              `You have failed ${streak} edits on "${filePath}" in a row. STOP retrying the same old_string. Do this next: read_file { path: "${filePath}", outline: true }, then change the target section with edit_section { path: "${filePath}", id: "<section id>", content: "<the complete new section>" } — it needs no old text.`,
+            )
+            note(`Switching edit strategy on ${filePath} after ${streak} failed edits…`)
+          }
+        } else {
+          failedEditsByFile.delete(filePath)
+        }
       }
 
       // The Explorer must follow the agent in real time, so every successful
@@ -2961,7 +3501,7 @@ export async function runAgent({
           args: { path: args.path, command: args.command },
           status: 'done',
           actionId,
-          result: truncate(outcome.text, 2000),
+          result: truncate(outcome.text, 8000),
           rule: ruleBlock.rule,
         })
       } else {
@@ -2975,7 +3515,7 @@ export async function runAgent({
             args: { path: args.path, command: args.command },
             status: failed ? 'error' : 'done',
             actionId,
-            result: truncate(outcome.text, 2000),
+            result: truncate(outcome.text, 8000),
             ...(outcome.details ?? {}),
           },
         )
@@ -2984,6 +3524,7 @@ export async function runAgent({
       const batchWrites = Array.isArray(outcome.written) && outcome.written.length > 0 ? outcome.written : null
       const writeSucceeded = (WRITE_TOOLS.has(name) || Boolean(batchWrites)) && !failed
       let modelResult = outcome.modelText ?? truncate(outcome.text ?? '', MAX_TOOL_RESULT_CHARS)
+      if (outcome.noteText) modelResult = `${modelResult}\n${outcome.noteText}`
 
       if (writeSucceeded) {
         let isNewFile = !alreadyWritten
@@ -3163,3 +3704,14 @@ export async function runAgent({
 }
 
 export { isToolCallParseError }
+
+export const __testables = {
+  executeTool,
+  normalizeEol,
+  uniqueRange,
+  whitespaceRange,
+  closestSnippet,
+  fileOutline,
+  sliceLines,
+  findSectionBlock,
+}

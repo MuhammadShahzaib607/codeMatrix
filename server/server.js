@@ -30,6 +30,7 @@ server.on('error', (err) => {
 
 const io = new Server(server, {
   cors: { origin: resolveCorsOrigin(), methods: ['GET', 'POST'] },
+  maxHttpBufferSize: 25 * 1024 * 1024,
 })
 
 registerTerminalSocket(io)

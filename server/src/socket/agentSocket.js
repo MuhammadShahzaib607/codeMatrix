@@ -284,6 +284,7 @@ export default function registerAgentSocket(io) {
             onProjectName: (name) => adopt(name),
             strictRules,
             projectHistory,
+            images: Array.isArray(payload?.images) ? payload.images : [],
           })
           runOutcome = { ok: true, result }
           room.emit('agent:done', {

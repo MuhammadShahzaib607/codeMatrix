@@ -1,22 +1,22 @@
-const icon = (paths) => `<svg class="icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`
+const icon = (name) => `<i class="icon" data-icon="${name}" aria-hidden="true"></i>`
 
 export const SECTION_ICONS = {
-  bolt: icon('<path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/>'),
-  chart: icon('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'),
-  shield: icon('<path d="M12 3 5 6v6c0 5 3 8 7 9 4-1 7-4 7-9V6l-7-3Z"/>'),
-  sparkle: icon('<path d="M12 3v6M12 15v6M3 12h6M15 12h6"/>'),
-  globe: icon('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18"/>'),
-  layers: icon('<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>'),
-  palette: icon('<circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1"/><circle cx="15" cy="9" r="1"/><circle cx="12" cy="15" r="1"/>'),
-  mail: icon('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>'),
-  phone: icon('<path d="M5 3h4l2 5-3 2a12 12 0 0 0 6 6l2-3 5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 5a2 2 0 0 1 2-2Z"/>'),
-  pin: icon('<path d="M12 21s7-6 7-11a7 7 0 1 0-14 0c0 5 7 11 7 11Z"/><circle cx="12" cy="10" r="2.5"/>'),
-  clock: icon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
-  check: icon('<path d="m4 12 5 5L20 6"/>'),
-  users: icon('<circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5a3 3 0 0 1 0 6"/><path d="M17 20a6 6 0 0 0-2-4"/>'),
-  star: icon('<path d="m12 3 2.7 5.7 6.3.9-4.5 4.4 1 6.2-5.5-3-5.5 3 1-6.2L3 9.6l6.3-.9Z"/>'),
-  search: icon('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
-  code: icon('<path d="m8 6-5 6 5 6M16 6l5 6-5 6"/>'),
+  bolt: icon('zap'),
+  chart: icon('bar-chart'),
+  shield: icon('shield'),
+  sparkle: icon('sparkle'),
+  globe: icon('globe'),
+  layers: icon('layers'),
+  palette: icon('palette'),
+  mail: icon('mail'),
+  phone: icon('phone'),
+  pin: icon('map-pin'),
+  clock: icon('clock'),
+  check: icon('check'),
+  users: icon('users'),
+  star: icon('star'),
+  search: icon('search'),
+  code: icon('code'),
 }
 
 export const SECTION_SNIPPETS = {
@@ -223,7 +223,7 @@ export const SECTION_SNIPPETS = {
         <p class="team-card__role">Role</p>
         <p class="team-card__bio">One line of real background.</p>
         <div class="team-card__social">
-          <a class="social-link" href="https://www.linkedin.com" aria-label="LinkedIn profile of Full Name">${icon('<path d="M4 9h4v11H4zM6 4.5A2 2 0 1 0 6 8.5 2 2 0 0 0 6 4.5ZM10 9h4v1.6a4 4 0 0 1 3.5-1.8c2.6 0 4.5 1.7 4.5 5V20h-4v-5c0-1.3-.6-2-1.8-2s-2.2.8-2.2 2.2V20h-4Z" fill="currentColor" stroke="none"/>')}</a>
+          <a class="social-link" href="https://www.linkedin.com" aria-label="LinkedIn profile of Full Name">${icon('linkedin')}</a>
         </div>
       </article>
     </div>

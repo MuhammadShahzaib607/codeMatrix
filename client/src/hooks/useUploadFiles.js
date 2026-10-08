@@ -11,12 +11,13 @@ import { isUploadAllowed } from '../utils/fileTypes'
  * container. Files that are too large or of an unsupported type are rejected
  * with a clear message and never reach the server; the accepted ones are sent
  * as multipart/form-data and appear in the Explorer through the usual
- * refresh + watcher flow.
+ * refresh + watcher flow. Byte progress is exposed while a transfer runs.
  */
 export default function useUploadFiles() {
   const dispatch = useDispatch()
   const guard = useAuthGuard()
   const [isUploading, setIsUploading] = useState(false)
+  const [progress, setProgress] = useState(null)
 
   const runUpload = useCallback(
     async (targetPath, fileList) => {
@@ -41,9 +42,13 @@ export default function useUploadFiles() {
       }
       if (accepted.length === 0) return
 
+      const totalBytes = accepted.reduce((sum, file) => sum + file.size, 0)
       setIsUploading(true)
+      setProgress({ loaded: 0, total: totalBytes })
       try {
-        const result = await workspaceApi.uploadFiles(targetPath, accepted)
+        const result = await workspaceApi.uploadFiles(targetPath, accepted, (next) => {
+          setProgress(next)
+        })
         dispatch(refreshWorkspaceTree({}))
         const saved = result?.files ?? []
         const first = saved[0]
@@ -52,7 +57,7 @@ export default function useUploadFiles() {
             message:
               saved.length === 1
                 ? `Uploaded “${first.name}”`
-                : `Uploaded ${saved.length} files into “${first?.path ?? targetPath}”`,
+                : `Uploaded ${saved.length} files`,
             type: 'success',
             action: first
               ? { label: 'Copy path', kind: 'copy-path', value: first.path }
@@ -68,6 +73,7 @@ export default function useUploadFiles() {
         )
       } finally {
         setIsUploading(false)
+        setProgress(null)
       }
     },
     [dispatch],
@@ -80,5 +86,5 @@ export default function useUploadFiles() {
     [guard, runUpload],
   )
 
-  return { uploadFiles, isUploading }
+  return { uploadFiles, isUploading, progress }
 }

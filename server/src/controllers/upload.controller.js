@@ -61,10 +61,13 @@ const storage = multer.diskStorage({
   },
 })
 
-const receiver = multer({
+const uploader = multer({
   storage,
   limits: { fileSize: MAX_UPLOAD_FILE_BYTES, files: MAX_UPLOAD_FILES },
+  preservePath: true,
 })
+
+const receiver = uploader.array('files', MAX_UPLOAD_FILES)
 
 export function removeUploadDir(dir) {
   if (!dir) return

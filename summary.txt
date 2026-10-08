@@ -8616,3 +8616,272 @@ OPEN ITEMS
   - Force a Socket.IO reconnect and confirm the same pty reattaches with its
     scrollback.
 ================================================================================
+================================================================================
+AI Code Editor — File & Image Upload in the Explorer, User Roles, Strict Rules
+               Hidden From Non-Admins
+        (2026-10-08)
+================================================================================
+
+STATUS: COMPLETE and VERIFIED. Uploading images/binary assets into the Explorer
+        works end to end (route + toolbar + context menu + drag and drop), the
+        editor previews them, and Strict Rules is now hidden from non-admins.
+
+        Verification: 17/17 live API checks (server/tmp-audit-upload.mjs),
+        16/16 live preview + ZIP checks (server/tmp-audit-preview.mjs) and
+        33/33 real headless-Chrome UI checks (server/tmp-ui-verify.mjs) against
+        the running app on http://localhost:5173 with the API on :4000.
+        oxlint 0 warnings / 0 errors (88 files), vite build OK,
+        node --check OK on every changed server file.
+
+        HONEST NOTE: the whole Explorer Upload feature was already committed in
+        "agent temp off for users" but was NEVER written up in this file, and it
+        was BROKEN at runtime (every upload answered HTTP 500). This entry
+        documents both the pre-existing design and the fixes made here.
+
+--------------------------------------------------------------------------------
+WHY NOTHING UPLOADED BEFORE (the actual blocker)
+--------------------------------------------------------------------------------
+server/src/controllers/upload.controller.js did:
+
+    const receiver = multer({ storage, limits: {...} })
+    receiver(req, res, cb)
+
+multer 2.4.0 changed its API: multer(options) returns a Multer INSTANCE, not
+Express middleware. The middleware is the instance's .array() / .single() /
+.any() method. Calling the instance threw
+    TypeError: receiver is not a function
+which the error handler turned into 500 for EVERY request to
+POST /api/workspace/container/upload — so no upload could ever appear in the
+Explorer, whatever the client did. Found by minting a JWT and hitting the live
+route, not by reading code.
+
+FIXES (server)
+  src/controllers/upload.controller.js
+    - keeps the instance in `uploader` and builds the middleware once:
+      `const receiver = uploader.array('files', MAX_UPLOAD_FILES)`.
+    - added `preservePath: true` to the multer options. Without it multer
+      silently basenames the client-supplied filename, so the traversal check in
+      sanitizeUploadFileName never saw "../../evil.png" and a traversal attempt
+      was accepted (stored safely, but accepted). With it, a traversal filename
+      is rejected with 400 INVALID_NAME, as required.
+  src/controllers/preview.controller.js
+    - a bare /preview/<segment> request used to force target='index.html', so a
+      loose top-level file beside the project folders (e.g. an image dropped on
+      the Explorer root) 404'd. It now resolves the segment itself first and only
+      falls back to index.html when the segment is not a file. Nested-folder and
+      sibling-project assets already worked.
+
+FIXES (client)
+  src/components/Sidebar/Sidebar.jsx
+    - handlePickerChange read the live event.target.files and THEN set
+      event.target.value = ''; clearing the value empties that same FileList, so
+      the upload was silently skipped. It now snapshots the list with
+      Array.from() before clearing.
+
+--------------------------------------------------------------------------------
+PART 1 — THE UPLOAD FEATURE (end-to-end)
+--------------------------------------------------------------------------------
+ALREADY IN PLACE (committed earlier, validated here — nothing rebuilt)
+  Server: POST /api/workspace/container/upload behind protect + ownership, a
+  per-request temp dir under workspaces/.uploads (outside every container),
+  sanitized + length-capped names, conflict-free "name (copy).png" naming via
+  uniqueNameInFolder, atomic rename into place (EXDEV fallback), and
+  GET /container/file/raw + /:projectId/file/raw for byte-exact reads with the
+  right Content-Type. Guarded by resolveContainerOwnerPath, so a traversal in
+  the TARGET path is refused.
+  Client: utils/fileTypes.js (allowed extensions, 10 MB cap, binary detection,
+  formatBytes), hooks/useUploadFiles.js, a hidden multi-file input in Sidebar,
+  the folder context-menu "Upload files...", "Copy relative path" and
+  "Copy path relative to open file", folder-row drag highlight
+  (.tree-row.is-drop-target), the editor asset preview (checkerboard frame,
+  dimensions, size, SVG preview/text toggle, "binary file" card) and
+  EditorAsset.css.
+  Preview: a generic cm_preview_all cookie plus the per-project cookie, the
+  validatePreviewSegment guard, and resolvePreviewTarget() delegating
+  non-project segments to the requester's own container (this is what makes
+  "../sibling/logo.png" and a loose top-level asset load).
+  Limits: uploads are 10 MB per file, 40 files, 100 MB per request. Import
+  Folder's own 2 MB per-file limit (MAX_IMPORT_FILE_BYTES) is UNCHANGED.
+
+ADDED IN THIS ENTRY
+  Explorer toolbar upload button (src/components/Sidebar/Sidebar.jsx)
+    An Upload icon button in the Explorer header. It targets the selected folder,
+    else the selected file's parent folder, else the container root — the same
+    rule the New File / New Folder buttons use (resolveCreateTargetId).
+  Drag and drop
+    src/components/Sidebar/FileTree.jsx
+      - rows now accept dragover/drop on EVERY row, not only folders.
+      - the root-level drag state/handlers were REMOVED from FileTree.
+    src/components/Sidebar/Sidebar.jsx
+      - the root drop zone moved up to the <aside class="sidebar">, so the empty
+        area below the tree AND the Explorer header area both count as "root"
+        (the requirement asked for the header too, which the old FileTree-only
+        zone missed). The whole Explorer gets .is-root-drop-target while dragging.
+      - handleDropFiles(node, files, { hasDirectory }): a folder row uploads into
+        that folder; a FILE row uploads into that file's parent folder; the root
+        uploads into the per-user container root, so the files appear as
+        top-level items next to the project folders.
+      - a dropped FOLDER (detected with DataTransferItem.webkitGetAsEntry in the
+        drop event) shows "Folders cannot be dropped here — use Import Folder to
+        add a folder from your computer." and the directory entries are filtered
+        out instead of producing a confusing "not an allowed file type".
+    src/utils/dropFiles.js (NEW) — shared isFileDrag / hasDroppedFolder helpers.
+    REMOVED: src/components/Sidebar/UploadFolderDialog.jsx + .css. The previous
+    build answered a root drop with an "upload to which folder?" picker, which
+    contradicts the requirement (root drop = container root). Dropping the dead
+    dialog keeps the flow single-purpose.
+  Upload progress
+    src/services/api.js — uploadFiles() now uses XMLHttpRequest (fetch cannot
+    report upload progress) and accepts an onProgress callback; it still returns
+    the parsed JSON and still throws ApiError with the server's message/code.
+    src/hooks/useUploadFiles.js — exposes { uploadFiles, isUploading, progress }.
+    src/components/Sidebar/Sidebar.jsx — a slim progress bar + percentage strip
+    under the Explorer header while a transfer runs.
+    src/components/Sidebar/UploadDrop.css — root highlight, row highlight and the
+    progress strip styles (the old .file-tree.is-root-drop-target rule moved to
+    .sidebar.is-root-drop-target).
+  Toast — an upload success toast already carried a "Copy path" action button
+  (Toast.jsx runAction -> copyTextToClipboard); unchanged, verified working.
+
+--------------------------------------------------------------------------------
+PART 2 — BINARY CORRECTNESS
+--------------------------------------------------------------------------------
+  src/hooks/useExportToFolder.js and src/hooks/useSyncToLaptop.js fetched every
+  file with workspaceApi.getFile(...), which returns UTF-8 TEXT — so any uploaded
+  image/font/video was corrupted on export and sync. Both now branch on
+  isBinaryPath(path) and read bytes through the new
+  workspaceApi.getProjectFileBytes(projectId, path) (the /:projectId/file/raw
+  route) and write the Blob unchanged.
+  src/components/Sidebar/SearchInFiles.jsx filters isBinaryPath(node.id) out of
+  the searched file list, so binary content is never fetched or searched.
+  Quick Open (TopbarSearch.jsx) only ever matches file NAMES, and the agent
+  snapshot (agent/prompts/projectSnapshot.js) only reads .html/.css/.js — both
+  already ignored binary content. ZIP export streams the on-disk directory with
+  archiver, so it is byte-for-byte by construction (verified by inflating an
+  entry out of the downloaded zip and comparing bytes).
+
+--------------------------------------------------------------------------------
+PART 3 — STRICT RULES HIDDEN FROM NON-ADMINS
+--------------------------------------------------------------------------------
+  The role system already existed (committed earlier): User.model.js has
+  role: 'admin' | 'user' (default 'user', missing -> 'user', no API/UI to change
+  it), auth.controller.js publicUser() returns it, GET /api/auth/me exposes it,
+  server/src/middlewares/requireAdmin.js has isAdminUser(userId) (reads the role
+  from the DB for the CURRENT request — the JWT is never trusted for
+  authorization) and every agent socket event (agent:attach / agent:stop /
+  agent:run) answers 403 FORBIDDEN for a non-admin. strictRules are consumed only
+  inside the admin-gated agent:run, so a non-admin's saved rules can never be
+  applied or sent to the agent.
+  src/components/Settings/SettingsModal.jsx
+    - the nav list now filters out BOTH 'ai' and 'strict' for non-admins.
+    - NEW shownSection: if state.settings.activeSection is a section the caller
+      may not see (a deep link such as openSettings('strict')), rendering and the
+      nav highlight fall back to Appearance. No effect and no state write is
+      needed, so the hidden section can never render for a non-admin.
+  Admin behaviour is unchanged: for an admin the list and the Strict Rules
+  section are exactly as before (verified in the browser).
+  NOTE ON THE "403 ENDPOINTS" PART: there are NO HTTP endpoints that read or
+  write strict rules — a grep of server/src/routes and server/src/controllers
+  finds none. Strict rules live in the client (localStorage /
+  settingsStorage.js) and travel over Socket.IO with the agent run, which is
+  already admin-gated. Nothing was invented to add such endpoints; the existing
+  gate is what enforces it. (The same requireAdmin middleware is verified live on
+  the admin-only keys API.)
+
+--------------------------------------------------------------------------------
+FILES TOUCHED IN THIS ENTRY
+--------------------------------------------------------------------------------
+SERVER
+  src/controllers/upload.controller.js   multer .array() + preservePath
+  src/controllers/preview.controller.js  bare /preview/<file> resolves as a file
+CLIENT
+  src/services/api.js                    XHR upload + onProgress; getProjectFileBytes
+  src/hooks/useUploadFiles.js            progress state
+  src/hooks/useExportToFolder.js         binary-safe export
+  src/hooks/useSyncToLaptop.js           binary-safe sync
+  src/components/Sidebar/Sidebar.jsx     toolbar button, root drop zone, file-row
+                                         drop, folder-drop message, progress strip,
+                                         picker FileList fix, dialog removed
+  src/components/Sidebar/FileTree.jsx    drag/drop on every row; root handlers removed
+  src/components/Sidebar/UploadDrop.css  root highlight + progress styles
+  src/utils/dropFiles.js                 NEW
+  src/components/Sidebar/SearchInFiles.jsx  skip binaries
+  src/components/Settings/SettingsModal.jsx strict (and ai) hidden for non-admins
+  DELETED src/components/Sidebar/UploadFolderDialog.jsx + .css (unused)
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED
+--------------------------------------------------------------------------------
+LIVE API (server/tmp-audit-upload.mjs — 17/17, real server + real MongoDB)
+  - upload to the container root -> 201 and the file lands at the top level;
+  - the same name again becomes "audit-logo (copy).png";
+  - upload into an existing project folder -> 201 with the folder prefix;
+  - the new file appears EXACTLY ONCE in the container tree (no duplicate rows);
+  - a .txt is refused 400 FILE_TYPE_NOT_ALLOWED;
+  - a 12 MB file is refused 413 "Each file must be 10 MB or smaller.";
+  - a "../" filename is refused 400 INVALID_NAME;
+  - an unauthenticated upload is refused 401;
+  - a "../other-user" target path is refused 400 INVALID_PATH;
+  - GET /container/file/raw returns the bytes unchanged with image/png;
+  - rename and delete both work on an uploaded binary.
+LIVE PREVIEW + ZIP (server/tmp-audit-preview.mjs — 16/16)
+  - an image inside the project, inside a nested folder, a loose top-level
+    container file and an asset in a SIBLING top-level project folder all serve
+    200 with image/png and byte-identical bodies;
+  - preview traversal is refused; preview without a token is 401;
+  - GET /:projectId/export is a real zip that contains the entries and whose
+    image entry inflates byte-for-byte.
+REAL BROWSER UI (server/tmp-ui-verify.mjs — 33/33, headless Chrome + CDP)
+  - the Explorer toolbar Upload button exists;
+  - the folder context menu shows "Upload files..." and "Copy relative path",
+    and "Copy path relative to open file" appears only once a text file is open;
+  - the hidden picker delivered exactly one file and the image appeared live in
+    the selected folder EXACTLY ONCE (no reload, no duplicate row);
+  - the success toast carries a "Copy path" action;
+  - an upload progress indicator appears while a 3.9 MB file uploads (measured
+    with the upload throttled to 1.2 MB/s so the transfer is observable);
+  - a simulated drop on a NESTED folder row, on the Explorer ROOT and on a FILE
+    row each landed in the correct folder (that file's parent);
+  - an image opens as a rendered preview (9x7), with the meta bar showing name,
+    dimensions and size, over a checkerboard background;
+  - a non-image binary opens as a "Binary file" card;
+  - "Copy relative path" and "Copy path relative to open file" copied
+    "readme.md" for a project file;
+  - NON-ADMIN: Settings shows only Appearance/Editor/Terminal/General (no Strict
+    Rules, no AI Assistant); the same user is refused 403 FORBIDDEN by the
+    real admin-only keys API (server-side role check, live);
+  - ADMIN (/me answered with role admin): Strict Rules is back in the nav and the
+    section opens and renders as before;
+  - no uncaught page exceptions, no unexpected console errors and no unexpected
+    failing requests during the whole run.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - The ADMIN half of the client was verified by answering /api/auth/me with
+    role "admin" (a fetch override injected before app boot). A real admin row
+    could not be created: this sandbox's MongoDB DNS refuses new connections
+    (querySrv ECONNREFUSED) even though the running server holds a live
+    connection, and there is deliberately no API to change a role.
+  - Drag and drop was driven by dispatching real DragEvent + DataTransfer from
+    the page, not by an OS-level drag from the desktop.
+  - The Socket.IO agent gate (403 for non-admins) was read in agentSocket.js, not
+    driven, because the agent needs provider keys.
+  - The earlier "freebuff flickers into a thinking state every second" item was
+    NOT investigated in this entry.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Investigate the freebuff 1-second "thinking" flicker (needs server-side
+    instrumentation of socket connect/disconnect/reattach, pty resize and output
+    chunk rate, then measurement).
+  - server/tmp-ebusy-diagnose.mjs is committed and is a leftover diagnostic; it
+    can be deleted.
+  - A loose top-level HTML file (not inside a project) is served by /preview but
+    has no project scope, so the injected live-reload watcher is not attached to
+    it. Images and other assets are unaffected.
+  - The Explorer-toolbar Upload button targets the selected file's PARENT folder
+    when a file is selected (consistent with New File / New Folder); the literal
+    spec only mentioned "the container root, or the selected folder".
+================================================================================

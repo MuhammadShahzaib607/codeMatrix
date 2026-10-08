@@ -2,6 +2,7 @@ import { FileCode2, Loader2, TriangleAlert, X } from 'lucide-react'
 import { useDispatch, useSelector } from 'react-redux'
 import { closeTab, setActiveFile } from '../../features/fileSystemSlice'
 import { findNode } from '../../utils/tree'
+import Tooltip from '../Common/Tooltip'
 
 export default function TabBar() {
   const dispatch = useDispatch()
@@ -41,20 +42,21 @@ export default function TabBar() {
             {changedOnDisk ? (
               <TriangleAlert size={13} className="tab-changed-icon" aria-label="Changed on disk" />
             ) : null}
-            <button
-              type="button"
-              className={`tab-close ${isDirty ? 'is-dirty' : ''} ${isSaving ? 'is-saving' : ''}`}
-              title={isSaving ? 'Saving…' : 'Close'}
-              aria-label={isSaving ? `Saving ${node.name}` : `Close ${node.name}`}
-              onClick={(event) => {
-                event.stopPropagation()
-                dispatch(closeTab(fileId))
-              }}
-            >
-              <span className="tab-dirty-dot" />
-              <Loader2 size={13} className="tab-saving-spinner spin" />
-              <X size={14} className="tab-close-icon" />
-            </button>
+            <Tooltip label={isSaving ? 'Saving…' : 'Close'} side="top">
+              <button
+                type="button"
+                className={`tab-close ${isDirty ? 'is-dirty' : ''} ${isSaving ? 'is-saving' : ''}`}
+                aria-label={isSaving ? `Saving ${node.name}` : `Close ${node.name}`}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  dispatch(closeTab(fileId))
+                }}
+              >
+                <span className="tab-dirty-dot" />
+                <Loader2 size={13} className="tab-saving-spinner spin" />
+                <X size={14} className="tab-close-icon" />
+              </button>
+            </Tooltip>
           </div>
         )
       })}

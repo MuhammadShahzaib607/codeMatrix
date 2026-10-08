@@ -248,33 +248,66 @@ export const workspaceApi = {
     )
   },
 
+  // Raw bytes for ONE file inside a project (binary-safe export / sync).
+  async getProjectFileBytes(projectId, filePath) {
+    return readRawFile(`${workspacePath(projectId, '/file/raw')}?path=${encodeURIComponent(filePath)}`)
+  },
+
   // Multipart upload into a container-relative folder ('' = the container root).
-  async uploadFiles(targetPath, files) {
+  // XMLHttpRequest (not fetch) because only XHR reports upload progress, which
+  // drives the progress bar for large files.
+  uploadFiles(targetPath, files, onProgress) {
     if (!API_BASE_URL) {
-      throw new ApiError('VITE_API_BASE_URL is not set in client/.env — cannot reach the API.', {
-        status: 0,
-        code: 'MISSING_API_BASE_URL',
-      })
+      return Promise.reject(
+        new ApiError('VITE_API_BASE_URL is not set in client/.env — cannot reach the API.', {
+          status: 0,
+          code: 'MISSING_API_BASE_URL',
+        }),
+      )
     }
     const form = new FormData()
     form.append('path', String(targetPath ?? ''))
     for (const file of files) form.append('files', file, file.name)
 
-    let response
-    try {
-      response = await fetch(`${API_BASE_URL}/api/workspace/container/upload`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: form,
-      })
-    } catch {
-      throw new ApiError(`Could not reach the server at ${API_BASE_URL}. Is it running?`, {
-        status: 0,
-        code: 'NETWORK_ERROR',
-      })
-    }
-    if (!response.ok) throw await readError(response)
-    return response.json()
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `${API_BASE_URL}/api/workspace/container/upload`)
+      const token = getAuthToken()
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.({ loaded: event.loaded, total: event.total })
+      }
+      xhr.onload = () => {
+        let body = null
+        try {
+          body = JSON.parse(xhr.responseText)
+        } catch {
+          body = null
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(body)
+          return
+        }
+        reject(
+          new ApiError(body?.error?.message ?? `Request failed with status ${xhr.status}.`, {
+            status: xhr.status,
+            code: body?.error?.code,
+          }),
+        )
+      }
+      xhr.onerror = () =>
+        reject(
+          new ApiError(`Could not reach the server at ${API_BASE_URL}. Is it running?`, {
+            status: 0,
+            code: 'NETWORK_ERROR',
+          }),
+        )
+      xhr.onabort = () =>
+        reject(new ApiError('The upload was cancelled.', { status: 0, code: 'ABORTED' }))
+
+      xhr.send(form)
+    })
   },
 
   saveContainerFile(filePath, content) {

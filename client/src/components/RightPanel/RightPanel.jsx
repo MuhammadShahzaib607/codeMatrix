@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { setRightPanelTab } from '../../features/uiSlice'
 import AIPanel from '../AIPanel/AIPanel'
+import Tooltip from '../Common/Tooltip'
 import AgentPlaceholder from './AgentPlaceholder'
 import SidebarTerminal from './SidebarTerminal'
 import './RightPanel.css'
@@ -43,19 +44,20 @@ export default function RightPanel() {
     <div className="right-panel">
       <div className="right-panel-switch" role="tablist" aria-label="Right sidebar view">
         {VIEWS.map(({ id, label, Icon }) => (
-          <button
-            key={id}
-            id={`right-panel-tab-${id}`}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === id}
-            aria-controls={`right-panel-view-${id}`}
-            className={`right-panel-tab ${activeTab === id ? 'is-active' : ''}`}
-            onClick={() => dispatch(setRightPanelTab(id))}
-          >
-            <Icon size={13} />
-            <span>{label}</span>
-          </button>
+          <Tooltip key={id} label={label}>
+            <button
+              id={`right-panel-tab-${id}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === id}
+              aria-controls={`right-panel-view-${id}`}
+              className={`right-panel-tab ${activeTab === id ? 'is-active' : ''}`}
+              onClick={() => dispatch(setRightPanelTab(id))}
+            >
+              <Icon size={13} />
+              <span>{label}</span>
+            </button>
+          </Tooltip>
         ))}
       </div>
 

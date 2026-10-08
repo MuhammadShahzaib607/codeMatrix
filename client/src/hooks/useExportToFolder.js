@@ -8,6 +8,7 @@ import {
   pickDirectory,
   writeFilesToDirectory,
 } from '../services/fileSystemAccess'
+import { isBinaryPath } from '../utils/fileTypes'
 import { UNSUPPORTED_MESSAGE } from '../utils/messages'
 
 /**
@@ -59,8 +60,13 @@ export default function useExportToFolder() {
       const records = []
       let fetched = 0
       for (const path of paths) {
-        const file = await workspaceApi.getFile(workspace.projectId, path)
-        records.push({ relativePath: path, content: file.content })
+        if (isBinaryPath(path)) {
+          const raw = await workspaceApi.getProjectFileBytes(workspace.projectId, path)
+          records.push({ relativePath: path, content: raw.blob })
+        } else {
+          const file = await workspaceApi.getFile(workspace.projectId, path)
+          records.push({ relativePath: path, content: file.content })
+        }
         fetched += 1
         setProgress({ done: fetched, total: paths.length })
       }

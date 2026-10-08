@@ -49,6 +49,7 @@ import {
 import { formatCompact, keyStatusLabel, resetHint, usageMeters } from '../../utils/rateLimit'
 import { THEMES } from '../../utils/themes'
 import { isCloudWorkspace } from '../../utils/workspace'
+import Tooltip from '../Common/Tooltip'
 import UsageBar from '../Common/UsageBar'
 import KeyAccessModal from './KeyAccessModal'
 import './SettingsModal.css'
@@ -211,7 +212,14 @@ export default function SettingsModal() {
   const user = useSelector((state) => state.auth.user)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
   const isAdmin = user?.role === 'admin'
-  const sections = SECTIONS.filter((section) => isAdmin || section.id !== 'ai')
+  const sections = SECTIONS.filter(
+    (section) => isAdmin || (section.id !== 'ai' && section.id !== 'strict'),
+  )
+  // A stored/deep-linked section a non-admin is not allowed to see always falls
+  // back to Appearance, so Strict Rules can never be rendered for them.
+  const shownSection = sections.some((section) => section.id === activeSection)
+    ? activeSection
+    : 'appearance'
   const ai = useSelector((state) => state.ai)
   const [themeQuery, setThemeQuery] = useState('')
   const [newKey, setNewKey] = useState('')
@@ -432,7 +440,7 @@ export default function SettingsModal() {
               <button
                 key={section.id}
                 type="button"
-                className={`settings-nav-item ${activeSection === section.id ? 'is-active' : ''}`}
+                className={`settings-nav-item ${shownSection === section.id ? 'is-active' : ''}`}
                 onClick={() => dispatch(setSettingsSection(section.id))}
               >
                 <section.icon size={15} />
@@ -442,7 +450,7 @@ export default function SettingsModal() {
           </nav>
 
           <div className="settings-content">
-            {activeSection === 'appearance' && (
+            {shownSection === 'appearance' && (
               <section className="settings-section">
                 <h3 className="settings-section-title">Theme</h3>
                 <p className="settings-section-desc">
@@ -504,7 +512,7 @@ export default function SettingsModal() {
               </section>
             )}
 
-            {activeSection === 'editor' && (
+            {shownSection === 'editor' && (
               <section className="settings-section">
                 <h3 className="settings-section-title">Editor</h3>
                 <Row
@@ -579,7 +587,7 @@ export default function SettingsModal() {
               </section>
             )}
 
-            {activeSection === 'terminal' && (
+            {shownSection === 'terminal' && (
               <section className="settings-section">
                 <h3 className="settings-section-title">Terminal</h3>
                 <Row label="Default shell" hint="Used when you click + to open a terminal">
@@ -613,7 +621,7 @@ export default function SettingsModal() {
               </section>
             )}
 
-            {activeSection === 'ai' && (
+            {shownSection === 'ai' && (
               <section className="settings-section">
                 <h3 className="settings-section-title">AI provider keys</h3>
                 <p className="settings-section-desc">
@@ -679,16 +687,17 @@ export default function SettingsModal() {
                                 <KeyUsage entry={entry} providerId={key.provider} />
                               </div>
                               {isRevealed && (
-                                <button
-                                  type="button"
-                                  className="settings-btn settings-key-copy"
-                                  title="Copy the full key"
-                                  aria-label="Copy full API key"
-                                  onClick={() => handleCopyKey(key.id, revealedKey.value)}
-                                >
-                                  <Copy size={13} />
-                                  <span>Copy</span>
-                                </button>
+                                <Tooltip label="Copy the full key">
+                                  <button
+                                    type="button"
+                                    className="settings-btn settings-key-copy"
+                                    aria-label="Copy full API key"
+                                    onClick={() => handleCopyKey(key.id, revealedKey.value)}
+                                  >
+                                    <Copy size={13} />
+                                    <span>Copy</span>
+                                  </button>
+                                </Tooltip>
                               )}
                               {inUse ? (
                                 <span className="settings-key-inuse">In use</span>
@@ -701,41 +710,46 @@ export default function SettingsModal() {
                                   Use this
                                 </button>
                               )}
-                              <button
-                                type="button"
-                                className="settings-key-action"
-                                aria-label={isRevealed ? 'Hide API key' : 'Reveal API key'}
-                                title={
+                              <Tooltip
+                                label={
                                   isRevealed
                                     ? 'Hide the key again'
                                     : 'Reveal the full key (password required)'
                                 }
-                                onClick={() =>
-                                  isRevealed
-                                    ? setRevealedKey(null)
-                                    : setKeyAccess({ mode: 'reveal', key })
-                                }
                               >
-                                {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
-                              </button>
-                              <button
-                                type="button"
-                                className="settings-key-action"
-                                aria-label={`Edit API key ${key.masked}`}
-                                title="Edit this key (password required)"
-                                onClick={() => setKeyAccess({ mode: 'edit', key })}
-                              >
-                                <Pencil size={13} />
-                              </button>
-                              <button
-                                type="button"
-                                className="settings-key-delete"
-                                aria-label={`Delete API key ${key.masked}`}
-                                title="Delete this key"
-                                onClick={() => dispatch(deleteApiKey(key.id))}
-                              >
-                                <Trash2 size={13} />
-                              </button>
+                                <button
+                                  type="button"
+                                  className="settings-key-action"
+                                  aria-label={isRevealed ? 'Hide API key' : 'Reveal API key'}
+                                  onClick={() =>
+                                    isRevealed
+                                      ? setRevealedKey(null)
+                                      : setKeyAccess({ mode: 'reveal', key })
+                                  }
+                                >
+                                  {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
+                                </button>
+                              </Tooltip>
+                              <Tooltip label="Edit this key (password required)">
+                                <button
+                                  type="button"
+                                  className="settings-key-action"
+                                  aria-label={`Edit API key ${key.masked}`}
+                                  onClick={() => setKeyAccess({ mode: 'edit', key })}
+                                >
+                                  <Pencil size={13} />
+                                </button>
+                              </Tooltip>
+                              <Tooltip label="Delete this key">
+                                <button
+                                  type="button"
+                                  className="settings-key-delete"
+                                  aria-label={`Delete API key ${key.masked}`}
+                                  onClick={() => dispatch(deleteApiKey(key.id))}
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </Tooltip>
                             </div>
                           )
                         })}
@@ -811,7 +825,7 @@ export default function SettingsModal() {
               </section>
             )}
 
-            {activeSection === 'strict' && (
+            {shownSection === 'strict' && (
               <section className="settings-section">
                 <h3 className="settings-section-title">Strict Rules</h3>
                 <p className="settings-section-desc">
@@ -865,24 +879,26 @@ export default function SettingsModal() {
                       )}
                       {!editingRuleId && (
                         <span className="settings-rule-actions">
-                          <button
-                            type="button"
-                            className="settings-rule-action"
-                            aria-label={`Edit rule: ${rule.text}`}
-                            title="Edit rule"
-                            onClick={() => beginRuleEdit(rule)}
-                          >
-                            <Pencil size={13} />
-                          </button>
-                          <button
-                            type="button"
-                            className="settings-rule-action is-danger"
-                            aria-label={`Delete rule: ${rule.text}`}
-                            title="Delete rule"
-                            onClick={() => dispatch(removeStrictRule(rule.id))}
-                          >
-                            <Trash2 size={13} />
-                          </button>
+                          <Tooltip label="Edit rule">
+                            <button
+                              type="button"
+                              className="settings-rule-action"
+                              aria-label={`Edit rule: ${rule.text}`}
+                              onClick={() => beginRuleEdit(rule)}
+                            >
+                              <Pencil size={13} />
+                            </button>
+                          </Tooltip>
+                          <Tooltip label="Delete rule">
+                            <button
+                              type="button"
+                              className="settings-rule-action is-danger"
+                              aria-label={`Delete rule: ${rule.text}`}
+                              onClick={() => dispatch(removeStrictRule(rule.id))}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </Tooltip>
                         </span>
                       )}
                     </div>
@@ -939,7 +955,7 @@ export default function SettingsModal() {
               </section>
             )}
 
-            {activeSection === 'general' && (
+            {shownSection === 'general' && (
               <section className="settings-section">
                 <h3 className="settings-section-title">Account</h3>
                 {user ? (

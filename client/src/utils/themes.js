@@ -115,6 +115,12 @@ const SPECS = [
   // ---- High contrast ------------------------------------------------------
   { id: 'high-contrast-dark', name: 'High Contrast Dark', cat: 'high-contrast', dark: true, accent: '#ffff00', bg: '#000000', surface: '#000000', topbar: '#000000', elevated: '#0a0a0a', border: '#ffffff', text: '#ffffff', strong: '#ffffff', dim: '#d0d0d0', muted: '#b0b0b0', folder: '#ffff00', file: '#00ffff', success: '#00ff00', warning: '#ffaa00', info: '#00ffff', danger: '#ff5555' },
   { id: 'high-contrast-light', name: 'High Contrast Light', cat: 'high-contrast', dark: false, accent: '#0000ee', bg: '#ffffff', surface: '#ffffff', topbar: '#ffffff', elevated: '#ffffff', border: '#000000', text: '#000000', strong: '#000000', dim: '#1a1a1a', muted: '#333333', folder: '#8a6d00', file: '#0000ee' },
+
+  { id: 'radioactive-vomit', name: 'Radioactive Vomit', cat: 'terrible', dark: false, accent: '#d1480a', bg: '#dff04a', surface: '#d2e63a', topbar: '#c6dc22', elevated: '#ecf76e', border: '#a8bd12', text: '#8f4200', strong: '#5c2400', dim: '#934b04', muted: '#9e630e', folder: '#b35400', file: '#8f4200', success: '#2f6b00', warning: '#a84400', info: '#005a72', danger: '#8a1a00' },
+  { id: 'highlighter-clash', name: 'Highlighter Clash', cat: 'terrible', dark: false, accent: '#b6ff00', bg: '#ff2d95', surface: '#ff5cab', topbar: '#f04a9c', elevated: '#ff74b8', border: '#c21268', text: '#180014', strong: '#000000', dim: '#24021a', muted: '#4f0b33', folder: '#b6ff00', file: '#00e5ff', success: '#006b3a', warning: '#7a2b00', info: '#003b6b', danger: '#6b0016' },
+  { id: 'sewer-mud', name: 'Sewer Mud', cat: 'terrible', dark: true, accent: '#6b4d8a', bg: '#2e2a1c', surface: '#3a3320', topbar: '#241f14', elevated: '#443c26', border: '#4a4128', text: '#b9a97a', strong: '#d8cba0', dim: '#afa073', muted: '#988b63', folder: '#7d8f4a', file: '#8a6f4a', success: '#5f7a3a', warning: '#a8842f', info: '#5a7a8a', danger: '#a0524a' },
+  { id: 'circus-nightmare', name: 'Circus Nightmare', cat: 'terrible', dark: true, accent: '#d81a00', bg: '#4a0f1a', surface: '#12245e', topbar: '#6b1020', elevated: '#1a3070', border: '#7a2030', text: '#ffee00', strong: '#ffffff', dim: '#b7950a', muted: '#a57f0d', folder: '#00e0ff', file: '#ffe000', success: '#00c853', warning: '#ffab00', info: '#40c4ff', danger: '#ff1744' },
+  { id: 'bruise', name: 'Bruise', cat: 'terrible', dark: true, accent: '#2ee6c8', bg: '#3b2a52', surface: '#47356b', topbar: '#2a1c3d', elevated: '#513d79', border: '#5c4a80', text: '#ffdd55', strong: '#ffffff', dim: '#ccae54', muted: '#b39754', folder: '#ffdd55', file: '#2ee6c8', success: '#7fd18a', warning: '#ffc14d', info: '#7ec8e3', danger: '#ff6b8a' },
 ]
 
 const CATEGORY_LABELS = {
@@ -122,6 +128,7 @@ const CATEGORY_LABELS = {
   light: 'Light',
   colorful: 'Colorful',
   'high-contrast': 'High Contrast',
+  terrible: 'Deliberately Bad',
 }
 
 /** Expands a compact spec into a full CSS-variable palette. */

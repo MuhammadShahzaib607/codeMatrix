@@ -21,9 +21,11 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { toggleFolder } from '../../features/fileSystemSlice'
 import { CONTAINER_ID } from '../../services/fileSystemAccess'
+import { hasDroppedFolder, isFileDrag } from '../../utils/dropFiles'
 import { isBinaryPath } from '../../utils/fileTypes'
 import { isHtmlPath } from '../../utils/preview'
 import { findNode } from '../../utils/tree'
+import Tooltip from '../Common/Tooltip'
 import TreeContextMenu from './TreeContextMenu'
 
 function IndentGuides({ depth }) {
@@ -188,9 +190,9 @@ const TreeNode = memo(function TreeNode({
         } ${isDropTarget ? 'is-drop-target' : ''}`}
         onClick={handleRowClick}
         onContextMenu={handleContextMenu}
-        onDragOver={isFolder ? (event) => onRowDragOver?.(event, node) : undefined}
-        onDragLeave={isFolder ? (event) => onRowDragLeave?.(event, node) : undefined}
-        onDrop={isFolder ? (event) => onRowDrop?.(event, node) : undefined}
+        onDragOver={(event) => onRowDragOver?.(event, node)}
+        onDragLeave={(event) => onRowDragLeave?.(event, node)}
+        onDrop={(event) => onRowDrop?.(event, node)}
         title={node.name}
       >
         <IndentGuides depth={depth} />
@@ -231,24 +233,26 @@ const TreeNode = memo(function TreeNode({
 
         {!isLocked && (
           <span className="tree-actions">
-            <button
-              type="button"
-              className="tree-action"
-              title="Rename"
-              aria-label={`Rename ${node.name}`}
-              onClick={startRename}
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              type="button"
-              className="tree-action"
-              title="Delete"
-              aria-label={`Delete ${node.name}`}
-              onClick={handleDelete}
-            >
-              <Trash2 size={14} />
-            </button>
+            <Tooltip label="Rename" side="top">
+              <button
+                type="button"
+                className="tree-action"
+                aria-label={`Rename ${node.name}`}
+                onClick={startRename}
+              >
+                <Pencil size={14} />
+              </button>
+            </Tooltip>
+            <Tooltip label="Delete" side="top">
+              <button
+                type="button"
+                className="tree-action"
+                aria-label={`Delete ${node.name}`}
+                onClick={handleDelete}
+              >
+                <Trash2 size={14} />
+              </button>
+            </Tooltip>
           </span>
         )}
       </div>
@@ -328,26 +332,17 @@ function FileTree({
   const [menu, setMenu] = useState(null)
   const [renamingId, setRenamingId] = useState(null)
   const [dragOverId, setDragOverId] = useState(null)
-  const [isRootDragOver, setIsRootDragOver] = useState(false)
 
   const closeMenu = useCallback(() => setMenu(null), [])
   const clearForcedRename = useCallback(() => setRenamingId(null), [])
 
-  function isFileDrag(event) {
-    return Array.from(event.dataTransfer?.types ?? []).includes('Files')
-  }
-
-  const handleRowDragOver = useCallback(
-    (event, node) => {
-      if (node.type !== 'folder' || !isFileDrag(event)) return
-      event.preventDefault()
-      event.stopPropagation()
-      event.dataTransfer.dropEffect = 'copy'
-      setDragOverId(node.id)
-      setIsRootDragOver(false)
-    },
-    [],
-  )
+  const handleRowDragOver = useCallback((event, node) => {
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'copy'
+    setDragOverId(node.id)
+  }, [])
 
   const handleRowDragLeave = useCallback((event, node) => {
     if (event.currentTarget.contains(event.relatedTarget)) return
@@ -356,35 +351,14 @@ function FileTree({
 
   const handleRowDrop = useCallback(
     (event, node) => {
-      if (node.type !== 'folder' || !isFileDrag(event)) return
+      if (!isFileDrag(event)) return
       event.preventDefault()
       event.stopPropagation()
       setDragOverId(null)
-      setIsRootDragOver(false)
-      onDropFiles?.(node, event.dataTransfer.files)
+      onDropFiles?.(node, event.dataTransfer.files, { hasDirectory: hasDroppedFolder(event) })
     },
     [onDropFiles],
   )
-
-  function handleRootDragOver(event) {
-    if (!isFileDrag(event) || event.target?.closest?.('[data-node-id]')) return
-    event.preventDefault()
-    event.dataTransfer.dropEffect = 'copy'
-    setIsRootDragOver(true)
-    setDragOverId(null)
-  }
-
-  function handleRootDragLeave(event) {
-    if (event.currentTarget.contains(event.relatedTarget)) return
-    setIsRootDragOver(false)
-  }
-
-  function handleRootDrop(event) {
-    if (!isFileDrag(event) || event.target?.closest?.('[data-node-id]')) return
-    event.preventDefault()
-    setIsRootDragOver(false)
-    onDropFiles?.(null, event.dataTransfer.files)
-  }
 
   useEffect(() => {
     if (!revealedNode?.id) return
@@ -605,14 +579,11 @@ function FileTree({
 
   return (
     <div
-      className={`file-tree ${isRootDragOver ? 'is-root-drop-target' : ''}`}
+      className="file-tree"
       ref={rootRef}
       tabIndex={-1}
       onMouseDown={handleMouseDown}
       onKeyDown={handleKeyDown}
-      onDragOver={handleRootDragOver}
-      onDragLeave={handleRootDragLeave}
-      onDrop={handleRootDrop}
       onContextMenu={(event) => {
         if (event.target?.closest?.('[data-node-id]')) return
         event.preventDefault()

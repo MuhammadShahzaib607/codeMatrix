@@ -5,7 +5,9 @@ import { addTab, focusContainerProject, setFolderOpen } from '../../features/fil
 import { revealLineInEditor, revealTreeNode, setActiveSidebarView } from '../../features/uiSlice'
 import { getFileContent } from '../../services/fileContentCache'
 import { projectIdForPath, projectNameForPath } from '../../utils/containerPaths'
+import { isBinaryPath } from '../../utils/fileTypes'
 import { collectAncestorFolderIds, flattenTreeNodes } from '../../utils/tree'
+import Tooltip from '../Common/Tooltip'
 import './SearchInFiles.css'
 
 const DEBOUNCE_MS = 300
@@ -64,7 +66,9 @@ export default function SearchInFiles() {
         }
       }
 
-      const files = nodes.filter((node) => node.type === 'file').slice(0, MAX_FILES_TO_SEARCH)
+      const files = nodes
+        .filter((node) => node.type === 'file' && !isBinaryPath(node.id))
+        .slice(0, MAX_FILES_TO_SEARCH)
       for (const file of files) {
         if (cancelled) return
 
@@ -186,18 +190,19 @@ export default function SearchInFiles() {
           }}
         />
         {query && (
-          <button
-            type="button"
-            className="sif-clear"
-            title="Clear"
-            aria-label="Clear search"
-            onClick={() => {
-              clearQuery()
-              inputRef.current?.focus()
-            }}
-          >
-            <X size={13} />
-          </button>
+          <Tooltip label="Clear">
+            <button
+              type="button"
+              className="sif-clear"
+              aria-label="Clear search"
+              onClick={() => {
+                clearQuery()
+                inputRef.current?.focus()
+              }}
+            >
+              <X size={13} />
+            </button>
+          </Tooltip>
         )}
       </div>
 

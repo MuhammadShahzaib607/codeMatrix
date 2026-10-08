@@ -152,21 +152,36 @@ export const servePreviewFile = asyncHandler(async (req, res) => {
   const segment = String(req.params.projectId ?? '')
   const requested = typeof req.params[0] === 'string' ? req.params[0] : ''
 
-  let target = requested.replace(/^\/+/, '')
-  if (!target) target = 'index.html'
+  const trimmed = requested.replace(/^\/+/, '')
 
-  let resolved = resolvePreviewTarget(req.user.id, segment, target)
+  // A bare /preview/<segment> is usually a project (-> index.html), but it can
+  // also be a loose top-level FILE beside the projects, so resolve the segment
+  // itself first and only fall back to index.html when it is not a file.
+  let resolved = resolvePreviewTarget(req.user.id, segment, trimmed)
   let stats = await fs.promises.stat(resolved.absolute).catch(() => null)
+
+  if (!trimmed && (!stats || stats.isDirectory())) {
+    resolved = resolvePreviewTarget(req.user.id, segment, 'index.html')
+    stats = await fs.promises.stat(resolved.absolute).catch(() => null)
+  }
 
   // Directory request (e.g. /preview/:id/ or /preview/:id/sub/) -> index.html.
   if (stats?.isDirectory()) {
-    target = resolved.inner ? `${resolved.inner}/index.html` : 'index.html'
-    resolved = resolvePreviewTarget(req.user.id, segment, target)
+    const inner = resolved.inner
+    resolved = resolvePreviewTarget(
+      req.user.id,
+      segment,
+      inner ? `${inner}/index.html` : 'index.html',
+    )
     stats = await fs.promises.stat(resolved.absolute).catch(() => null)
   }
 
   if (!stats || !stats.isFile()) {
-    throw new ApiError(404, `"${resolved.inner || target}" was not found.`, 'FILE_MISSING')
+    throw new ApiError(
+      404,
+      `"${resolved.inner || trimmed || 'index.html'}" was not found.`,
+      'FILE_MISSING',
+    )
   }
 
   // Never cache preview responses: a reload must always show the bytes that are

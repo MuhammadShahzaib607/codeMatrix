@@ -1,4 +1,4 @@
-import { ChevronsUp, FilePlus, FolderPlus, Info } from 'lucide-react'
+import { ChevronsUp, FilePlus, FolderPlus, Info, Upload } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
@@ -21,7 +21,6 @@ import {
 import useAuthGuard from '../../hooks/useAuthGuard'
 import useUploadFiles from '../../hooks/useUploadFiles'
 import ConfirmModal from '../Common/ConfirmModal'
-import UploadFolderDialog from './UploadFolderDialog'
 import RecentProjects from '../Projects/RecentProjects'
 import Tooltip from '../Common/Tooltip'
 import { CONTAINER_ID, ROOT_ID } from '../../services/fileSystemAccess'
@@ -32,8 +31,9 @@ import {
   projectNameForPath,
   topSegmentOf,
 } from '../../utils/containerPaths'
+import { hasDroppedFolder, isFileDrag } from '../../utils/dropFiles'
 import { resolveCreateTargetId } from '../../utils/explorerTarget'
-import { flattenTreeNodes } from '../../utils/tree'
+import { extensionOf } from '../../utils/fileTypes'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { openPreviewTab } from '../../utils/preview'
 import { hasActiveWorkspace } from '../../utils/workspace'
@@ -80,10 +80,10 @@ export default function Sidebar() {
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
-  const [pendingUpload, setPendingUpload] = useState(null)
+  const [isRootDragOver, setIsRootDragOver] = useState(false)
   const pickerInputRef = useRef(null)
   const pickerTargetRef = useRef('')
-  const { uploadFiles } = useUploadFiles()
+  const { uploadFiles, isUploading, progress } = useUploadFiles()
 
   // The Explorer's root is the user's CONTAINER; its own row is hidden and its
   // children (every project folder and top-level file) are promoted to the top
@@ -308,41 +308,57 @@ export default function Sidebar() {
   )
 
   const handleDropFiles = useCallback(
-    (node, fileList) => {
-      const files = Array.from(fileList ?? [])
-      if (files.length === 0) return
-      const targetId = node?.id
-      if (targetId && targetId !== CONTAINER_ID && targetId !== ROOT_ID) {
-        uploadFiles(targetId, files)
-        return
-      }
-      const folders = flattenTreeNodes(tree).filter((entry) => entry.type === 'folder')
-      if (folders.length === 0) {
+    (node, fileList, options) => {
+      let files = Array.from(fileList ?? [])
+      if (options?.hasDirectory) {
         dispatch(
           showToast({
-            message: 'Create a folder first — dropped files need a destination folder.',
+            message:
+              'Folders cannot be dropped here — use Import Folder to add a folder from your computer.',
             type: 'info',
           }),
         )
+        files = files.filter((file) => extensionOf(file.name) !== '')
+      }
+      if (files.length === 0) return
+
+      if (!node || node.id === CONTAINER_ID || node.id === ROOT_ID) {
+        uploadFiles('', files)
         return
       }
-      setPendingUpload({ files, folders })
+      if (node.type === 'folder') {
+        uploadFiles(node.id, files)
+        return
+      }
+      uploadFiles(parentPathOf(node.id), files)
     },
-    [uploadFiles, tree, dispatch],
+    [uploadFiles, dispatch],
   )
 
-  function handlePickerChange(event) {
-    const files = event.target.files
-    const target = pickerTargetRef.current
-    event.target.value = ''
-    if (files && files.length > 0) uploadFiles(target, files)
+  function handleRootDragOver(event) {
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    setIsRootDragOver(true)
   }
 
-  function confirmUploadFolder(folder) {
-    const pending = pendingUpload
-    setPendingUpload(null)
-    if (!pending) return
-    uploadFiles(folder.path, pending.files)
+  function handleRootDragLeave(event) {
+    if (event.currentTarget.contains(event.relatedTarget)) return
+    setIsRootDragOver(false)
+  }
+
+  function handleRootDrop(event) {
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    setIsRootDragOver(false)
+    handleDropFiles(null, event.dataTransfer.files, { hasDirectory: hasDroppedFolder(event) })
+  }
+
+  function handlePickerChange(event) {
+    const files = Array.from(event.target.files ?? [])
+    const target = pickerTargetRef.current
+    event.target.value = ''
+    if (files.length > 0) uploadFiles(target, files)
   }
 
   const handleRefreshTree = useCallback(() => {
@@ -424,9 +440,17 @@ export default function Sidebar() {
   }
 
   const showEmptyState = treeNodes.length === 0
+  const uploadPercent = progress?.total
+    ? Math.min(100, Math.round((progress.loaded / progress.total) * 100))
+    : 0
 
   return (
-    <aside className="sidebar">
+    <aside
+      className={`sidebar ${isRootDragOver ? 'is-root-drop-target' : ''}`}
+      onDragOver={handleRootDragOver}
+      onDragLeave={handleRootDragLeave}
+      onDrop={handleRootDrop}
+    >
       <div className="sidebar-header">
         <span className="sidebar-title">Explorer</span>
         <div className="sidebar-header-actions">
@@ -450,6 +474,16 @@ export default function Sidebar() {
               <FolderPlus size={16} />
             </button>
           </Tooltip>
+          <Tooltip label="Upload files" side="bottom">
+            <button
+              type="button"
+              className="icon-btn-sm"
+              aria-label="Upload files"
+              onClick={() => handleUploadFiles({ id: resolveCreateTargetId() })}
+            >
+              <Upload size={16} />
+            </button>
+          </Tooltip>
           <Tooltip label="Collapse All" side="bottom">
             <button
               type="button"
@@ -463,6 +497,15 @@ export default function Sidebar() {
           </Tooltip>
         </div>
       </div>
+
+      {isUploading && progress?.total > 0 && (
+        <div className="sidebar-upload-progress">
+          <div className="sidebar-upload-progress-track">
+            <span className="sidebar-upload-progress-fill" style={{ width: `${uploadPercent}%` }} />
+          </div>
+          <span className="sidebar-upload-progress-label">Uploading… {uploadPercent}%</span>
+        </div>
+      )}
 
       {showEmptyState && (
         <div className="sidebar-notice">
@@ -516,14 +559,6 @@ export default function Sidebar() {
         aria-label="Upload files"
         onChange={handlePickerChange}
       />
-
-      {pendingUpload && (
-        <UploadFolderDialog
-          folders={pendingUpload.folders}
-          onPick={confirmUploadFolder}
-          onCancel={() => setPendingUpload(null)}
-        />
-      )}
 
       {pendingDelete && (
         <ConfirmModal

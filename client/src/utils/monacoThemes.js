@@ -24,7 +24,7 @@ export function defineAppMonacoThemes(monaco) {
     monaco.editor.defineTheme(`cm-${theme.id}`, {
       base: theme.monacoBase,
       inherit: true,
-      rules: [
+      rules: theme.monacoRules ?? [
         { token: 'comment', foreground: c.lineNumber, fontStyle: 'italic' },
         { token: 'keyword', foreground: theme.monacoAccent },
         { token: 'string', foreground: c.foreground },

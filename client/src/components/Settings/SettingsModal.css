@@ -410,6 +410,10 @@
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
+.settings-btn-reset {
+  margin-bottom: 14px;
+}
+
 .settings-btn:hover {
   border-color: var(--accent);
   background: var(--accent-soft);

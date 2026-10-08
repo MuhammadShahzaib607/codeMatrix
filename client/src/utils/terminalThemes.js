@@ -55,7 +55,7 @@ export function terminalThemeFor(themeId) {
     cursor: p['--accent'],
     cursorAccent: p['--bg-editor'],
     selectionBackground: p['--accent-soft'],
-    ...(theme.dark ? DARK_ANSI : LIGHT_ANSI),
+    ...(theme.ansi ?? (theme.dark ? DARK_ANSI : LIGHT_ANSI)),
   }
 }
 

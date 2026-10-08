@@ -1,0 +1,350 @@
+[data-extreme] .settings-overlay,
+[data-extreme] .confirm-overlay,
+[data-extreme] .tooltip-bubble {
+  --bg-topbar: #2f3237;
+  --bg-sidebar: #2f3237;
+  --bg-editor: #1f2124;
+  --bg-tab-bar: #2f3237;
+  --bg-elevated: #26282c;
+  --bg-input: #1f2124;
+  --bg-hover: #383b40;
+  --bg-active: #42454b;
+  --border: #4a4e55;
+  --text: #d7d9dd;
+  --text-strong: #ffffff;
+  --text-dim: #9aa0a8;
+  --text-muted: #808790;
+  --accent: #7f9cff;
+  --accent-hover: #96aeff;
+  --accent-soft: rgba(127, 156, 255, 0.18);
+  --accent-on: #101418;
+  --accent-text: #b9c8ff;
+  --danger: #ff8f87;
+  --danger-strong: #d2453b;
+  --danger-strong-hover: #e0574d;
+  --danger-soft: rgba(255, 143, 135, 0.14);
+  --success: #63d6b0;
+  --warning: #e5b35c;
+  --warning-bg: #3a3324;
+  --warning-border: #5c5334;
+  --warning-text: #ecd3a1;
+  --info: #8fc7ff;
+  --folder: #e0b46a;
+  --file: #8fc7ff;
+  --overlay: rgba(0, 0, 0, 0.55);
+  --shadow: rgba(0, 0, 0, 0.5);
+  --hover-tint: rgba(255, 255, 255, 0.08);
+  --scrollbar: rgba(160, 160, 160, 0.4);
+  --mark-bg: rgba(127, 156, 255, 0.32);
+  --reveal-bg: rgba(127, 156, 255, 0.45);
+  --app-gradient: rgba(127, 156, 255, 0.09);
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Courier New', monospace;
+  font-family: var(--font-ui);
+}
+
+[data-extreme] .sidebar-title {
+  display: inline-block;
+}
+
+[data-extreme] .icon-btn-sm {
+  box-shadow: inset 0 0 0 1.5px var(--border);
+}
+
+[data-extreme] .topbar {
+  box-shadow: inset 0 -3px 0 var(--border);
+}
+
+[data-extreme] .sidebar {
+  box-shadow: inset -3px 0 0 var(--border);
+}
+
+[data-extreme] .sidebar .tree-row {
+  box-shadow: inset 0 0 0 1.5px var(--border);
+  border-radius: 3px 11px 4px 10px;
+}
+
+[data-extreme][data-theme='eye-bleach-reversed'] .icon-btn-sm {
+  border-radius: 12px 4px 10px 2px;
+}
+
+[data-extreme][data-theme='eye-bleach-reversed'] .sidebar {
+  background: repeating-linear-gradient(45deg, #f4ffe2 0 18px, #eefcd6 18px 36px);
+}
+
+[data-extreme][data-theme='eye-bleach-reversed'] .sidebar-title {
+  font-size: 17px;
+  letter-spacing: 3px;
+  transform: rotate(-0.8deg);
+}
+
+[data-extreme][data-theme='eye-bleach-reversed'] .topbar {
+  background: repeating-linear-gradient(135deg, #ffeafb 0 16px, #f9defa 16px 32px);
+}
+
+[data-extreme][data-theme='eye-bleach-reversed'] .editor-body {
+  background: repeating-linear-gradient(0deg, #fbfff4 0 24px, #f4fff0 24px 48px);
+}
+
+[data-extreme][data-theme='eye-bleach-reversed'] .monaco-editor {
+  background-color: #fbfff4 !important;
+  background-image: repeating-linear-gradient(0deg, #fbfff4 0 24px, #f4fff0 24px 48px) !important;
+}
+
+[data-extreme][data-theme='eye-bleach-reversed'] .monaco-editor .overflow-guard {
+  background-color: transparent !important;
+}
+
+[data-extreme][data-theme='eye-bleach-reversed'] ::selection {
+  background: #ff00c8;
+  color: #fbfff4;
+}
+
+[data-extreme][data-theme='eye-bleach-reversed'] input:not([type='checkbox']):not([type='radio']),
+[data-extreme][data-theme='eye-bleach-reversed'] textarea {
+  caret-color: #ff00c8;
+}
+
+[data-extreme][data-theme='comic-sans-casino'] .icon-btn-sm {
+  border-radius: 11px 11px 3px 14px;
+}
+
+[data-extreme][data-theme='comic-sans-casino'] .sidebar {
+  background:
+    radial-gradient(#0a4224 1.5px, transparent 2px) 0 0 / 16px 16px,
+    radial-gradient(ellipse at 25% 0%, #0e5230 0%, #07331b 75%);
+}
+
+[data-extreme][data-theme='comic-sans-casino'] .sidebar-title {
+  font-size: 16px;
+  letter-spacing: 2px;
+  transform: rotate(0.6deg);
+}
+
+[data-extreme][data-theme='comic-sans-casino'] .sidebar .tree-row {
+  font-size: 14px;
+}
+
+[data-extreme][data-theme='comic-sans-casino'] .topbar {
+  background: linear-gradient(90deg, #1c2b06 0%, #33440a 50%, #1c2b06 100%);
+}
+
+[data-extreme][data-theme='comic-sans-casino'] .monaco-editor {
+  background-color: #07331b !important;
+  background-image: repeating-linear-gradient(0deg, rgba(14, 82, 48, 0.4) 0 26px, transparent 26px 52px) !important;
+}
+
+[data-extreme][data-theme='comic-sans-casino'] .monaco-editor .overflow-guard {
+  background-color: transparent !important;
+}
+
+[data-extreme][data-theme='comic-sans-casino'] ::selection {
+  background: #ffd400;
+  color: #07331b;
+}
+
+[data-extreme][data-theme='comic-sans-casino'] input:not([type='checkbox']):not([type='radio']),
+[data-extreme][data-theme='comic-sans-casino'] textarea {
+  caret-color: #ffd400;
+}
+
+[data-extreme][data-theme='wet-carpet-rave'] .icon-btn-sm {
+  border-radius: 6px 14px 4px 12px;
+}
+
+[data-extreme][data-theme='wet-carpet-rave'] .sidebar {
+  background-color: #a37f1f;
+  background-image:
+    repeating-linear-gradient(90deg, rgba(74, 50, 0, 0.22) 0 3px, transparent 3px 14px),
+    repeating-linear-gradient(0deg, rgba(74, 50, 0, 0.22) 0 3px, transparent 3px 14px);
+}
+
+[data-extreme][data-theme='wet-carpet-rave'] .sidebar-title {
+  font-size: 19px;
+  letter-spacing: 0.5px;
+}
+
+[data-extreme][data-theme='wet-carpet-rave'] .topbar {
+  background-color: #8a6a16;
+  background-image: repeating-linear-gradient(90deg, rgba(255, 0, 255, 0.16) 0 4px, transparent 4px 16px);
+}
+
+[data-extreme][data-theme='wet-carpet-rave'] .monaco-editor {
+  background-color: #b8942a !important;
+  background-image:
+    repeating-linear-gradient(90deg, rgba(74, 50, 0, 0.16) 0 3px, transparent 3px 16px),
+    repeating-linear-gradient(0deg, rgba(74, 50, 0, 0.16) 0 3px, transparent 3px 16px) !important;
+}
+
+[data-extreme][data-theme='wet-carpet-rave'] .monaco-editor .overflow-guard {
+  background-color: transparent !important;
+}
+
+[data-extreme][data-theme='wet-carpet-rave'] ::selection {
+  background: #ff00ff;
+  color: #2b1500;
+}
+
+[data-extreme][data-theme='wet-carpet-rave'] input:not([type='checkbox']):not([type='radio']),
+[data-extreme][data-theme='wet-carpet-rave'] textarea {
+  caret-color: #ff00ff;
+}
+
+[data-extreme][data-theme='clown-dentist'] .icon-btn-sm {
+  border-radius: 14px 4px 12px 5px;
+}
+
+[data-extreme][data-theme='clown-dentist'] .sidebar {
+  background: linear-gradient(165deg, #d3ebfd 0%, #ffe2ea 55%, #cfe7fb 100%);
+}
+
+[data-extreme][data-theme='clown-dentist'] .sidebar-title {
+  font-size: 20px;
+  letter-spacing: 0.8px;
+  transform: rotate(-0.6deg);
+}
+
+[data-extreme][data-theme='clown-dentist'] .topbar {
+  background: repeating-linear-gradient(45deg, #ffd6e0 0 18px, #ffeaf0 18px 36px);
+}
+
+[data-extreme][data-theme='clown-dentist'] .monaco-editor {
+  background-color: #e8f4ff !important;
+  background-image: repeating-linear-gradient(-45deg, #e8f4ff 0 22px, #e4f0fd 22px 44px) !important;
+}
+
+[data-extreme][data-theme='clown-dentist'] .monaco-editor .overflow-guard {
+  background-color: transparent !important;
+}
+
+[data-extreme][data-theme='clown-dentist'] ::selection {
+  background: #ff2d55;
+  color: #ffffff;
+}
+
+[data-extreme][data-theme='clown-dentist'] input:not([type='checkbox']):not([type='radio']),
+[data-extreme][data-theme='clown-dentist'] textarea {
+  caret-color: #ff2d55;
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] .icon-btn-sm {
+  border-radius: 0;
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] .sidebar .tree-row {
+  border-radius: 0;
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] .sidebar {
+  background-color: #006b6b;
+  background-image: repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.14) 0 4px, transparent 4px 9px);
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] .sidebar-title {
+  font-size: 10px;
+  letter-spacing: 4px;
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] .sidebar .tree-row {
+  font-size: 12px;
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] .topbar {
+  background: linear-gradient(90deg, #5a2d82 0%, #7c3db0 50%, #5a2d82 100%);
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] .monaco-editor {
+  background-color: #008080 !important;
+  background-image: repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.1) 0 4px, transparent 4px 9px) !important;
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] .monaco-editor .overflow-guard {
+  background-color: transparent !important;
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] ::selection {
+  background: #ff00ff;
+  color: #ffffff;
+}
+
+[data-extreme][data-theme='windows-95-fever-dream'] input:not([type='checkbox']):not([type='radio']),
+[data-extreme][data-theme='windows-95-fever-dream'] textarea {
+  caret-color: #ff00ff;
+}
+
+@keyframes cm-extreme-pan-x {
+  to {
+    background-position: 220px 0;
+  }
+}
+
+@keyframes cm-extreme-pan-xy {
+  to {
+    background-position: 160px 120px;
+  }
+}
+
+@keyframes cm-extreme-pan-diag {
+  to {
+    background-position: 180px 180px;
+  }
+}
+
+@keyframes cm-extreme-hue {
+  to {
+    filter: hue-rotate(360deg);
+  }
+}
+
+@keyframes cm-extreme-wobble {
+  from {
+    transform: rotate(-0.8deg);
+  }
+  to {
+    transform: rotate(0.8deg);
+  }
+}
+
+@keyframes cm-extreme-wobble-soft {
+  from {
+    transform: rotate(-0.6deg);
+  }
+  to {
+    transform: rotate(0.6deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-extreme][data-theme='eye-bleach-reversed'] .sidebar {
+    animation: cm-extreme-pan-diag 16s ease-in-out infinite alternate;
+  }
+
+  [data-extreme][data-theme='eye-bleach-reversed'] .monaco-editor {
+    animation: cm-extreme-hue 45s linear infinite;
+  }
+
+  [data-extreme][data-theme='comic-sans-casino'] .topbar {
+    animation: cm-extreme-pan-x 18s ease-in-out infinite alternate;
+  }
+
+  [data-extreme][data-theme='wet-carpet-rave'] .sidebar {
+    animation: cm-extreme-pan-xy 13s linear infinite alternate;
+  }
+
+  [data-extreme][data-theme='wet-carpet-rave'] .sidebar-title {
+    animation: cm-extreme-wobble 6s ease-in-out infinite alternate;
+  }
+
+  [data-extreme][data-theme='clown-dentist'] .topbar {
+    animation: cm-extreme-pan-diag 20s ease-in-out infinite alternate;
+  }
+
+  [data-extreme][data-theme='windows-95-fever-dream'] .topbar {
+    animation: cm-extreme-pan-x 22s ease-in-out infinite alternate;
+  }
+
+  [data-extreme][data-theme='windows-95-fever-dream'] .sidebar-title {
+    animation: cm-extreme-wobble-soft 7s ease-in-out infinite alternate;
+  }
+}

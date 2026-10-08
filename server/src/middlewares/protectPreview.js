@@ -38,6 +38,14 @@ export function previewCookieName(projectId) {
   return `${COOKIE_PREFIX}${projectId}`
 }
 
+// The GENERIC preview cookie covers the whole /preview tree. A relative
+// reference to a sibling folder ("../sibling/logo.png") resolves to
+// /preview/sibling/logo.png — a path no per-project cookie is scoped to — so
+// the document must also carry a cookie that is sent for every preview path.
+// It stays HttpOnly + SameSite=Lax and is only ever sent to /preview/*, and
+// every request still runs the ownership + traversal checks afterwards.
+export const GENERIC_PREVIEW_COOKIE = `${COOKIE_PREFIX}all`
+
 /** Reads ONE cookie value out of the raw Cookie header (no cookie-parser dep). */
 function readCookie(req, name) {
   const raw = req.headers?.cookie
@@ -65,9 +73,10 @@ export default function protectPreview(req, res, next) {
 
   // Query/header first (the document that opens the preview), then the cookie
   // that document set for the assets it is about to request.
-  const cookieToken = PROJECT_ID_PATTERN.test(projectId)
+  const legacyCookie = PROJECT_ID_PATTERN.test(projectId)
     ? readCookie(req, previewCookieName(projectId))
     : null
+  const cookieToken = readCookie(req, GENERIC_PREVIEW_COOKIE) ?? legacyCookie
 
   const token = queryToken || headerBearer || cookieToken
 
@@ -90,12 +99,18 @@ export default function protectPreview(req, res, next) {
 
     // Mirror a presented query/header token into the path-scoped cookie so the
     // page's relative <link>/<script>/url() requests can authenticate.
-    if ((queryToken || headerBearer) && PROJECT_ID_PATTERN.test(projectId)) {
-      res.setHeader(
-        'Set-Cookie',
-        `${previewCookieName(projectId)}=${encodeURIComponent(token)}; ` +
-          `Path=/preview/${projectId}; HttpOnly; SameSite=Lax`,
-      )
+    if (queryToken || headerBearer) {
+      const cookies = [
+        `${GENERIC_PREVIEW_COOKIE}=${encodeURIComponent(token)}; ` +
+          `Path=/preview; HttpOnly; SameSite=Lax`,
+      ]
+      if (PROJECT_ID_PATTERN.test(projectId)) {
+        cookies.push(
+          `${previewCookieName(projectId)}=${encodeURIComponent(token)}; ` +
+            `Path=/preview/${projectId}; HttpOnly; SameSite=Lax`,
+        )
+      }
+      res.setHeader('Set-Cookie', cookies)
     }
     return next()
   } catch {

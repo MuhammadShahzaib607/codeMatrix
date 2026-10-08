@@ -48,6 +48,7 @@ export default function App() {
   const isTerminalOpen = useSelector((state) => state.terminal.isTerminalPanelOpen)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
+  const isAdmin = useSelector((state) => state.auth.user?.role === 'admin')
   const settings = useSelector((state) => state.settings)
 
   useGlobalShortcuts()
@@ -99,11 +100,12 @@ export default function App() {
   }, [dispatch])
 
   // The agent runs on a key the USER saved, so load the masked list whenever
-  // the user signs in (the panel needs it to show the zero-key prompt).
+  // an ADMIN signs in (the panel needs it to show the zero-key prompt). The
+  // keys API is admin-only, so a non-admin never receives a 403 here.
   useEffect(() => {
-    if (isAuthenticated) dispatch(fetchApiKeys())
-    if (isAuthenticated) dispatch(fetchKeyUsage())
-  }, [isAuthenticated, dispatch])
+    if (isAuthenticated && isAdmin) dispatch(fetchApiKeys())
+    if (isAuthenticated && isAdmin) dispatch(fetchKeyUsage())
+  }, [isAuthenticated, isAdmin, dispatch])
 
   // The content cache is keyed by workspace id, so drop it whenever the active
   // workspace changes (scratch included).
@@ -146,6 +148,7 @@ export default function App() {
   }, [aiPanelWidth])
 
   useEffect(() => {
+    if (!rightPanelTab) return
     try {
       localStorage.setItem(RIGHT_PANEL_TAB_KEY, rightPanelTab)
     } catch {}

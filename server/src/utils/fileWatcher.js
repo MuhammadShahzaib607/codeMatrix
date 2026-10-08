@@ -311,6 +311,28 @@ export function stopWatchingProject(projectId) {
   return true
 }
 
+/**
+ * Drops a project's watcher completely (closing it and forgetting any held
+ * copy), without touching other projects. Used before a DELETE of the project
+ * folder itself: the folder is going away, so the watcher must be closed and
+ * must not be resumed afterwards.
+ */
+export async function closeWatching(projectId) {
+  const entry = watchers.get(projectId)
+  const held = heldWatchers.get(projectId)
+  watchers.delete(projectId)
+  heldWatchers.delete(projectId)
+  if (!entry && !held) return false
+  if (entry) {
+    if (entry.timer) clearTimeout(entry.timer)
+    if (entry.previewTimer) clearTimeout(entry.previewTimer)
+    try {
+      await entry.watcher.close()
+    } catch {}
+  }
+  return true
+}
+
 export function getWatchedProjectIds() {
   return [...watchers.keys()]
 }
@@ -324,6 +346,7 @@ export function getWatchedProjectIds() {
 
 // containerPath -> { watcher, refs, timer, eventCount, suppressUntil, notify }
 const containerWatchers = new Map()
+const heldContainerWatchers = new Map()
 
 /** Drops container notifications caused by our own API mutation for a window. */
 export function suppressContainerWatcher(containerPath, ms = SUPPRESS_MS) {
@@ -403,6 +426,35 @@ export function startWatchingContainer(containerPath, notify) {
   return true
 }
 
+/**
+ * Closes the container watcher for a while (used around a delete so the folder
+ * being removed is not watched mid-removal) and remembers how to bring it back.
+ * Other folders keep updating live because watching is restored right after.
+ */
+export async function pauseContainerWatching(containerPath) {
+  const entry = containerWatchers.get(containerPath)
+  if (!entry) return false
+  const { refs, notify } = entry
+  containerWatchers.delete(containerPath)
+  if (entry.timer) clearTimeout(entry.timer)
+  heldContainerWatchers.set(containerPath, { refs, notify })
+  try {
+    await entry.watcher.close()
+  } catch {}
+  return true
+}
+
+/** Restores a paused container watcher with its original reference count. */
+export async function resumeContainerWatching(containerPath) {
+  const held = heldContainerWatchers.get(containerPath)
+  if (!held) return false
+  heldContainerWatchers.delete(containerPath)
+  const started = startWatchingContainer(containerPath, held.notify)
+  const next = containerWatchers.get(containerPath)
+  if (next) next.refs = held.refs
+  return started
+}
+
 /** Releases one container reference; closes the watcher on the last one. */
 export function stopWatchingContainer(containerPath) {
   const entry = containerWatchers.get(containerPath)
@@ -422,6 +474,7 @@ export async function closeAllWatchers() {
   watchers.clear()
   heldWatchers.clear()
   containerWatchers.clear()
+  heldContainerWatchers.clear()
   await Promise.all(
     [...entries, ...containerEntries].map(async (entry) => {
       if (entry.timer) clearTimeout(entry.timer)

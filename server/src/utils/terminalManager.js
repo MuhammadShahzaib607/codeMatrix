@@ -169,6 +169,7 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
     projectId,
     socket,
     socketId: socket.id,
+    cwd,
     ptyProcess,
   }
   sessions.set(terminalId, session)
@@ -252,6 +253,31 @@ export function writeToTerminal(terminalId, data) {
     return false
   }
   return true
+}
+
+/**
+ * Every live terminal whose working directory is the given folder or sits
+ * inside it. Windows refuses to remove such a folder (EBUSY) until the shell
+ * leaves, so the delete path uses this to explain the failure to the user.
+ */
+export function findTerminalsCwdInside(absolutePath) {
+  const target = String(path.resolve(absolutePath ?? ''))
+    .split(path.sep)
+    .join('/')
+    .toLowerCase()
+  if (!target) return []
+  const matches = []
+  for (const session of sessions.values()) {
+    const cwd = String(session.cwd ?? '')
+      .split(path.sep)
+      .join('/')
+      .toLowerCase()
+    if (!cwd) continue
+    if (cwd === target || cwd.startsWith(`${target}/`)) {
+      matches.push({ terminalId: session.terminalId, cwd: session.cwd })
+    }
+  }
+  return matches
 }
 
 export function resizeTerminal(terminalId, cols, rows) {

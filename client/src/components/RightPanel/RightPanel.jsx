@@ -1,7 +1,9 @@
 import { Bot, TerminalSquare } from 'lucide-react'
+import { useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { setRightPanelTab } from '../../features/uiSlice'
 import AIPanel from '../AIPanel/AIPanel'
+import AgentPlaceholder from './AgentPlaceholder'
 import SidebarTerminal from './SidebarTerminal'
 import './RightPanel.css'
 
@@ -19,11 +21,23 @@ const VIEWS = [
  */
 export default function RightPanel() {
   const dispatch = useDispatch()
-  const activeTab = useSelector((state) => state.ui.rightPanelTab)
+  const storedTab = useSelector((state) => state.ui.rightPanelTab)
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
+  const user = useSelector((state) => state.auth.user)
+  const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
+  const authLoading = useSelector((state) => state.auth.loading)
   const hasSidebarTerminal = useSelector(
     (state) => Boolean(state.sidebarTerminal.terminalId),
   )
+
+  const isAdmin = user?.role === 'admin'
+  const roleResolved = !authLoading && (!isAuthenticated || Boolean(user))
+  const activeTab = storedTab ?? (isAdmin ? 'agent' : 'terminal')
+
+  useEffect(() => {
+    if (storedTab || !roleResolved) return
+    dispatch(setRightPanelTab(isAdmin ? 'agent' : 'terminal'))
+  }, [storedTab, roleResolved, isAdmin, dispatch])
 
   return (
     <div className="right-panel">
@@ -53,7 +67,7 @@ export default function RightPanel() {
           aria-hidden={activeTab !== 'agent'}
           className={`right-panel-view ${activeTab === 'agent' ? 'is-active' : ''}`}
         >
-          <AIPanel />
+          {isAdmin ? <AIPanel /> : <AgentPlaceholder />}
         </div>
 
         {(hasSidebarTerminal || (activeTab === 'terminal' && isAIPanelOpen)) && (

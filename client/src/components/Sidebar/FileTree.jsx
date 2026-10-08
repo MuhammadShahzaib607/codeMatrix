@@ -15,11 +15,13 @@ import {
   RefreshCw,
   Scissors,
   Trash2,
+  Upload,
 } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { toggleFolder } from '../../features/fileSystemSlice'
 import { CONTAINER_ID } from '../../services/fileSystemAccess'
+import { isBinaryPath } from '../../utils/fileTypes'
 import { isHtmlPath } from '../../utils/preview'
 import { findNode } from '../../utils/tree'
 import TreeContextMenu from './TreeContextMenu'
@@ -127,11 +129,16 @@ const TreeNode = memo(function TreeNode({
   onOpenMenu,
   clipboardPath,
   onOpenFile,
+  dragOverId,
+  onRowDragOver,
+  onRowDragLeave,
+  onRowDrop,
 }) {
   const dispatch = useDispatch()
   const [isRenaming, setIsRenaming] = useState(false)
 
   const isFolder = node.type === 'folder'
+  const isDropTarget = dragOverId === node.id
   const isSelected = selectedId === node.id
   const isRevealed = revealedId === node.id
   const isLocked = lockedId !== null && node.id === lockedId
@@ -178,9 +185,12 @@ const TreeNode = memo(function TreeNode({
         data-node-id={node.id}
         className={`tree-row ${isSelected ? 'is-selected' : ''} ${isRevealed ? 'is-revealed' : ''} ${
           clipboardPath === node.id ? 'is-cut' : ''
-        }`}
+        } ${isDropTarget ? 'is-drop-target' : ''}`}
         onClick={handleRowClick}
         onContextMenu={handleContextMenu}
+        onDragOver={isFolder ? (event) => onRowDragOver?.(event, node) : undefined}
+        onDragLeave={isFolder ? (event) => onRowDragLeave?.(event, node) : undefined}
+        onDrop={isFolder ? (event) => onRowDrop?.(event, node) : undefined}
         title={node.name}
       >
         <IndentGuides depth={depth} />
@@ -273,6 +283,10 @@ const TreeNode = memo(function TreeNode({
               onOpenMenu={onOpenMenu}
               clipboardPath={clipboardPath}
               onOpenFile={onOpenFile}
+              dragOverId={dragOverId}
+              onRowDragOver={onRowDragOver}
+              onRowDragLeave={onRowDragLeave}
+              onRowDrop={onRowDrop}
             />
           ))}
         </div>
@@ -297,19 +311,80 @@ function FileTree({
   onCopy,
   onPaste,
   onCopyPath,
+  onCopyRelativePath,
+  onCopyPathRelativeToFile,
   onPreview,
   onRefresh,
   onCollapseAll,
   onOpenFile,
+  onUploadFiles,
+  onDropFiles,
 }) {
   const revealedNode = useSelector((state) => state.ui.revealedNode)
   const clipboard = useSelector((state) => state.clipboard)
+  const activeFileId = useSelector((state) => state.fileSystem.activeFileId)
+  const hasOpenCodeFile = Boolean(activeFileId) && !isBinaryPath(activeFileId)
   const rootRef = useRef(null)
   const [menu, setMenu] = useState(null)
   const [renamingId, setRenamingId] = useState(null)
+  const [dragOverId, setDragOverId] = useState(null)
+  const [isRootDragOver, setIsRootDragOver] = useState(false)
 
   const closeMenu = useCallback(() => setMenu(null), [])
   const clearForcedRename = useCallback(() => setRenamingId(null), [])
+
+  function isFileDrag(event) {
+    return Array.from(event.dataTransfer?.types ?? []).includes('Files')
+  }
+
+  const handleRowDragOver = useCallback(
+    (event, node) => {
+      if (node.type !== 'folder' || !isFileDrag(event)) return
+      event.preventDefault()
+      event.stopPropagation()
+      event.dataTransfer.dropEffect = 'copy'
+      setDragOverId(node.id)
+      setIsRootDragOver(false)
+    },
+    [],
+  )
+
+  const handleRowDragLeave = useCallback((event, node) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return
+    setDragOverId((current) => (current === node.id ? null : current))
+  }, [])
+
+  const handleRowDrop = useCallback(
+    (event, node) => {
+      if (node.type !== 'folder' || !isFileDrag(event)) return
+      event.preventDefault()
+      event.stopPropagation()
+      setDragOverId(null)
+      setIsRootDragOver(false)
+      onDropFiles?.(node, event.dataTransfer.files)
+    },
+    [onDropFiles],
+  )
+
+  function handleRootDragOver(event) {
+    if (!isFileDrag(event) || event.target?.closest?.('[data-node-id]')) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    setIsRootDragOver(true)
+    setDragOverId(null)
+  }
+
+  function handleRootDragLeave(event) {
+    if (event.currentTarget.contains(event.relatedTarget)) return
+    setIsRootDragOver(false)
+  }
+
+  function handleRootDrop(event) {
+    if (!isFileDrag(event) || event.target?.closest?.('[data-node-id]')) return
+    event.preventDefault()
+    setIsRootDragOver(false)
+    onDropFiles?.(null, event.dataTransfer.files)
+  }
 
   useEffect(() => {
     if (!revealedNode?.id) return
@@ -462,6 +537,14 @@ function FileTree({
             onSelect: () => onRequestCreate(node.id, 'folder'),
           }
         : null,
+      isFolder
+        ? {
+            id: 'upload-files',
+            label: 'Upload files...',
+            icon: Upload,
+            onSelect: () => onUploadFiles?.(node),
+          }
+        : null,
       isFolder ? { separator: true } : null,
       { id: 'cut', label: 'Cut', icon: Scissors, onSelect: () => onCut(node) },
       { id: 'copy', label: 'Copy', icon: Copy, onSelect: () => onCopy(node) },
@@ -494,6 +577,20 @@ function FileTree({
         icon: Link,
         onSelect: () => onCopyPath(node),
       },
+      {
+        id: 'copy-relative-path',
+        label: 'Copy relative path',
+        icon: Link,
+        onSelect: () => onCopyRelativePath?.(node),
+      },
+      hasOpenCodeFile
+        ? {
+            id: 'copy-relative-open-file',
+            label: 'Copy path relative to open file',
+            icon: FileCode,
+            onSelect: () => onCopyPathRelativeToFile?.(node),
+          }
+        : null,
       canPreview ? { separator: true } : null,
       canPreview
         ? {
@@ -508,11 +605,14 @@ function FileTree({
 
   return (
     <div
-      className="file-tree"
+      className={`file-tree ${isRootDragOver ? 'is-root-drop-target' : ''}`}
       ref={rootRef}
       tabIndex={-1}
       onMouseDown={handleMouseDown}
       onKeyDown={handleKeyDown}
+      onDragOver={handleRootDragOver}
+      onDragLeave={handleRootDragLeave}
+      onDrop={handleRootDrop}
       onContextMenu={(event) => {
         if (event.target?.closest?.('[data-node-id]')) return
         event.preventDefault()
@@ -550,6 +650,10 @@ function FileTree({
           onOpenMenu={openMenu}
           clipboardPath={clipboard.mode === 'cut' ? clipboard.path : null}
           onOpenFile={onOpenFile}
+          dragOverId={dragOverId}
+          onRowDragOver={handleRowDragOver}
+          onRowDragLeave={handleRowDragLeave}
+          onRowDrop={handleRowDrop}
         />
       ))}
 

@@ -27,7 +27,11 @@ export default function SidebarTerminal() {
   const projectId = useSelector((state) => state.fileSystem.workspace.projectId)
   const userId = useSelector((state) => state.auth.user?.id)
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
-  const isTerminalTab = useSelector((state) => state.ui.rightPanelTab === 'terminal')
+  const isTerminalTab = useSelector((state) => {
+    const stored = state.ui.rightPanelTab
+    const isAdmin = state.auth.user?.role === 'admin'
+    return (stored ?? (isAdmin ? 'agent' : 'terminal')) === 'terminal'
+  })
   const { availableShells, defaultShell } = useSelector((state) => state.terminal)
   const preferredShell = useSelector((state) => state.settings.terminal.preferredShell)
   const [isShellMenuOpen, setIsShellMenuOpen] = useState(false)

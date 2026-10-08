@@ -22,7 +22,9 @@ function readStoredRightPanelTab() {
     const value = localStorage.getItem(RIGHT_PANEL_TAB_KEY)
     if (RIGHT_PANEL_TABS.includes(value)) return value
   } catch {}
-  return 'agent'
+  // Nothing stored: the default depends on the account role (admins get the
+  // Agent tab, everyone else lands on Terminal), so the caller resolves it.
+  return null
 }
 
 function readStoredSidebarWidth() {
@@ -77,8 +79,8 @@ const uiSlice = createSlice({
       reducer(state, action) {
         state.toast = action.payload
       },
-      prepare({ message, type = 'info' }) {
-        return { payload: { id: nanoid(), message, type } }
+      prepare({ message, type = 'info', action = null }) {
+        return { payload: { id: nanoid(), message, type, action } }
       },
     },
 

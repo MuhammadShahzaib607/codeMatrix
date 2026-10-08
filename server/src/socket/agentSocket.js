@@ -15,6 +15,7 @@ import {
   appendAgentMemoryEntry,
   buildRunMemoryEntry,
 } from '../services/agentMemory.js'
+import { ADMIN_REQUIRED_MESSAGE, isAdminUser } from '../middlewares/requireAdmin.js'
 import { roomFor } from './workspaceSocket.js'
 
 // ---------------------------------------------------------------------------
@@ -59,11 +60,15 @@ export default function registerAgentSocket(io) {
     // interleaving two loops' tool results.
     let active = false
 
-    socket.on('agent:attach', (payload, acknowledge) => {
+    socket.on('agent:attach', async (payload, acknowledge) => {
       const ack = typeof acknowledge === 'function' ? acknowledge : () => {}
       const userId = verifyUser(payload?.token)
       if (!userId) {
         ack({ ok: false, code: 'UNAUTHORIZED' })
+        return
+      }
+      if (!(await isAdminUser(userId))) {
+        ack({ ok: false, status: 403, code: 'FORBIDDEN', message: ADMIN_REQUIRED_MESSAGE })
         return
       }
       socket.join(userRoom(userId))
@@ -76,11 +81,15 @@ export default function registerAgentSocket(io) {
       })
     })
 
-    socket.on('agent:stop', (payload, acknowledge) => {
+    socket.on('agent:stop', async (payload, acknowledge) => {
       const ack = typeof acknowledge === 'function' ? acknowledge : () => {}
       const userId = verifyUser(payload?.token)
       if (!userId) {
         ack({ ok: false, code: 'UNAUTHORIZED' })
+        return
+      }
+      if (!(await isAdminUser(userId))) {
+        ack({ ok: false, status: 403, code: 'FORBIDDEN', message: ADMIN_REQUIRED_MESSAGE })
         return
       }
       if (activeRuns.has(userId)) stopRequests.add(userId)
@@ -103,6 +112,13 @@ export default function registerAgentSocket(io) {
             message: 'Please sign in to use the AI assistant.',
             code: 'UNAUTHORIZED',
           })
+          return
+        }
+
+        // Administrator-only, verified against the database for every run: a
+        // non-admin never reaches key resolution, scratch adoption or runAgent.
+        if (!(await isAdminUser(userId))) {
+          ack({ ok: false, status: 403, message: ADMIN_REQUIRED_MESSAGE, code: 'FORBIDDEN' })
           return
         }
 

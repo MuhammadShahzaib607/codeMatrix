@@ -1,5 +1,5 @@
 import { ChevronsUp, FilePlus, FolderPlus, Info } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { clearClipboard, setClipboard } from '../../features/clipboardSlice'
 import { recordExplorerAction } from '../../features/explorerHistorySlice'
@@ -19,7 +19,9 @@ import {
   renameWorkspaceEntry,
 } from '../../features/workspaceThunks'
 import useAuthGuard from '../../hooks/useAuthGuard'
+import useUploadFiles from '../../hooks/useUploadFiles'
 import ConfirmModal from '../Common/ConfirmModal'
+import UploadFolderDialog from './UploadFolderDialog'
 import RecentProjects from '../Projects/RecentProjects'
 import Tooltip from '../Common/Tooltip'
 import { CONTAINER_ID, ROOT_ID } from '../../services/fileSystemAccess'
@@ -28,13 +30,42 @@ import {
   previewTargetForPath,
   projectIdForPath,
   projectNameForPath,
+  topSegmentOf,
 } from '../../utils/containerPaths'
 import { resolveCreateTargetId } from '../../utils/explorerTarget'
+import { flattenTreeNodes } from '../../utils/tree'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { openPreviewTab } from '../../utils/preview'
 import { hasActiveWorkspace } from '../../utils/workspace'
 import FileTree from './FileTree'
 import './Sidebar.css'
+import './UploadDrop.css'
+
+function relativeToProject(path, tree) {
+  if (!path) return ''
+  if (!projectIdForPath(path, tree)) return path
+  const top = topSegmentOf(path)
+  const rest = path.slice(top.length + 1)
+  return rest || '.'
+}
+
+function relativePathFrom(fromDir, targetPath) {
+  const fromParts = fromDir ? fromDir.split('/').filter(Boolean) : []
+  const toParts = String(targetPath ?? '').split('/').filter(Boolean)
+  let shared = 0
+  while (
+    shared < fromParts.length &&
+    shared < toParts.length &&
+    fromParts[shared] === toParts[shared]
+  ) {
+    shared += 1
+  }
+  const parts = [
+    ...Array.from({ length: fromParts.length - shared }, () => '..'),
+    ...toParts.slice(shared),
+  ]
+  return parts.join('/') || '.'
+}
 
 export default function Sidebar() {
   const dispatch = useDispatch()
@@ -43,11 +74,16 @@ export default function Sidebar() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const clipboard = useSelector((state) => state.clipboard)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
+  const activeFileId = useSelector((state) => state.fileSystem.activeFileId)
   const hasProject = hasActiveWorkspace(workspace)
 
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
+  const [pendingUpload, setPendingUpload] = useState(null)
+  const pickerInputRef = useRef(null)
+  const pickerTargetRef = useRef('')
+  const { uploadFiles } = useUploadFiles()
 
   // The Explorer's root is the user's CONTAINER; its own row is hidden and its
   // children (every project folder and top-level file) are promoted to the top
@@ -229,6 +265,86 @@ export default function Sidebar() {
     [dispatch],
   )
 
+  const handleCopyRelativePath = useCallback(
+    async (node) => {
+      const path = node.id === ROOT_ID ? '' : node.id
+      const value = relativeToProject(path, tree)
+      const copied = await copyTextToClipboard(value)
+      dispatch(
+        showToast({
+          message: copied ? `Copied path: ${value || '/'}` : 'Could not access the clipboard.',
+          type: copied ? 'success' : 'error',
+        }),
+      )
+    },
+    [dispatch, tree],
+  )
+
+  const handleCopyPathRelativeToFile = useCallback(
+    async (node) => {
+      if (!activeFileId) return
+      const path = node.id === ROOT_ID ? '' : node.id
+      const value = relativePathFrom(parentPathOf(activeFileId), path)
+      const copied = await copyTextToClipboard(value)
+      dispatch(
+        showToast({
+          message: copied ? `Copied path: ${value}` : 'Could not access the clipboard.',
+          type: copied ? 'success' : 'error',
+        }),
+      )
+    },
+    [dispatch, activeFileId],
+  )
+
+  const handleUploadFiles = useCallback(
+    (node) => {
+      guard(() => {
+        pickerTargetRef.current =
+          !node || node.id === CONTAINER_ID || node.id === ROOT_ID ? '' : node.id
+        pickerInputRef.current?.click()
+      }, 'Please sign in to upload files')
+    },
+    [guard],
+  )
+
+  const handleDropFiles = useCallback(
+    (node, fileList) => {
+      const files = Array.from(fileList ?? [])
+      if (files.length === 0) return
+      const targetId = node?.id
+      if (targetId && targetId !== CONTAINER_ID && targetId !== ROOT_ID) {
+        uploadFiles(targetId, files)
+        return
+      }
+      const folders = flattenTreeNodes(tree).filter((entry) => entry.type === 'folder')
+      if (folders.length === 0) {
+        dispatch(
+          showToast({
+            message: 'Create a folder first — dropped files need a destination folder.',
+            type: 'info',
+          }),
+        )
+        return
+      }
+      setPendingUpload({ files, folders })
+    },
+    [uploadFiles, tree, dispatch],
+  )
+
+  function handlePickerChange(event) {
+    const files = event.target.files
+    const target = pickerTargetRef.current
+    event.target.value = ''
+    if (files && files.length > 0) uploadFiles(target, files)
+  }
+
+  function confirmUploadFolder(folder) {
+    const pending = pendingUpload
+    setPendingUpload(null)
+    if (!pending) return
+    uploadFiles(folder.path, pending.files)
+  }
+
   const handleRefreshTree = useCallback(() => {
     dispatch(refreshWorkspaceTree({}))
   }, [dispatch])
@@ -385,8 +501,29 @@ export default function Sidebar() {
           onRefresh={handleRefreshTree}
           onCollapseAll={handleCollapseAll}
           onOpenFile={handleOpenFile}
+          onUploadFiles={handleUploadFiles}
+          onDropFiles={handleDropFiles}
+          onCopyRelativePath={handleCopyRelativePath}
+          onCopyPathRelativeToFile={handleCopyPathRelativeToFile}
         />
       </div>
+
+      <input
+        ref={pickerInputRef}
+        type="file"
+        multiple
+        className="sidebar-upload-input"
+        aria-label="Upload files"
+        onChange={handlePickerChange}
+      />
+
+      {pendingUpload && (
+        <UploadFolderDialog
+          folders={pendingUpload.folders}
+          onPick={confirmUploadFolder}
+          onCancel={() => setPendingUpload(null)}
+        />
+      )}
 
       {pendingDelete && (
         <ConfirmModal

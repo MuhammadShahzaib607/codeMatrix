@@ -4,6 +4,7 @@ import protect from '../middlewares/authMiddleware.js'
 import authorizeProject from '../middlewares/authorizeProject.js'
 import ensureWorkspace from '../middlewares/ensureWorkspace.js'
 import validateProjectId from '../middlewares/validateProjectId.js'
+import { receiveUpload, uploadContainerFiles } from '../controllers/upload.controller.js'
 
 const router = Router()
 
@@ -24,11 +25,13 @@ router.post('/container/paste', workspaceController.pasteToContainer)
 // the client can treat the entire container as a single workspace.
 router.get('/container/tree', workspaceController.getContainerTreeHandler)
 router.get('/container/file', workspaceController.readContainerFile)
+router.get('/container/file/raw', workspaceController.readContainerFileRaw)
 router.put('/container/file', workspaceController.saveContainerFile)
 router.post('/container/create', workspaceController.createContainerEntryAt)
 router.delete('/container/delete', workspaceController.deleteContainerEntryAt)
 router.patch('/container/rename', workspaceController.renameContainerEntryAt)
 router.post('/container/duplicate', workspaceController.duplicateContainerEntryAt)
+router.post('/container/upload', receiveUpload, uploadContainerFiles)
 
 router.use('/:projectId', validateProjectId, authorizeProject)
 
@@ -36,6 +39,7 @@ router.post('/:projectId/import', workspaceController.importProject)
 
 router.get('/:projectId/tree', ensureWorkspace, workspaceController.getTree)
 router.get('/:projectId/file', ensureWorkspace, workspaceController.getFile)
+router.get('/:projectId/file/raw', ensureWorkspace, workspaceController.getFileRaw)
 router.put('/:projectId/file', ensureWorkspace, workspaceController.saveFile)
 router.post('/:projectId/create', ensureWorkspace, workspaceController.createEntry)
 router.delete('/:projectId/delete', ensureWorkspace, workspaceController.deleteEntry)

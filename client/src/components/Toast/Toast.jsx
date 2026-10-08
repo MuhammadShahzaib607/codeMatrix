@@ -2,6 +2,7 @@ import { AlertTriangle, CheckCircle2, Info, X } from 'lucide-react'
 import { useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { hideToast } from '../../features/uiSlice'
+import { copyTextToClipboard } from '../../utils/clipboard'
 import './Toast.css'
 
 const ICONS = {
@@ -27,11 +28,24 @@ export default function Toast() {
   if (!toast) return null
 
   const Icon = ICONS[toast.type] ?? Info
+  const action = toast.action
+
+  async function runAction() {
+    if (action?.kind === 'copy-path') {
+      await copyTextToClipboard(String(action.value ?? ''))
+    }
+    dispatch(hideToast())
+  }
 
   return (
     <div className={`toast is-${toast.type}`} role="status" aria-live="polite">
       <Icon size={16} className="toast-icon" />
       <span className="toast-message">{toast.message}</span>
+      {action?.label && (
+        <button type="button" className="toast-action" onClick={runAction}>
+          {action.label}
+        </button>
+      )}
       <button
         type="button"
         className="toast-close"

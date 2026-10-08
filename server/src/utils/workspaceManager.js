@@ -749,9 +749,10 @@ export async function deleteWorkspaceFolder(projectId) {
   assertValidProjectId(projectId)
   const directory = getWorkspacePath(projectId)
   if (!fs.existsSync(directory)) return false
-  // Async recursive remove: deleting a workspace that contains node_modules
-  // synchronously blocked the event loop for the whole deletion.
-  await fsp.rm(directory, { recursive: true, force: true })
+  // Retrying recursive remove: on Windows a folder that something still holds
+  // answers EBUSY/EPERM on the first try, so every attempt gets a bounded
+  // retry ladder before the caller reports a failure.
+  await removePathWithRetry(directory)
   // Drop the registry entry too, so a later re-create gets a clean mapping.
   const registry = loadRegistry()
   if (registry[projectId]) {
@@ -759,6 +760,32 @@ export async function deleteWorkspaceFolder(projectId) {
     saveRegistry(registry)
   }
   return true
+}
+
+const DELETE_RETRY_DELAYS_MS = [80, 160, 320, 640, 1000]
+const DELETE_RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'EMFILE', 'ENFILE'])
+
+/**
+ * Recursive removal that survives Windows' transient lock errors: every attempt
+ * lets fs.rm do its own short retry pass (maxRetries/retryDelay), and the outer
+ * ladder backs off between attempts (80ms -> 1s) before giving up. The last
+ * error is rethrown so the caller can classify it.
+ */
+export async function removePathWithRetry(absolute) {
+  let lastError = null
+  for (let attempt = 0; attempt < DELETE_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await fsp.rm(absolute, { recursive: true, force: true, maxRetries: 3, retryDelay: 60 })
+      return true
+    } catch (error) {
+      lastError = error
+      if (!DELETE_RETRY_CODES.has(error?.code)) throw error
+      if (attempt < DELETE_RETRY_DELAYS_MS.length - 1) {
+        await sleep(DELETE_RETRY_DELAYS_MS[attempt])
+      }
+    }
+  }
+  throw lastError
 }
 
 function writeFileAtomicSync(absolute, content) {
@@ -852,10 +879,10 @@ export async function deleteFromWorkspace(projectId, relativeFilePath) {
     throw new ApiError(404, `"${relative}" was not found in this workspace.`, 'FILE_MISSING')
   }
 
-  // One async call handles files and folders alike (recursive is harmless for a
-  // file). A synchronous fs.rmSync of a folder containing node_modules used to
-  // freeze the entire server — terminal included — for the whole deletion.
-  await fsp.rm(absolute, { recursive: true, force: true })
+  // Retrying recursive remove (see removePathWithRetry). A synchronous
+  // fs.rmSync of a folder containing node_modules used to freeze the entire
+  // server — terminal included — for the whole deletion.
+  await removePathWithRetry(absolute)
   return relative
 }
 

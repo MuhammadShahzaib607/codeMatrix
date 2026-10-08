@@ -1,9 +1,8 @@
 import { Router } from 'express'
 import * as previewController from '../controllers/preview.controller.js'
 import authorizeProject from '../middlewares/authorizeProject.js'
-import ensureWorkspace from '../middlewares/ensureWorkspace.js'
 import protectPreview from '../middlewares/protectPreview.js'
-import validateProjectId from '../middlewares/validateProjectId.js'
+import validatePreviewSegment from '../middlewares/validatePreviewSegment.js'
 
 /**
  * The public-facing live preview. Mounted at /preview (NOT under /api) so the
@@ -17,7 +16,11 @@ import validateProjectId from '../middlewares/validateProjectId.js'
  */
 const router = Router()
 
-const guards = [protectPreview, validateProjectId, authorizeProject, ensureWorkspace]
+// ensureWorkspace is intentionally NOT part of this chain: the first segment
+// may be a project id OR the name of a sibling top-level folder, and only the
+// controller knows which. It resolves the path with the same traversal guards
+// and answers 404 itself.
+const guards = [protectPreview, validatePreviewSegment, authorizeProject]
 
 // Bare project root -> index.html.
 router.get('/:projectId', ...guards, previewController.servePreviewFile)

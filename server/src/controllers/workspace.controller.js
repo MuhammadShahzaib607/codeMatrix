@@ -14,7 +14,17 @@ import { fallbackProjectName } from '../services/agentFrameworks.js'
 import { slugifyProjectName } from '../services/agentService.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
-import { suppressContainerWatcher, suppressWatcher } from '../utils/fileWatcher.js'
+import {
+  closeWatching,
+  pauseContainerWatching,
+  pauseWatching,
+  resumeContainerWatching,
+  resumeWatching,
+  suppressContainerWatcher,
+  suppressWatcher,
+} from '../utils/fileWatcher.js'
+import { runDeletion } from '../utils/safeDelete.js'
+import { contentTypeFor } from './preview.controller.js'
 import {
   copyDirectoryRecursive,
   copyFileIntoContainer,
@@ -44,7 +54,9 @@ import {
   readFileFromWorkspace,
   registerWorkspaceFromDiskPath,
   renamePathInWorkspace,
+  removePathWithRetry,
   renameWorkspaceFolder,
+  resolveWorkspaceFile,
   uniqueNameInFolder,
   workspaceFolderPath,
   writeFileToWorkspace,
@@ -453,25 +465,53 @@ export const deleteContainerEntryAt = asyncHandler(async (req, res) => {
     throw new ApiError(404, `"${resolved.relative}" was not found in this workspace.`, 'FILE_MISSING')
   }
 
+  const containerPath = getOwnerContainerPath(req.user.id)
+
   // Deleting a TOP-LEVEL folder removes the whole project (folder + record).
   if (!resolved.inner && stats.isDirectory()) {
     const projectId = findContainerProjectId(req.user.id, resolved.top)
     if (projectId) {
-      suppressWatcher(projectId)
-      suppressContainerWatcher(getOwnerContainerPath(req.user.id))
-      await deleteWorkspaceFolder(projectId)
+      // Close this project's watcher (the folder is going away) and pause the
+      // container watcher so nothing holds a handle on the folder mid-removal.
+      await closeWatching(projectId)
+      await pauseContainerWatching(containerPath)
+      try {
+        await runDeletion(
+          () => deleteWorkspaceFolder(projectId),
+          resolved.absolute,
+          resolved.top,
+        )
+      } catch (error) {
+        await resumeContainerWatching(containerPath)
+        throw error
+      }
+      await resumeContainerWatching(containerPath)
       await deleteProject(projectId)
       return res.json({ path: resolved.relative, deleted: true })
     }
   }
 
-  suppressContainerFor(req.user.id, resolved)
-  await fsp.rm(resolved.absolute, { recursive: true, force: true })
+  const innerProjectId = resolved.inner
+    ? findContainerProjectId(req.user.id, resolved.top)
+    : null
 
-  if (resolved.inner) {
-    const projectId = findContainerProjectId(req.user.id, resolved.top)
-    if (projectId) await touchProject(projectId)
+  await pauseContainerWatching(containerPath)
+  if (innerProjectId) await pauseWatching(innerProjectId)
+  try {
+    await runDeletion(
+      () => removePathWithRetry(resolved.absolute),
+      resolved.absolute,
+      resolved.relative.split('/').pop(),
+    )
+  } catch (error) {
+    if (innerProjectId) await resumeWatching(innerProjectId)
+    await resumeContainerWatching(containerPath)
+    throw error
   }
+  if (innerProjectId) await resumeWatching(innerProjectId)
+  await resumeContainerWatching(containerPath)
+
+  if (innerProjectId) await touchProject(innerProjectId)
   res.json({ path: resolved.relative, deleted: true })
 })
 
@@ -586,6 +626,33 @@ export const duplicateContainerEntryAt = asyncHandler(async (req, res) => {
   res.status(201).json({ sourcePath: source.relative, newPath, duplicated: true })
 })
 
+async function sendRawFile(res, absolute, relative) {
+  const stats = await fsp.stat(absolute).catch(() => null)
+  if (!stats) {
+    throw new ApiError(404, `"${relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+  if (stats.isDirectory()) {
+    throw new ApiError(400, `"${relative}" is a folder, not a file.`, 'NOT_A_FILE')
+  }
+  const bytes = await fsp.readFile(absolute)
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Content-Type', contentTypeFor(absolute))
+  res.status(200).send(bytes)
+}
+
+export const readContainerFileRaw = asyncHandler(async (req, res) => {
+  const filePath = requirePath(req.query.path)
+  const resolved = resolveContainerOwnerPath(req.user.id, filePath)
+  await sendRawFile(res, resolved.absolute, resolved.relative)
+})
+
+export const getFileRaw = asyncHandler(async (req, res) => {
+  const filePath = requirePath(req.query.path)
+  const resolved = resolveWorkspaceFile(req.params.projectId, filePath)
+  await sendRawFile(res, resolved.absolute, resolved.relative)
+})
+
 export const getFile = asyncHandler(async (req, res) => {
   const { projectId } = req.params
   const filePath = requirePath(req.query.path)
@@ -636,7 +703,11 @@ export const deleteEntry = asyncHandler(async (req, res) => {
   const targetPath = requirePath(req.body?.path)
 
   suppressWatcher(projectId)
-  const deleted = await deleteFromWorkspace(projectId, targetPath)
+  const deleted = await runDeletion(
+    () => deleteFromWorkspace(projectId, targetPath),
+    resolveWorkspaceFile(projectId, targetPath).absolute,
+    targetPath.split('/').pop(),
+  )
   await touchProject(projectId)
 
   res.json({ path: deleted, deleted: true })

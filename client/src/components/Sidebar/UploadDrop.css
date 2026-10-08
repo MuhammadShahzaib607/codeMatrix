@@ -1,0 +1,15 @@
+.sidebar-upload-input {
+  display: none;
+}
+
+.file-tree.is-root-drop-target {
+  outline: 1px dashed var(--accent);
+  outline-offset: -3px;
+  background: var(--accent-soft);
+}
+
+.tree-row.is-drop-target {
+  background: var(--accent-soft);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}

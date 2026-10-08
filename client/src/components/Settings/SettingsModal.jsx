@@ -210,6 +210,8 @@ export default function SettingsModal() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const user = useSelector((state) => state.auth.user)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
+  const isAdmin = user?.role === 'admin'
+  const sections = SECTIONS.filter((section) => isAdmin || section.id !== 'ai')
   const ai = useSelector((state) => state.ai)
   const [themeQuery, setThemeQuery] = useState('')
   const [newKey, setNewKey] = useState('')
@@ -225,11 +227,12 @@ export default function SettingsModal() {
   const [revealedKey, setRevealedKey] = useState(null)
 
   // Refresh the masked key list AND the captured usage every time Settings opens.
+  // The keys API is admin-only, so a non-admin never triggers it.
   useEffect(() => {
-    if (!isOpen || !isAuthenticated) return
+    if (!isOpen || !isAuthenticated || !isAdmin) return
     dispatch(fetchApiKeys())
     dispatch(fetchKeyUsage())
-  }, [isOpen, isAuthenticated, dispatch])
+  }, [isOpen, isAuthenticated, isAdmin, dispatch])
 
   // Re-mask a revealed key shortly after it is shown.
   useEffect(() => {
@@ -425,7 +428,7 @@ export default function SettingsModal() {
 
         <div className="settings-body">
           <nav className="settings-nav">
-            {SECTIONS.map((section) => (
+            {sections.map((section) => (
               <button
                 key={section.id}
                 type="button"

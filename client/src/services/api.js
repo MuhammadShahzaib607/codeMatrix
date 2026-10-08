@@ -96,6 +96,31 @@ function workspacePath(projectId, suffix) {
   return `/api/workspace/${encodeURIComponent(projectId)}${suffix}`
 }
 
+async function readRawFile(pathAndQuery) {
+  if (!API_BASE_URL) {
+    throw new ApiError('VITE_API_BASE_URL is not set in client/.env — cannot reach the API.', {
+      status: 0,
+      code: 'MISSING_API_BASE_URL',
+    })
+  }
+  let response
+  try {
+    response = await fetch(`${API_BASE_URL}${pathAndQuery}`, { headers: authHeaders() })
+  } catch {
+    throw new ApiError(`Could not reach the server at ${API_BASE_URL}. Is it running?`, {
+      status: 0,
+      code: 'NETWORK_ERROR',
+    })
+  }
+  if (!response.ok) throw await readError(response)
+  const blob = await response.blob()
+  return {
+    blob,
+    bytes: blob.size,
+    contentType: response.headers.get('content-type') ?? '',
+  }
+}
+
 export const authApi = {
   register(payload) {
     return request('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) })
@@ -210,6 +235,46 @@ export const workspaceApi = {
 
   getContainerFile(filePath) {
     return request(`/api/workspace/container/file?path=${encodeURIComponent(filePath)}`)
+  },
+
+  // Raw bytes (images and every other binary asset) — never JSON/base64 text.
+  async getContainerFileRaw(filePath) {
+    return readRawFile(`/api/workspace/container/file/raw?path=${encodeURIComponent(filePath)}`)
+  },
+
+  async getFileRaw(projectId, filePath) {
+    return readRawFile(
+      `${workspacePath(projectId, '/file/raw')}?path=${encodeURIComponent(filePath)}`,
+    )
+  },
+
+  // Multipart upload into a container-relative folder ('' = the container root).
+  async uploadFiles(targetPath, files) {
+    if (!API_BASE_URL) {
+      throw new ApiError('VITE_API_BASE_URL is not set in client/.env — cannot reach the API.', {
+        status: 0,
+        code: 'MISSING_API_BASE_URL',
+      })
+    }
+    const form = new FormData()
+    form.append('path', String(targetPath ?? ''))
+    for (const file of files) form.append('files', file, file.name)
+
+    let response
+    try {
+      response = await fetch(`${API_BASE_URL}/api/workspace/container/upload`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: form,
+      })
+    } catch {
+      throw new ApiError(`Could not reach the server at ${API_BASE_URL}. Is it running?`, {
+        status: 0,
+        code: 'NETWORK_ERROR',
+      })
+    }
+    if (!response.ok) throw await readError(response)
+    return response.json()
   },
 
   saveContainerFile(filePath, content) {

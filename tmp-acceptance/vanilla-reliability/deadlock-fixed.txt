@@ -1,0 +1,15 @@
+{
+  "scenario": "deadlock",
+  "requests": 29,
+  "completed": false,
+  "thrown": "Stopped: the quality gate still fails. 2 problem(s) are still unresolved after every repair round: \"index.html\" has 178 lines; at least 220 lines of real content are required — extend it with append_to_file. The #faq section needs at least 5 accordion buttons carrying aria-expanded (found 0).",
+  "failedEdits": 0,
+  "rejections": 0,
+  "slotsLeft": 0,
+  "templateCommentsLeft": 0,
+  "h1": 1,
+  "header": 1,
+  "footer": 1,
+  "gatePassed": null,
+  "projectDir": "D:\\Projects\\CodeMatrix\\tmp-harness\\workspaces\\deadlock-deadlock-4993"
+}

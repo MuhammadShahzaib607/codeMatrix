@@ -142,26 +142,25 @@ function ActionLine({ entry }) {
     )
   }
   const isRunning = entry.status === 'running'
+  const isRecovered = entry.status === 'recovered' || entry.recovered === true
   const details = entry.details ?? {}
-  const meta =
-    entry.type === 'run_command' && !isRunning
+  const meta = isRecovered
+    ? 'recovered'
+    : entry.type === 'run_command' && !isRunning
       ? details.timedOut
         ? 'timeout'
         : `exit ${details.exitCode ?? 0}`
       : ''
   const report = entry.type === 'vision' && typeof details.report === 'string' ? details.report : null
-  const fullError =
-    entry.status === 'error'
-      ? typeof details.result === 'string' && details.result.length > 120
-        ? details.result
-        : typeof details.error === 'string' && details.error.length > 0
-          ? details.error
-          : null
-      : null
 
   return (
     <>
-      <div className={`ai-line is-${entry.type} ${isRunning ? 'is-running' : ''}`} title={detailsText(entry)}>
+      <div
+        className={`ai-line is-${entry.type} ${isRunning ? 'is-running' : ''}${
+          isRecovered ? ' is-recovered' : ''
+        }`}
+        title={detailsText(entry)}
+      >
         <span className="ai-line-icon">
           {isRunning ? <Loader2 size={12} className="ai-spin" /> : <Icon size={12} />}
         </span>
@@ -174,12 +173,7 @@ function ActionLine({ entry }) {
           <pre>{report}</pre>
         </details>
       )}
-      {fullError && (
-        <details className="ai-line-error">
-          <summary>View full error</summary>
-          <pre>{fullError}</pre>
-        </details>
-      )}
+
     </>
   )
 }

@@ -7,6 +7,7 @@ import explorerHistoryReducer from '../features/explorerHistorySlice'
 import fileSystemReducer from '../features/fileSystemSlice'
 import projectsReducer from '../features/projectsSlice'
 import settingsReducer from '../features/settingsSlice'
+import sidebarTerminalReducer from '../features/sidebarTerminalSlice'
 import terminalReducer from '../features/terminalSlice'
 import tsconfigReducer from '../features/tsconfigSlice'
 import uiReducer from '../features/uiSlice'
@@ -22,6 +23,7 @@ export const store = configureStore({
     explorerHistory: explorerHistoryReducer,
     ui: uiReducer,
     terminal: terminalReducer,
+    sidebarTerminal: sidebarTerminalReducer,
     settings: settingsReducer,
     tsconfig: tsconfigReducer,
   },

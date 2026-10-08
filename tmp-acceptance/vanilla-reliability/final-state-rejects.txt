@@ -1,0 +1,15 @@
+{
+  "scenario": "keep-slots",
+  "requests": 11,
+  "completed": false,
+  "thrown": "Stopped: the automatic content check still fails. 6 problem(s) are still unresolved after every repair round: \"index.html\" still has 3 empty scaffold slot(s): <!-- SLOT:hero -->, <!-- SLOT:services -->, <!-- SLOT:contact-form -->. Replace every slot with the real section markup and business-specific copy now. \"index.html\" must contain exactly one <h1> (found 0). \"index.html\" is missing the planned <section id=\"hero\"> — write that section with real copy now, it is part of the page the plan promised. \"index.html\" is missing the planned <section id=\"services\"> — write that section with real copy now, it is part of the page the plan promised.",
+  "failedEdits": 0,
+  "rejections": 0,
+  "slotsLeft": 3,
+  "templateCommentsLeft": 1,
+  "h1": 0,
+  "header": 1,
+  "footer": 1,
+  "gatePassed": null,
+  "projectDir": "D:\\Projects\\CodeMatrix\\tmp-harness\\workspaces\\deadlock-keep-slots-4994"
+}

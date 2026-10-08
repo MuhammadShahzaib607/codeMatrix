@@ -8018,3 +8018,601 @@ STATUS SUMMARY
   - Vision Retry-After + model fallback + visible limit message: VERIFIED with a
     mock provider; live output outstanding.
 ================================================================================
+AI Code Editor — Deterministic Vanilla Builds: Final-State Validation,
+        Server-Side Section Composition, Request Resolver, Contrast Checks,
+        Cleaner Sidebar, and a Repaired contact-form-landing   (2026-10-06)
+================================================================================
+
+STATUS: complete for the parts that can be exercised locally; VERIFIED by a
+        mock provider driving the REAL runAgent, and by the REAL quality checks
+        (including headless Chrome). oxlint 0/0, vite build OK, node --check OK
+        on every changed server file. NOT verified: a live Mistral run, live
+        visual taste, and the client reducer/UI in a real browser session.
+
+--------------------------------------------------------------------------------
+PART 1 — DIAGNOSIS (no code changed for this part)
+--------------------------------------------------------------------------------
+
+The workspace server/workspaces/u-6ac206d781c7e207307dab35/contact-form-landing
+held a skeleton index.html with the header, the hero slot already filled and ONE
+remaining `<!-- SLOT:contact-form -->` marker, plus the internal
+"ONE DOCUMENT PER FILE" template comment. Root causes found:
+
+  1. DEADLOCK. documentIntegrityIssues() required exactly one <h1> on EVERY
+     write. A scaffold page whose hero slot is still a marker has 0 <h1>, so a
+     perfectly valid edit that filled any OTHER slot was rejected with
+     "that edit would leave index.html incomplete (0 <h1>)". The per-edit
+     validator (whole-document rule) and the slot workflow (fill one slot per
+     call) deadlocked.
+  2. NO SECTION IDS. scaffold_site writes `<!-- SLOT:name -->` markers, not
+     real elements, so edit_section found no id/data-section for a section the
+     agent could see in the outline. The agent invented "contact-form".
+  3. EMPTY HERO CARD + FOOTER CONTRAST. The hero card held only an icon. The
+     footer used dark bg + light text tokens, but css/theme.css had been
+     corrupted: it contained a full copy of base.css including
+     `.site-footer { background-color: var(--surface-2) }` (light) loaded AFTER
+     base.css, so `.footer-col__title` / `.footer-link` stayed light on light.
+  4. NAV = HOME ONLY. Nav items come from the plan's page list; a single-page
+     site has one page, so only "Home" exists. Footer "Services" links were
+     hardcoded to `#services` even when no such section exists.
+  5. RAW SIDEBAR ERRORS. describeFailure() already produced a short reason, and
+     the full tool result was kept in details.result, but retry/budget/strategy
+     note events were pushed as one row each and recovered failures stayed red.
+
+--------------------------------------------------------------------------------
+PART 2 — DETERMINISTIC BUILD WORKFLOW
+--------------------------------------------------------------------------------
+
+FINAL-STATE VALIDATION (server/src/services/agentService.js)
+  - documentIntegrityIssues() now enforces exactly-one-<h1> ONLY when the page
+    has no `<!-- SLOT: -->` marker left (new hasSlotMarkers()). Header/footer
+    presence and the closing </html> are still required always; the h1 rule and
+    the leftover-slot rule are final-state rules enforced by quickCheck.
+  - edit_file's surgical path now ALSO rejects an inserted fragment that
+    unbalances the document (newStructureProblems before/after), so a slot edit
+    is valid only when the fragment is well formed and balanced.
+  - New finalizeHtmlWrite() strips the internal "ONE DOCUMENT PER FILE" template
+    comment on every HTML write, so nothing internal reaches the user's file.
+
+SERVER-SIDE COMPOSITION (new)
+  - server/src/templates/vanilla-kit/compose.js (NEW): normalizeComposeInput,
+    renderSection, buildComposedFiles, sectionSummary. Renders structured
+    section objects into the kit templates for hero, page-hero, services,
+    features, stats, testimonials, pricing, steps (process), faq, gallery,
+    about (story), team, contact (working form), contact-info, values, mission,
+    blogs and cta, and falls back gracefully for other types. Every section
+    carries id + data-section + data-title.
+  - New tool compose_page (agentService.js): the PREFERRED path for new pages.
+    The model sends structured section data; the server renders the pages, fills
+    them completely, writes NO slot markers and NO template comments, and
+    derives the nav and footer from the sections/pages that really exist
+    (in-page anchors for a one-pager, page links for a multi-page site; footer
+    Services/Contact columns come from the real sections).
+  - scaffold_site + edit_file/edit_section stay fully working (additive).
+
+OUTLINE
+  - fileOutline() now lists every section as
+    `<section id="…" data-section="…" title="…">` with its line range, so the
+    agent and the resolver always see real ids.
+
+COMPLETENESS
+  - requestedFeatureSections(task) maps a named contact form / pricing / FAQ /
+    gallery / testimonials / login / calculator to a required section; quickCheck
+    fails the run when a named feature is missing, and requires a real
+    `<form data-validate>` with labelled name/email/message fields for a
+    contact form.
+
+--------------------------------------------------------------------------------
+PART 3 — NATURAL EDIT REQUESTS
+--------------------------------------------------------------------------------
+
+  - resolveSectionRequest() (agentService.js): maps the user's words onto a real
+    section using id, data-section, data-title, heading text and a synonym
+    table (FAQs/questions/accordion → faq; plans/packages → pricing;
+    reviews/quotes → testimonials; banner → hero; …), with instruction-word
+    stopwords so "the FAQs on the home page" resolves to faq, not to the hero.
+    edit_section now uses it when the given id does not exist; an invented id
+    always gets a message listing the real ids from the outline.
+  - New tool edit_css { path, selector, content }: replaces or appends ONE rule
+    block by selector (cssRuleRange), so "make pricing 3 columns" / "make the
+    footer darker" never need a whole-file rewrite.
+  - The vanilla prompt now prefers compose_page, says read_file{outline:true} is
+    the source of real section ids, points styling requests at edit_css, and
+    makes named features mandatory.
+
+--------------------------------------------------------------------------------
+PART 4 — VISUAL QUALITY AND CHECKS
+--------------------------------------------------------------------------------
+
+  - visualSanity.js gains a full WCAG AA contrast scan over every visible text
+    element (headings, paragraphs, links, list items, footer titles/links/notes,
+    social links, buttons, labels) using a gradient-aware background resolver
+    (an element/ancestor with a gradient that has no solid backgroundColor is
+    skipped, so gradient buttons are not false positives). The failure names the
+    element and the ratio.
+  - The existing empty-box check (a visible card/box with no text, icon or
+    media fails) already covers the empty hero card; the composed hero renders a
+    real icon + title + text + stat list.
+  - connectionCheck's zero-tolerance class rule and the hero-card content rule
+    stay in force; the composed kit output passes them.
+
+--------------------------------------------------------------------------------
+PART 5 — CLEANER SIDEBAR MESSAGES
+--------------------------------------------------------------------------------
+
+  - client/src/features/aiSlice.js: retry / fallback / budget / strategy note
+    events now collapse into ONE updating status line (kind 'status') instead of
+    one row per event; a failed tool row on a file that a later success on the
+    same file recovered is relabelled 'recovered' and no longer renders red.
+  - client/src/components/AIPanel/AIPanel.jsx + AIPanel.css: recovered rows get
+    a dimmed 'recovered' meta and a non-danger icon colour; the existing
+    "View full error" collapsible still exposes the complete raw result.
+  - The server already skips the 70% "wrap up" guidance for a targeted edit
+    (unchanged this round).
+
+--------------------------------------------------------------------------------
+PART 6 — REPAIRED contact-form-landing
+--------------------------------------------------------------------------------
+
+  server/workspaces/u-6ac206d781c7e207307dab35/contact-form-landing was rebuilt
+  through the compose pipeline (css/base.css, css/theme.css, js/main.js,
+  js/icons.js, index.html): hero with a real content card and stat row, a
+  services section, a contact section with the working form, and a readable
+  dark footer. No SLOT markers, no template comments. connectionCheck,
+  quickCheck and visualSanity all pass on the repaired project.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/templates/vanilla-kit/compose.js              NEW
+  server/src/templates/vanilla-kit/scaffold.js             optional shell body/nav/footer
+  server/src/templates/vanilla-kit/index.js                buildComposePlan + exports
+  server/src/services/agentService.js                      deadlock fix, compose_page,
+                                                           edit_css, resolver, outline,
+                                                           feature completeness, finalize
+  server/src/agent/quality/quickCheck.js                   requiredSections (named features)
+  server/src/agent/quality/visualSanity.js                 WCAG AA contrast scan
+  server/src/agent/prompts/stacks/vanilla.js               compose_page + edit_css + named features
+  client/src/features/aiSlice.js                           status line + recovered rows
+  client/src/components/AIPanel/AIPanel.jsx                recovered rendering
+  client/src/components/AIPanel/AIPanel.css                .ai-line.is-recovered
+  server/workspaces/u-6ac206d781c7e207307dab35/contact-form-landing/*  repaired
+  summary.txt                                               this entry
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output in tmp-acceptance/vanilla-reliability/)
+--------------------------------------------------------------------------------
+  - DEADLOCK FIXED (mock provider, real runAgent): a scaffold page whose slots
+    are filled NON-hero-first (contact-form, services, then hero) ran with 0
+    rejected edits and 0 failed edits; the finished index.html had
+    slotsLeft=0, templateCommentsLeft=0, h1=1, header=1, footer=1
+    (deadlock-fixed.txt).
+  - FINAL-STATE STILL REJECTS (keep-slots.txt): a run that scaffolds and never
+    fills the slots is stopped with "still has 3 empty scaffold slot(s)",
+    "must contain exactly one <h1> (found 0)" and the missing planned sections.
+  - NEGATIVE CHECKS (negative-checks.txt): a page with no h1, a page missing its
+    <footer>, a page with a leftover slot and a request whose named feature
+    (pricing) is absent are ALL rejected; a deliberately unreadable footer
+    (title/link colour = footer bg) and an emptied hero card are BOTH caught by
+    the headless-Chrome check (contrast 1.07:1 reported with the element).
+  - THREE SITES composed and checked (compose-three-sites.txt):
+    "contact form landing page", "restaurant website" and "portfolio website
+    with FAQ and pricing" all report slots=0, comments=0, h1=1, real nav links,
+    quickCheck=true, connectionCheck=true, visualSanity=true at 1280/768/375px
+    (no horizontal overflow, readable footer, no empty cards, working form).
+  - FAQ EDIT REQUEST (faq-edit-request.txt, mock provider, real runAgent,
+    "update the UI of the FAQ on the home page" on a generated site with an FAQ
+    section): resolved to the FAQ section, 3 requests / 42,562 tokens
+    (42,341 prompt + 221 completion), ONE edit_css call, index.html byte-for-
+    byte unchanged, only css/base.css changed, run completed with no error.
+  - contact-form-landing repair (repair-contact-form.txt + the checks run above):
+    slots 0, comments 0, h1 1, real hero card, footer tokens present;
+    connectionCheck + quickCheck + visualSanity all pass.
+  - oxlint: 0 warnings / 0 errors (81 files). vite build: OK. node --check: OK on
+    every changed server file; module import smoke test passes.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - A LIVE Mistral run: there is no provider key in server/.env, so every run
+    above used a scripted mock that drives the REAL runAgent, the REAL tools,
+    the REAL files and the REAL checks. Request/token counts are real for the
+    loop but the model's own wording is not.
+  - LIVE visual taste of a real model's copy (mock runs cannot judge it).
+  - The full agent build of a fresh site to completion under the quality gate:
+    the mock's canned sections are shorter than the kit gate demands (220 lines,
+    5 FAQ items), so the mock deadlock run stopped at the gate rather than
+    finishing; the composed pipeline output itself passes every check.
+  - The client sidebar changes were lint/build-verified and code-reviewed; the
+    reducer was not exercised in a browser (Node ESM cannot resolve the
+    extensionless imports outside Vite).
+  - Live edit-request token cost on a real provider.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Run a fresh "contact form landing page" and the FAQ/pricing edit requests
+    through a REAL Mistral key and confirm live copies, request counts and
+    tokens under the new compose_page path.
+  - server/tmp-vanilla-agent-test.mjs is still stale against the current budget
+    guard; refresh or delete it.
+  - Drive the AIPanel status-line / recovered-row behaviour in a signed-in
+    browser session to close the loop.
+  - Optional: extend compose_page with a login/calculator section type (it
+    currently falls back to a generic section for those).
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY
+--------------------------------------------------------------------------------
+  - Slot-edit deadlock: FOUND and FIXED; VERIFIED with a mock provider that the
+    non-hero-first fill no longer gets rejected, and that leftover slots / no h1
+    / a missing footer are still rejected at final state.
+  - Server-side composition + ids/data-section/data-title + derived nav/footer:
+    VERIFIED on three real composed sites against connectionCheck + quickCheck +
+    visualSanity at 1280/768/375.
+  - Request resolver (words → real section), edit_css, outline, feature
+    completeness: VERIFIED at the tool level and by the mock FAQ-edit run.
+  - Contrast + empty-card checks: VERIFIED to catch a deliberately unreadable
+    footer and an empty card, with no false positive on gradient buttons.
+  - contact-form-landing repair: VERIFIED (all checks pass, no markers/comments).
+  - Live provider quality and the sidebar UI in a real browser: outstanding.
+================================================================================
+================================================================================
+AI Code Editor — Reliable Edits: A Separate Edit Pipeline, a Word-to-Target
+        Resolver, Fragment-Only Validation, and Errors Routed to the Terminal
+        (2026-10-06)
+================================================================================
+
+STATUS: complete for the parts that can be exercised locally; VERIFIED by a
+        mock provider driving the REAL runAgent and by the REAL quality checks
+        (quickCheck + connectionCheck) on every edited fixture. oxlint 0/0
+        (81 files), vite build OK, node --check OK on every changed server file.
+        NOT verified: a live Mistral run (no provider key), and the sidebar in a
+        real browser session.
+
+--------------------------------------------------------------------------------
+PART 1 — DIAGNOSIS (reproduced before any pipeline code changed)
+--------------------------------------------------------------------------------
+
+A scripted mock provider (tmp-harness/edit-cases.mjs) drove the REAL runAgent
+through the five failing edit requests on a composed site (hero, services,
+testimonials, faq, pricing), logging every request and the server's full
+decision trail to the terminal.
+
+What the old pipeline did, exactly:
+  1. "add a contact form section" was NOT even an edit. isTargetedEditTask()
+     only knew edit verbs without "add", so the request left the edit path and
+     the whole build loop (plan -> slots -> plan-completeness gate) ran instead.
+  2. "update the UI of the FAQ" / "change the hero heading" / "make pricing 3
+     columns" / "make the footer darker" all entered the build loop too, where
+     the model had to invent section ids and an exact old_string, whole-document
+     validation ran between edits, and repair/budget rounds piled up.
+  3. The sidebar received raw tool results (details.result), retry/fallback
+     notes, wrap-up notices and a red error row per failure; agent:done also
+     carried the raw thrown message.
+
+The new pipeline resolves each request with one server-side decision plus at
+most one model reply.
+
+--------------------------------------------------------------------------------
+PART 2 — EDIT MODE IS SEPARATE FROM BUILD MODE (agentService.js)
+--------------------------------------------------------------------------------
+
+  - runAgent now branches into runEditMode() when the workspace already has
+    files, the request names both an action and a target word, and it is not a
+    new-page request. Edit mode never touches the plan, the SLOT workflow, the
+    plan-completeness gate, the repair rounds or the budget wrap-up.
+  - Edit mode sends NO tools. It asks for one JSON object and parses it.
+  - Model: mistral-large-latest is chosen EXPLICITLY for the edit whenever the
+    user did not pin a model or provider (otherwise auto mode could hand the
+    edit to another provider); on a 429 that candidate is cooled and the next is
+    tried, so Codestral is only reached as a rate-limit fallback.
+  - Targeted edits take 1 request on the happy path, 2 when the fragment is
+    rejected once.
+
+--------------------------------------------------------------------------------
+PART 3 — THE RESOLVER AND THE SERVER-OWNED FRAGMENT
+--------------------------------------------------------------------------------
+
+  - server/src/agent/editPipeline.js (NEW): resolveEditTarget() maps the user's
+    words to a page + target using the page outline and a synonym table
+    (FAQs/questions/accordion -> faq, plans/packages -> pricing,
+    reviews/quotes -> testimonials, banner/headline -> hero, ...). header, nav
+    and footer are separate area targets. A named section that does not exist
+    resolves to "new-section", never an error. Style-only requests
+    (columns, darker, spacing, colours...) resolve to css-only.
+  - The server extracts ONLY the target section's HTML and the CSS rules whose
+    selectors use its classes and sends them with the request. The model returns
+    the complete replacement element (and optional CSS) as
+    {"html":..., "css":..., "summary":...}.
+  - The server owns ids: stampSection() strips any id/data-section/data-title the
+    model returned and writes back the real id + data-section + data-title.
+  - Fragment validation only: one balanced element of the expected tag, no
+    unbalanced structure, no leftover SLOT marker or template comment, no extra
+    <h1> on the page, no <script>/<style>, and every class either already in the
+    stylesheets or declared in the returned CSS.
+  - Document rules (one <h1>, header and footer present, ends with </html>) run
+    ONCE on the candidate document, never between edits.
+  - On rejection the file is untouched and the server retries ONCE, appending a
+    precise problem list to the prompt (never to the sidebar).
+  - Atomic write via writeFileToWorkspace + a direct fs-change event for the
+    Explorer.
+
+--------------------------------------------------------------------------------
+PART 4 — NEW SECTIONS, NAV LINKS AND CSS UPSERTS
+--------------------------------------------------------------------------------
+
+  - A new section is inserted inside <main>, immediately before </main>/the
+    footer, with a server-chosen id, and a matching nav anchor is added to the
+    existing <ul class="nav-list"> when the nav already uses in-page anchors and
+    the type is a navigable one (services, pricing, faq, contact, gallery...).
+  - "add a contact form section" is rendered SERVER-SIDE from the vanilla kit
+    (renderContactSection): <form data-validate novalidate> with labelled name,
+    email, subject and message fields, validation and the .form-success state,
+    all already wired by js/main.js.
+  - CSS-only requests return rules only; upsertCssRules() MERGES the returned
+    declarations into the existing rule for that selector (keeping every
+    declaration that was already there) or appends the rule when the selector is
+    new. :root/html/body/* are never rewritten in place — they are appended, so
+    a token block cannot be wiped.
+
+--------------------------------------------------------------------------------
+PART 5 — ERRORS GO TO THE TERMINAL, NOT THE SIDEBAR
+--------------------------------------------------------------------------------
+
+  - New agentLog() writes one line per event to the server terminal:
+    "[agent] [scope] <timestamp> tool=<tool> file=<file> <full message>".
+  - Tool errors, retries, fallback notices, validator rejections, repair rounds
+    and the budget/wrap-up notices now go through agentLog instead of the
+    sidebar. A failed tool row no longer carries details.result, so no raw error
+    text (and no tooltip payload) reaches the client.
+  - blockFinishing() and the tool-failure stop log the full failure list and
+    throw ONE short plain sentence; the 70% wrap-up note and the repeated
+    retry/gate rows are logged only.
+  - client AIPanel: the "View full error" collapsible was removed.
+  - The sidebar now receives only progress lines (thinking + note) and the final
+    one-sentence completion/failure message. Stop and Continue are untouched;
+    a failed edit persists a session so Continue is accepted.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/agent/editPipeline.js            NEW — resolver, extraction, fragment
+                                              validation, swap/insert, nav, CSS upsert
+  server/src/services/agentService.js         edit-mode branch + runEditMode,
+                                              agentLog, errors routed to the terminal
+  client/src/components/AIPanel/AIPanel.jsx   "View full error" removed
+  summary.txt                                 this entry
+
+  (NOT touched: auth, explorer, terminal, preview, settings, themes, the
+   new-project scaffolds, compose.js, scaffold.js, the quality-check modules.)
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output in tmp-acceptance/vanilla-reliability/)
+--------------------------------------------------------------------------------
+  - Mock provider driving the REAL runAgent over 8 cases on a composed site
+    (edit-pipeline-cases.json, edit-pipeline-terminal.log, edit-pipeline-mock.log):
+      1. add a contact form section   -> 1 request, index.html only, form with
+         data-validate + labelled name/email/message + .form-success, the rest of
+         the document byte-identical.
+      2. update the UI of the FAQ     -> 1 request, only the faq section replaced,
+         prefix and suffix of index.html byte-identical.
+      3. make pricing 3 columns       -> 1 request, ONLY css/base.css changed,
+         index.html byte-identical, the rule appended.
+      4. change the hero heading      -> 1 request, only the hero section replaced,
+         prefix and suffix byte-identical.
+      5. make the footer darker       -> 1 request, ONLY css/base.css changed,
+         index.html byte-identical; the existing .site-footer rule was MERGED
+         (every original declaration kept) and only ~280 characters of the
+         stylesheet changed.
+      6. add a gallery section (a section that did not exist) -> 1 request, the
+         section inserted before </main> with id/data-section, a nav anchor
+         automatically added, the rest byte-identical.
+      7. an unbalanced replacement fragment -> 2 requests, REJECTED, index.html
+         unchanged, and the rejection reason is in the terminal log.
+      8. change the hero heading with NO pinned model/provider (auto) -> 1 request,
+         still resolved to mistral-large-latest.
+  - Every edited fixture passes the REAL quickCheck (one h1, header, footer,
+    </html>) and the REAL connectionCheck (all 6 successful cases).
+  - Sidebar safety: across all 8 runs the only emitted event types were
+    thinking, note and complete — no error event, no raw result, no "wrap up" or
+    "View full error" text; the same detail is in the terminal log.
+  - Build mode still runs: tmp-harness/run.mjs made a plan, scaffolded 5 pages
+    and filled every slot (0 slots left, 1 h1 per page); it still stops at the
+    gate because its task names "portfolio" (gallery) which the canned mock
+    sections do not contain — a mock limitation, unchanged by this work.
+  - oxlint: 0 warnings / 0 errors (81 files). vite build: OK. node --check: OK
+    on every server source file.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - A LIVE Mistral run: there is no provider key in server/.env, so every run
+    used a scripted mock that drives the REAL runAgent, the REAL resolver, the
+    REAL files and the REAL checks. Request counts and token totals are real for
+    the loop; the model's own wording and the live 1-2 request target are not.
+  - The client sidebar (progress-only) was lint/build verified and code-reviewed,
+    not exercised in a signed-in browser; Node ESM cannot import the client
+    reducer outside Vite.
+  - A live visual taste check of a real model's replacement section.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Run the five edit requests plus "add a gallery section" through a REAL
+    Mistral key and confirm live request counts, tokens and copy quality.
+  - Decide whether Continue after a FAILED edit should re-enter edit mode
+    instead of resuming the general loop.
+  - Drive the progress-only sidebar in a signed-in browser session to close the
+    loop on the TASK 1 display change.
+  - server/tmp-vanilla-agent-test.mjs is still stale against the current budget
+    guard; refresh or delete it.
+  - tmp-harness/run.mjs still stops at the gate for the portfolio->gallery
+    feature check; give the mock a gallery section so the build harness can
+    finish end to end.
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY
+--------------------------------------------------------------------------------
+  - Edit mode separate from build mode (no slots, no plan gate, no repair
+    rounds, no wrap-up in edit mode): VERIFIED by 8 real runAgent runs, each on
+    mistral-large-latest in 1 request.
+  - Word-to-target resolver incl. "a section that does not exist -> add one":
+    VERIFIED (cases 1 and 6).
+  - Fragment-only validation, document rules once, atomic write, one retry with
+    a precise instruction: VERIFIED (case 7 rejected, file unchanged; 1 request
+    for every valid case).
+  - New section inserted before the footer with an auto nav anchor; a contact
+    form that works: VERIFIED (cases 1 and 6) and confirmed by quickCheck.
+  - CSS-only requests upsert by selector without touching HTML: VERIFIED
+    (cases 3 and 5; footer rule merged, not replaced).
+  - Errors/retries/budget notices to the server terminal, sidebar progress-only:
+    VERIFIED at the event level; live browser rendering outstanding.
+================================================================================
+
+================================================================================
+AI Code Editor — Right-Sidebar Agent/Terminal Switch + Freebuff-Ready Terminal
+        (ConPTY, key passthrough, mouse, scrollback, reconnect)
+        (2026-10-06)
+
+STATUS: the right-sidebar Agent/Terminal switch and the sidebar-terminal
+        changes are COMPLETE and VERIFIED in a real headless Chrome session
+        (36/36 checks, tmp-harness/sidebar-verify.mjs). NOT DONE: the two-stage
+        edit pipeline, brand-aware content and the aura-glow repair (Parts 1-4
+        of the same request) — see OPEN ITEMS. A live freebuff run could not be
+        tested (freebuff needs its own login); a raw-mode Node key probe stood
+        in for its TUI.
+
+--------------------------------------------------------------------------------
+PART A — RIGHT SIDEBAR: AGENT / TERMINAL SWITCH
+--------------------------------------------------------------------------------
+The right sidebar (the AI-panel slot) now has a two-button "Agent | Terminal"
+segmented switch. Agent is the default and shows the existing AIPanel unchanged.
+Selecting Terminal replaces the slot with a terminal that fills the sidebar.
+
+NEW CLIENT FILES
+  components/RightPanel/RightPanel.jsx + .css
+    role="tablist" switch; BOTH views stay mounted and are stacked
+    (position:absolute + visibility, never display:none) so switching never
+    unmounts the agent run or the terminal pty. The terminal view is only
+    mounted once it exists (or while its tab is selected), so a plain load on
+    the Agent tab does not spawn a shell.
+  components/RightPanel/SidebarTerminal.jsx + .css
+    ONE terminal backed by the existing TerminalView, with the same shell
+    selector and a "new terminal" button. Uses the SAME cwd logic as the docked
+    panel (workspace.projectId || scratch-<userId>, one level above the
+    project), so cd <folder> works identically.
+  features/sidebarTerminalSlice.js
+    Owns the sidebar terminal's terminalId + shell. Deliberately SEPARATE from
+    the docked/floating panel's `terminal` slice, so the two are independent
+    ptys that can never attach to the same session or duplicate input/output.
+
+MODIFIED CLIENT FILES
+  features/uiSlice.js       rightPanelTab ('agent' | 'terminal') persisted to
+                            localStorage under 'code-matrix:rightPanelTab';
+                            AI_PANEL_MAX_WIDTH 600 -> 1000 so a TUI fits.
+  app/store.js              registers the sidebarTerminal reducer.
+  App.jsx                   renders <RightPanel /> in the AI slot, persists the
+                            tab, resets the sidebar terminal on sign-out.
+  hooks/useGlobalShortcuts.js  returns early while a terminal has focus, so
+                            Ctrl+B / Ctrl+P / Ctrl+S (and Ctrl+J) reach the pty
+                            instead of firing editor shortcuts.
+  components/Terminal/TerminalView.jsx  blurs the xterm when its pane becomes
+                            inactive, so a hidden terminal cannot keep focus.
+
+AUTH GATE: unchanged. The terminal has never been auth-gated (Phase 7: the
+Topbar toggle is always enabled, scratch-guest before sign-in); the sidebar
+terminal matches that exactly, so the gate is neither added nor weakened.
+
+--------------------------------------------------------------------------------
+PART B — TERMINAL MADE FREEBBUFF-READY (Part 5 of the request)
+--------------------------------------------------------------------------------
+ROOT CAUSES FOUND
+  - The interactive terminal forced node-pty's legacy winpty backend on Windows
+    (useConpty:false). winpty does not faithfully pass through the escape
+    sequences, arrow/Tab/Esc keys and mouse reporting a full-screen TUI needs,
+    so freebuff's model-picker keys and scrolling could not work.
+  - A socket drop killed every pty of that socket, so a reconnect could never
+    reattach a session.
+  - scrollback was 2000, and the animated sidebar width could refit the pty at
+    tiny intermediate sizes, reflowing and garbling the screen.
+
+FIXES
+  server/src/utils/terminalManager.js
+    - interactive sessions now use ConPTY on Windows (useConpty:true); TERM,
+      COLORTERM, LANG and LC_ALL are set for UTF-8 / 256-colour output.
+    - sessions carry their socket, so output follows a reattach without touching
+      the running pty.
+    - attachTerminalSession(terminalId, socket) re-binds a live pty to a new
+      socket; detachTerminalsForSocket(socketId, graceMs=120s) keeps ptys alive
+      across a drop and kills only the ones never reclaimed.
+  server/src/socket/terminalSocket.js
+    - terminal:create reattaches an existing terminalId instead of erroring;
+      disconnect detaches (with grace) instead of killing.
+  server/server.js
+    - process-wide unhandledRejection guard for node-pty's known ConPTY
+      kill-path rejection, so it can no longer take the server down.
+  client/src/components/Terminal/TerminalView.jsx
+    - scrollback 2000 -> 10000.
+    - re-emits terminal:create on a genuine socket reconnect (same terminalId)
+      so the server reattaches the same pty with its scrollback.
+    - refit is debounced and skips an undersized pane, so an animated panel
+      width never refits the pty at tiny sizes (no garbled screen).
+  No timeout is imposed on user commands; output/commands are never filtered or
+  rewritten. node_modules/.git skipping is unchanged.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (tmp-harness/sidebar-verify.mjs — 36/36, real headless
+Chrome + CDP driving the running app on http://localhost:5173, server on :4000)
+--------------------------------------------------------------------------------
+  - Switch renders with Agent default; Terminal click swaps the view; the Agent
+    view stays mounted (aria-hidden) while hidden.
+  - Typing, paste and a node REPL (50-8 -> 42) all work in the sidebar terminal;
+    Ctrl+C interrupts a running ping and returns to the shell.
+  - ArrowUp, ArrowDown, Tab, Shift+Tab and Escape all reach the pty unchanged
+    (raw-mode Node probe) — the full-screen-TUI key requirement.
+  - Ctrl+B and Ctrl+S do NOT fire editor shortcuts while the terminal is
+    focused; the keys reach the terminal instead.
+  - Agent <-> Terminal round trips keep the pty alive and the scrollback intact.
+  - The docked/floating terminal opens its own separate session; closing it does
+    not kill the sidebar terminal.
+  - Dragging the panel wider refits the pty (45 -> 100 cols); collapsing and
+    reopening keeps the shell and refits (100 -> 100 cols); a window resize
+    leaves it healthy.
+  - The shell selector lists the server shells and picking one restarts the
+    session with that shell.
+  - The chosen tab persists across a full page reload.
+  - scrollback keeps 500 lines of output and the mouse wheel scrolls the
+    viewport (viewportY 532 -> 529).
+  - Signed in, `mkdir SIDEBAR_E2E_FOLDER` in the sidebar terminal appeared live
+    in the Explorer with no reload (chokidar + container watcher).
+  - oxlint 0/0 (84 files), vite build OK, node --check OK on the changed server
+    files.
+
+WHAT COULD NOT BE VERIFIED (honest list)
+  - freebuff itself: it needs its own login, so a Node raw-mode key probe was
+    used as the interactive-TUI substitute. The keys freebuff relies on
+    (arrows/Tab/Shift+Tab/Esc) and wheel scrolling were verified through it.
+  - The reconnect reattach path is implemented but was not exercised by forcing
+    a real socket drop.
+  - Copy-to-clipboard via Ctrl+C-with-a-selection was code-reviewed, not driven.
+  - Parts 1-4 of this request were NOT implemented (see OPEN ITEMS).
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Parts 1-2: make edit mode a two-stage pipeline (Mistral Large locator ->
+    Codestral writer) with only read_file / write_file / replace_text, a
+    balanced-tag safety check, one final document check, and errors logged to
+    the server terminal only (progress-only sidebar). No slots, plan gate,
+    document-per-edit validation, repair rounds or wrap-up notices in edit mode.
+  - Part 3: brand-profile step stored in AGENT.md; strip generic scaffold
+    content (agency footer services, "Start a project") and drive footer/nav
+    CTA/copy from the business; add a build check for off-brand footer/nav text.
+  - Part 4: repair the aura-glow makeup workspace footer/nav through the new
+    edit mode and report requests + tokens.
+  - Run the sidebar terminal against real freebuff and confirm its model-picker
+    keys and scrolling (needs a freebuff login).
+  - Force a Socket.IO reconnect and confirm the same pty reattaches with its
+    scrollback.
+================================================================================

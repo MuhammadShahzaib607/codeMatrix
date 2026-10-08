@@ -166,6 +166,56 @@ const PROBE_SCRIPT = `<script>
     var para = document.querySelector('main p, p');
     out.headingContrast = heading ? contrastOf(getComputedStyle(heading).color, effectiveBg(heading)) : null;
     out.bodyContrast = para ? contrastOf(getComputedStyle(para).color, effectiveBg(para)) : null;
+    var contrastBg = function (element) {
+      var node = element;
+      while (node && node.nodeType === 1) {
+        var style = getComputedStyle(node);
+        var bgColor = style.backgroundColor;
+        var solid = bgColor && bgColor !== 'transparent' && bgColor !== 'rgba(0, 0, 0, 0)';
+        if (solid) return bgColor;
+        var bgImage = style.backgroundImage;
+        if (bgImage && bgImage !== 'none') return null;
+        node = node.parentElement;
+      }
+      return out.bodyBackground;
+    };
+    var contrastTargets = [].slice.call(document.querySelectorAll(
+      'h1,h2,h3,h4,h5,h6,p,li,a,span,small,blockquote,figcaption,button,label,footer *, .social-link'
+    ));
+    var weakContrast = [];
+    var seenContrast = {};
+    contrastTargets.forEach(function (element) {
+      if (element.closest('.sr-only, .skip-link')) return;
+      var tag = String(element.tagName || '').toLowerCase();
+      if (tag === 'head' || tag === 'script' || tag === 'style' || tag === 'svg' || tag === 'path') return;
+      var style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) return;
+      var box = element.getBoundingClientRect();
+      if (box.width < 2 || box.height < 2) return;
+      var hasOwnText = false;
+      for (var n = 0; n < element.childNodes.length; n += 1) {
+        if (element.childNodes[n].nodeType === 3 && element.childNodes[n].textContent.trim() !== '') { hasOwnText = true; break; }
+      }
+      var hasIcon = Boolean(element.querySelector('svg, [data-icon]')) || tag === 'svg';
+      if (!hasOwnText && !hasIcon) return;
+      var surface = contrastBg(element);
+      if (!surface) return;
+      var ratio = contrastOf(style.color, surface);
+      if (ratio === null) return;
+      var fontSize = parseFloat(style.fontSize) || 16;
+      var weight = parseInt(style.fontWeight, 10) || 400;
+      var large = fontSize >= 24 || (fontSize >= 18.66 && weight >= 700);
+      var min = large ? 3 : 4.5;
+      if (ratio + 0.01 >= min) return;
+      var cls = typeof element.className === 'string' && element.className.trim() ? '.' + element.className.trim().split(/\s+/)[0] : '';
+      var label = tag + cls;
+      var key = label + '|' + ratio;
+      if (seenContrast[key]) return;
+      seenContrast[key] = true;
+      weakContrast.push({ el: label, ratio: ratio, text: String(element.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40) });
+    });
+    weakContrast.sort(function (a, b) { return a.ratio - b.ratio; });
+    out.weakContrast = weakContrast.slice(0, 12);
     var navList = document.querySelector('.nav-list, nav ul, header ul');
     out.navListStyle = navList ? getComputedStyle(navList).listStyleType : '';
     var crumbs = document.querySelector('.breadcrumbs');
@@ -428,6 +478,16 @@ function evaluateReport(report, file, problems) {
   }
   if (report.bodyContrast != null && report.bodyContrast < 3) {
     problems.push(`"${file}" body text has only ${report.bodyContrast}:1 contrast against its background — increase the contrast.`)
+  }
+  if (Array.isArray(report.weakContrast) && report.weakContrast.length > 0) {
+    const worst = report.weakContrast[0]
+    const listed = report.weakContrast
+      .slice(0, 4)
+      .map((entry) => `${entry.el} (${entry.ratio}:1${entry.text ? `: "${entry.text}"` : ''})`)
+      .join(', ')
+    problems.push(
+      `"${file}" has ${report.weakContrast.length} text element(s) below the WCAG AA contrast minimum, worst ${worst.ratio}:1 for ${worst.el}: ${listed}. Set the text colour and its surface colour together (for example give the footer BOTH a dark background token and a light foreground token).`,
+    )
   }
   const defaultBg = !report.bodyBackground || /rgb\(\s*255,\s*255,\s*255\s*\)/.test(report.bodyBackground)
   const themeBg = String(report.themeBg ?? '').trim()

@@ -6,6 +6,7 @@ import {
   appendFileToWorkspace,
   deleteFromWorkspace,
   existsInWorkspace,
+  flattenTree,
   getWorkspacePath,
   getWorkspaceTree,
   listDirectoryInWorkspace,
@@ -17,7 +18,15 @@ import { buildProjectSnapshot } from '../agent/prompts/projectSnapshot.js'
 import { AGENT_MEMORY_FILENAME, readAgentMemory } from './agentMemory.js'
 import { queueAgentFsChange } from './agentFsNotifier.js'
 import { findRuleBlock } from './strictRules.js'
-import { buildScaffoldAppPlan, buildScaffoldPlan, sectionCatalog } from '../templates/vanilla-kit/index.js'
+import {
+  COMPOSABLE_SECTION_TYPES,
+  buildComposePlan,
+  buildScaffoldAppPlan,
+  buildScaffoldPlan,
+  sectionCatalog,
+  sectionSummary,
+  stripTemplateComments,
+} from '../templates/vanilla-kit/index.js'
 import { formatGateReport, vanillaGate } from '../agent/quality/vanillaGate.js'
 import { formatQuickCheck, quickCheck } from '../agent/quality/quickCheck.js'
 import {
@@ -61,8 +70,38 @@ import {
   splitJsonPayload,
   trimTrailingNameLeak,
 } from './providerClient.js'
-import { findSectionBlock, sectionLineRange, sectionStructureProblems } from '../utils/htmlStructure.js'
+import {
+  findSectionBlock,
+  scanHtml,
+  sectionLineRange,
+  sectionStructureProblems,
+} from '../utils/htmlStructure.js'
 import { analyzeScreenshots, sanitizeImagePayload } from './visionService.js'
+import {
+  EDIT_SYSTEM_PROMPT,
+  RUNTIME_CLASSES,
+  addNavAnchor,
+  applySectionEdit,
+  buildEditOutline,
+  buildEditUserMessage,
+  countH1,
+  cssClassesIn,
+  cssRuleBlocks,
+  documentIssues,
+  extractCssForClasses,
+  insertSection,
+  navHasAnchor,
+  navLabelFor,
+  normalizeSelector,
+  parseEditReply,
+  renderContactSection,
+  resolveEditTarget,
+  shouldAddNavLink,
+  stampSection,
+  upsertCssRules,
+  validateFragment,
+} from '../agent/editPipeline.js'
+import { runEditModeEdit } from '../agent/editMode.js'
 
 export const MAX_TOOL_CALLS = 60
 // A vanilla site is 4-6 files. Anything above this is a loop, and every extra
@@ -127,6 +166,24 @@ const MAX_TOTAL_WAIT_MS = 180000
 const COOLING_DEFAULT_MS = 60000
 const TRANSIENT_COOLING_MS = 5000
 
+export function agentLog(entry = {}) {
+  const at = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  const scope = entry.scope ? ` [${entry.scope}]` : ''
+  const tool = entry.tool ? ` tool=${entry.tool}` : ''
+  const file = entry.file ? ` file=${entry.file}` : ''
+  const message = String(entry.message ?? '').replace(/\s+/g, ' ').trim()
+  console.log(`[agent]${scope} ${at}${tool}${file} ${message}`)
+}
+
+function editFailure(message, detail) {
+  agentLog({ scope: 'edit', message: detail ?? message })
+  const error = new Error(message)
+  error.code = 'EDIT_FAILED'
+  return error
+}
+
+const MAX_EDIT_RETRIES = 1
+
 const TOOL_CALL_CORRECTION_NOTE =
   'Invalid tool-call JSON. Send the file again as ONE create_file call with the complete file (or one complete block of at least 80 lines if the file is very large), and escape quotes and newlines properly.'
 
@@ -150,6 +207,15 @@ const TOOL_ARG_SPECS = {
   edit_section: {
     keys: 'path, id, content (optional action: replace|insert, position: before|after)',
     example: '{"path":"index.html","id":"testimonials","content":"<section id=\"testimonials\">…</section>"}',
+  },
+  edit_css: {
+    keys: 'path, selector, content (declarations only)',
+    example: '{"path":"css/base.css","selector":".pricing .grid","content":"grid-template-columns: repeat(3, minmax(0, 1fr));"}',
+  },
+  compose_page: {
+    keys: 'brand, pages (each page has sections as objects)',
+    example:
+      '{"brand":"Acme","pages":[{"file":"index.html","sections":[{"type":"hero","title":"…","lead":"…","card":{"icon":"code","title":"…","text":"…"}},{"type":"services","title":"…","items":[{"icon":"layers","title":"…","text":"…"}]}]}]}',
   },
   scaffold_site: {
     keys: 'brand, pages',
@@ -405,6 +471,31 @@ export function isTargetedEditTask(task, snapshot = null) {
   return EDIT_VERB.test(text)
 }
 
+const REQUESTED_FEATURES = [
+  { type: 'contact', types: ['contact', 'contact-form'], label: 'contact form', form: true, match: /\bcontact\s*form\b|\benquiry\s*form\b|\binquiry\s*form\b|\bget\s+in\s+touch\b|\bcontact\s+us\b/i },
+  { type: 'pricing', label: 'pricing', match: /\bpricing\b|\bplans?\b|\bpackages?\b/i },
+  { type: 'faq', label: 'FAQ', match: /\bfaq\b|\bfrequently\s+asked\b/i },
+  { type: 'gallery', label: 'gallery', match: /\bgallery\b|\bportfolio\b/i },
+  { type: 'testimonials', label: 'testimonials', match: /\btestimonials?\b|\breviews?\b/i },
+  { type: 'login', label: 'login', match: /\blogin\b|\bsign[\s-]?in\b|\bsign[\s-]?up\b/i },
+  { type: 'calculator', label: 'calculator', match: /\bcalculator\b/i },
+]
+
+export function requestedFeatureSections(task) {
+  const text = String(task ?? '')
+  const found = []
+  for (const entry of REQUESTED_FEATURES) {
+    if (!entry.match.test(text)) continue
+    found.push({
+      type: entry.type,
+      types: entry.types ?? [entry.type],
+      label: entry.label,
+      form: Boolean(entry.form),
+    })
+  }
+  return found
+}
+
 function sectionsNamedInTask(task, sectionIds = []) {
   const text = String(task ?? '').toLowerCase()
   const named = []
@@ -613,9 +704,49 @@ const OPENAI_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'compose_page',
+      description:
+        'PREFERRED way to build a vanilla site (site type). Send the full site as STRUCTURED SECTION DATA and the server renders every section into the starter-kit templates, writes complete pages with no slots and no template comments left, and generates the nav and footer from the sections that really exist (in-page anchors for a one-pager, page links for a multi-page site). You never hand-write the page shell. Section objects use: type, id?, title, eyebrow?, lead?, body?, items (array), stats (array), card {icon,title,text,stats}, buttons [{label,href}], form {submit,success}. Supported types: ' +
+        `${COMPOSABLE_SECTION_TYPES.join(', ')}. For an unavailable type use scaffold_site and fill the slot with edit_section instead.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          brand: { type: 'string', description: 'Brand name' },
+          tagline: { type: 'string', description: 'One short line about the business' },
+          palette: {
+            type: 'string',
+            description:
+              'Theme preset id: indigo-modern | emerald-fresh | sunset-warm | midnight-dark | rose-elegant | slate-corporate | gallery-ivory | playful-pop | clinic-calm',
+          },
+          pages: {
+            type: 'array',
+            description: 'One entry per page, in nav order',
+            items: {
+              type: 'object',
+              properties: {
+                file: { type: 'string', description: 'Relative page path, e.g. index.html' },
+                title: { type: 'string', description: 'Unique <title>' },
+                nav_label: { type: 'string', description: 'Text shown in the nav for a multi-page site' },
+                sections: {
+                  type: 'array',
+                  description: 'Structured section objects, in order',
+                  items: { type: 'object', additionalProperties: true },
+                },
+              },
+              required: ['file', 'sections'],
+            },
+          },
+        },
+        required: ['brand', 'pages'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'scaffold_site',
       description:
-        'Create the professional starter-kit shell for a vanilla site in ONE call (no CSS writing needed): copies css/base.css and js/main.js, writes css/theme.css for the chosen palette and one full HTML page per entry with an identical header, nav and footer. Each requested section becomes a <!-- SLOT:name --> marker you later replace with real copy.',
+        'Create the starter-kit shell for a vanilla site in ONE call (no CSS writing needed): copies css/base.css and js/main.js, writes css/theme.css for the chosen palette and one full HTML page per entry with an identical header, nav and footer. Each requested section becomes a <!-- SLOT:name --> marker you later replace with real copy. Use this occasionally — the PREFERRED path is compose_page, which fills the page for you.',
       parameters: {
         type: 'object',
         properties: {
@@ -712,6 +843,27 @@ const OPENAI_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'edit_css',
+      description:
+        'Replace or add ONE CSS rule block by its selector WITHOUT rewriting the file. Pass the declarations only (no braces). If the selector already exists its block is replaced; otherwise the rule is appended. Use this for styling or layout requests such as "make the pricing cards 3 columns" or "make the footer darker" — do not rewrite a stylesheet with create_file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative stylesheet path, e.g. css/base.css' },
+          selector: { type: 'string', description: 'The selectors to target, e.g. ".pricing .grid"' },
+          content: {
+            type: 'string',
+            description: 'The declarations only, e.g. "grid-template-columns: repeat(3, minmax(0, 1fr));"',
+          },
+          mode: { type: 'string', enum: ['replace', 'append'] },
+        },
+        required: ['path', 'selector', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'list_directory',
       description: 'List a folder ("." for the root).',
       parameters: {
@@ -755,6 +907,8 @@ const TOOL_LABELS = {
   append_to_file: 'append_to_file',
   edit_file: 'edit_file',
   edit_section: 'edit_section',
+  edit_css: 'edit_css',
+  compose_page: 'compose_page',
   scaffold_site: 'scaffold_site',
   scaffold_app: 'scaffold_app',
   read_file: 'read_file',
@@ -806,6 +960,10 @@ function looksComplete(filePath, text) {
 // </html>. Written as a checklist so a partial rewrite can never pass again.
 const SITE_PAGE_MARKER = /class\s*=\s*["'][^"']*\bsite-header\b/i
 
+export function hasSlotMarkers(text) {
+  return /<!--\s*SLOT:[a-z0-9-]+\s*-->/.test(String(text ?? ''))
+}
+
 export function documentIntegrityIssues(text) {
   const problems = []
   const count = (pattern) => (String(text ?? '').match(pattern) || []).length
@@ -814,10 +972,55 @@ export function documentIntegrityIssues(text) {
   const h1s = count(/<h1\b/gi)
   if (headers !== 1) problems.push(`${headers} <header> (a page has exactly one)`)
   if (footers !== 1) problems.push(`${footers} <footer> (a page has exactly one)`)
-  if (h1s !== 1) problems.push(`${h1s} <h1> (a page has exactly one)`)
+  if (!hasSlotMarkers(text) && h1s !== 1) problems.push(`${h1s} <h1> (a page has exactly one)`)
   if (!/<\/html>\s*$/i.test(String(text ?? '').trimEnd())) problems.push('no closing </html>')
   if (problems.length === 0) return ''
   return `the document is incomplete — it has ${problems.join(', ')}`
+}
+
+function finalizeHtmlWrite(content, filePath) {
+  if (!/\.html?$/i.test(String(filePath ?? ''))) return content
+  return stripTemplateComments(content)
+}
+
+function newStructureProblems(before, after) {
+  const beforeProblems = new Set(sectionStructureProblems(before))
+  return sectionStructureProblems(after).filter((problem) => !beforeProblems.has(problem))
+}
+
+function cssRuleRange(css, selector) {
+  const target = String(selector ?? '').trim().replace(/\s+/g, ' ')
+  if (!target) return null
+  let depth = 0
+  for (let index = 0; index < css.length; index += 1) {
+    const character = css[index]
+    if (character === '{') {
+      if (depth === 0) {
+        const previous = css.lastIndexOf('}', index)
+        const rawSelector = css.slice(previous + 1, index).trim()
+        const selectors = rawSelector.split(',').map((value) => value.trim().replace(/\s+/g, ' '))
+        if (selectors.includes(target)) {
+          let braces = 1
+          let cursor = index + 1
+          while (cursor < css.length && braces > 0) {
+            if (css[cursor] === '{') braces += 1
+            else if (css[cursor] === '}') braces -= 1
+            cursor += 1
+          }
+          return { start: previous + 1, end: cursor }
+        }
+      }
+      depth += 1
+    } else if (character === '}') {
+      depth -= 1
+    }
+  }
+  return null
+}
+
+function renderCssRule(selector, declarations) {
+  const body = String(declarations ?? '').trim().replace(/^\{|\}$/g, '').trim()
+  return `${String(selector).trim()} {\n  ${body}\n}`
 }
 
 function validateWriteContent(name, filePath, content) {
@@ -914,6 +1117,14 @@ function describeAction(name, args, { phase = 'running', lines = 0 } = {}) {
       return phase === 'running'
         ? `Updating section ${args.id ? `#${args.id} ` : ''}in ${filePath}…`
         : `Updated section ${args.id ? `#${args.id} ` : ''}in ${filePath} · ${lines} lines`
+    case 'edit_css':
+      return phase === 'running'
+        ? `Restyling ${args.selector ? `"${truncate(args.selector, 40)}" ` : ''}in ${filePath}…`
+        : `Restyled ${args.selector ? `"${truncate(args.selector, 40)}" ` : ''}in ${filePath}`
+    case 'compose_page':
+      return phase === 'running'
+        ? `Composing ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) from structured sections…`
+        : `Composed ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) — ${lines} lines`
     case 'scaffold_site':
       return phase === 'running'
         ? `Scaffolding ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) from the starter kit…`
@@ -952,6 +1163,10 @@ function describeFailure(name, args, outcome = null) {
       return reason ? `Failed to edit ${filePath} — ${reason}` : `Failed to edit ${filePath}`
     case 'edit_section':
       return reason ? `Failed to edit section in ${filePath} — ${reason}` : `Failed to edit section in ${filePath}`
+    case 'edit_css':
+      return reason ? `Failed to restyle ${filePath} — ${reason}` : `Failed to restyle ${filePath}`
+    case 'compose_page':
+      return reason ? `Failed to compose the page(s) — ${reason}` : 'Failed to compose the page(s)'
     case 'scaffold_site':
       return reason ? `Failed to scaffold the site — ${reason}` : 'Failed to scaffold the site'
     case 'scaffold_app':
@@ -1348,6 +1563,105 @@ function closestSnippet(text, needle, context = 2) {
   return { line: best.index + 1, excerpt }
 }
 
+const SECTION_SYNONYMS = {
+  hero: ['hero', 'banner', 'masthead'],
+  services: ['services', 'service', 'offer', 'offerings', 'what we do'],
+  features: ['features', 'feature', 'benefits', 'why us'],
+  about: ['about', 'story', 'who we are', 'company'],
+  pricing: ['pricing', 'price', 'prices', 'plans', 'plan', 'packages', 'package', 'rates'],
+  testimonials: ['testimonials', 'testimonial', 'reviews', 'review', 'quotes', 'clients'],
+  faq: ['faq', 'faqs', 'questions', 'question', 'accordion', 'q&a'],
+  stats: ['stats', 'statistics', 'numbers', 'metrics'],
+  steps: ['steps', 'step', 'process', 'how it works', 'workflow'],
+  gallery: ['gallery', 'portfolio', 'work', 'projects', 'showcase'],
+  team: ['team', 'staff', 'people'],
+  contact: ['contact', 'contact-form', 'contact form', 'enquiry', 'inquiry', 'get in touch', 'message'],
+  'contact-info': ['contact info', 'details', 'address'],
+  blogs: ['blog', 'blogs', 'articles', 'news', 'journal'],
+  cta: ['cta', 'call to action', 'call-to-action', 'get started', 'banner'],
+}
+
+function sectionSynonyms(type) {
+  const key = String(type ?? '').toLowerCase()
+  return [key, ...(SECTION_SYNONYMS[key] ?? [])].filter(Boolean)
+}
+
+function describeSections(source) {
+  const text = normalizeEol(source)
+  const { tags } = scanHtml(text)
+  const sections = []
+  for (const tag of tags) {
+    if (tag.closing || tag.selfClosing) continue
+    if (tag.name !== 'section' && tag.name !== 'article') continue
+    const id = tag.attrs?.id ?? tag.attrs?.['data-section'] ?? ''
+    if (!id) continue
+    if (sections.some((entry) => entry.id === id)) continue
+    const block = findSectionBlock(text, id)
+    const body = block && !block.ambiguous ? text.slice(block.start, block.end) : ''
+    const heading = /<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i.exec(body)
+    sections.push({
+      id,
+      type: tag.attrs?.['data-section'] ?? '',
+      title: tag.attrs?.['data-title'] ?? '',
+      heading: heading ? heading[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : '',
+      line: block?.line ?? tag.line,
+      endLine: block?.endLine ?? tag.line,
+    })
+  }
+  return sections
+}
+
+function resolveSectionRequest(source, requested) {
+  const request = String(requested ?? '').toLowerCase().trim()
+  if (!request) return null
+  const sections = describeSections(source)
+  if (sections.length === 0) return { sections, none: true }
+  const exact = sections.find(
+    (entry) =>
+      entry.id.toLowerCase() === request ||
+      entry.type.toLowerCase() === request ||
+      entry.title.toLowerCase() === request,
+  )
+  if (exact) return { sections, section: exact, matchedBy: 'id' }
+  const stopwords = new Set([
+    'the', 'a', 'an', 'on', 'of', 'in', 'to', 'and', 'for', 'with', 'it', 'its',
+    'my', 'our', 'this', 'that', 'please', 'page', 'pages', 'home', 'section',
+    'sections', 'ui', 'update', 'change', 'make', 'edit', 'fix', 'redesign',
+    'want', 'like', 'look', 'looks', 'style', 'it\u2019s', 'lets',
+  ])
+  const tokens = request.split(/[^a-z0-9]+/).filter((token) => token.length >= 2 && !stopwords.has(token))
+  if (tokens.length === 0) return { sections, none: true }
+  const scored = sections
+    .map((section) => {
+      const id = section.id.toLowerCase()
+      const type = String(section.type ?? '').toLowerCase()
+      const title = String(section.title ?? '').toLowerCase()
+      const heading = String(section.heading ?? '').toLowerCase()
+      const synonyms = sectionSynonyms(section.type || section.id)
+      let score = 0
+      for (const token of tokens) {
+        if (id === token || type === token) score += 6
+        else if (new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`).test(id) || new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`).test(type)) score += 4
+        for (const synonym of synonyms) {
+          if (synonym === token) score += 5
+          else if (synonym.split(/\s+/).includes(token)) score += 5
+        }
+        if (title && new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`).test(title)) score += 2
+        if (heading && new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`).test(heading)) score += 2
+      }
+      return { section, score }
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+  if (scored.length === 0) return { sections, none: true }
+  return {
+    sections,
+    section: scored[0].section,
+    matchedBy: 'words',
+    alternatives: scored.slice(1, 3).map((entry) => entry.section),
+  }
+}
+
 function fileOutline(text, filePath) {
   const source = normalizeEol(text)
   const lines = source.split('\n')
@@ -1365,11 +1679,25 @@ function fileOutline(text, filePath) {
     const label = id ? `#${id}` : cls ? `.${cls}` : ''
     entries.push(`${String(index + 1).padStart(5)} | <${tag}${label ? ' ' + label : ''}>`)
   })
+  const sectionLines = []
+  if (/\.html?$/i.test(filePath)) {
+    for (const section of describeSections(source)) {
+      const type = section.type || 'section'
+      const title = section.title || section.heading || ''
+      sectionLines.push(
+        `${String(section.line).padStart(5)}-${String(section.endLine).padStart(5)} | <section id="${section.id}" data-section="${type}"${title ? ` title="${truncate(title, 60)}"` : ''}>`,
+      )
+    }
+  }
   return [
     `${filePath} — ${lines.length} line(s), ${source.length} char(s)`,
+    sectionLines.length > 0 ? 'Sections (id, data-section, title, line range):' : '',
+    ...sectionLines,
     ...entries,
     'Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.',
-  ].join('\n')
+  ]
+    .filter(Boolean)
+    .join('\n')
 }
 
 function sliceLines(text, startLine, endLine, filePath = '') {
@@ -1451,6 +1779,15 @@ async function executeTool(name, rawArgs, projectId) {
         }
         const next = normalizedExisting.slice(0, range.start) + newString + normalizedExisting.slice(range.end)
         if (/\.html?$/i.test(filePath) && SITE_PAGE_MARKER.test(next)) {
+          const structureProblems = newStructureProblems(normalizedExisting, next)
+          if (structureProblems.length > 0) {
+            return {
+              text: `Error: that edit would unbalance "${filePath}", so nothing was written. What is wrong with the new file:\n- ${structureProblems
+                .slice(0, 6)
+                .join('\n- ')}\nResend the fragment as one complete, balanced section.`,
+              rejected: true,
+            }
+          }
           const integrity = documentIntegrityIssues(next)
           if (integrity) {
             return {
@@ -1462,7 +1799,7 @@ async function executeTool(name, rawArgs, projectId) {
         const existedBefore = existsInWorkspace(projectId, filePath)
         let saved
         try {
-          saved = writeFileToWorkspace(projectId, filePath, next)
+          saved = writeFileToWorkspace(projectId, filePath, finalizeHtmlWrite(next, filePath))
         } catch (error) {
           debugToolCall(name, filePath, next, 'error')
           return { text: toolErrorMessage(name, args, error) }
@@ -1497,7 +1834,7 @@ async function executeTool(name, rawArgs, projectId) {
       const newFolders = existedBefore ? [] : missingParentFolders(projectId, filePath)
       let saved
       try {
-        saved = writeFileToWorkspace(projectId, filePath, content)
+        saved = writeFileToWorkspace(projectId, filePath, finalizeHtmlWrite(content, filePath))
       } catch (error) {
         debugToolCall(name, filePath, content, 'error')
         return { text: toolErrorMessage(name, args, error) }
@@ -1527,7 +1864,7 @@ async function executeTool(name, rawArgs, projectId) {
       const appendedFolders = appendedToExisting ? [] : missingParentFolders(projectId, filePath)
       let saved
       try {
-        saved = appendFileToWorkspace(projectId, filePath, content)
+        saved = appendFileToWorkspace(projectId, filePath, finalizeHtmlWrite(content, filePath))
       } catch (error) {
         debugToolCall(name, filePath, content, 'error')
         return { text: toolErrorMessage(name, args, error) }
@@ -1591,6 +1928,63 @@ async function executeTool(name, rawArgs, projectId) {
         created.length > 0 ? `Created: ${created.map((file) => file.path).join(', ')}.` : '',
         slotSummary ? `Content slots to fill next: ${slotSummary}.` : '',
         'Replace each <!-- SLOT:name --> marker with the real section markup using ONLY the kit classes, one edit_file per page.',
+      ].filter(Boolean)
+      return {
+        text: parts.join(' '),
+        modelText: parts.join(' '),
+        lines: totalLines,
+        written: created,
+        fsChanges: [
+          ...[...folders].map((folder) => ({ path: folder, type: 'addDir' })),
+          ...created.map((file) => ({ path: file.path, type: 'add' })),
+        ],
+      }
+    }
+    case 'compose_page': {
+      let plan
+      try {
+        plan = await buildComposePlan(args)
+      } catch (error) {
+        return { text: `Error: could not compose the page(s): ${error.message}`, rejected: true }
+      }
+      if (plan.files.length === 0 || plan.pages.length === 0) {
+        return {
+          text: `Error: compose_page needs at least one page with structured sections. It received pages=${JSON.stringify(
+            Array.isArray(args.pages) ? args.pages.length : args.pages ?? null,
+          )}. Example: compose_page {"brand":"Acme","palette":"indigo-modern","pages":[{"file":"index.html","title":"Acme","sections":[{"type":"hero","title":"…","lead":"…","card":{"icon":"code","title":"…","text":"…"}},{"type":"services","title":"Our services","items":[{"icon":"layers","title":"…","text":"…"}]}]}]}`,
+          rejected: true,
+        }
+      }
+      const created = []
+      const skipped = []
+      const folders = new Set()
+      let totalLines = 0
+      for (const file of plan.files) {
+        const existing = existsInWorkspace(projectId, file.path)
+          ? await readWorkspaceFileSafe(projectId, file.path)
+          : null
+        if (existing !== null && existing.trim()) {
+          skipped.push(file.path)
+          continue
+        }
+        try {
+          writeFileToWorkspace(projectId, file.path, finalizeHtmlWrite(file.content, file.path))
+        } catch (error) {
+          return { text: `Error: could not write ${file.path}: ${error.message}`, rejected: true }
+        }
+        const segments = file.path.split('/')
+        for (let index = 1; index < segments.length; index += 1) {
+          folders.add(segments.slice(0, index).join('/'))
+        }
+        created.push({ path: file.path, lines: countLines(file.content) })
+        totalLines += countLines(file.content)
+      }
+      const themeNote = `palette ${plan.theme.id} (${plan.theme.headingFont} + ${plan.theme.bodyFont})`
+      const parts = [
+        `Composed ${created.length} file(s) with ${themeNote}${skipped.length > 0 ? ` (left ${skipped.length} existing file(s) untouched: ${skipped.join(', ')})` : ''}.`,
+        created.length > 0 ? `Created: ${created.map((file) => file.path).join(', ')}.` : '',
+        `Sections by page: ${sectionSummary(plan.pages)}.`,
+        'Every page is complete: the server rendered each section into the starter-kit templates and generated the nav and footer from the sections that exist. No slot markers or template comments were written. Do NOT call create_file on these pages; change them with edit_section. Finish with your short summary.',
       ].filter(Boolean)
       return {
         text: parts.join(' '),
@@ -1689,7 +2083,7 @@ async function executeTool(name, rawArgs, projectId) {
     }
     case 'edit_section': {
       const filePath = String(args.path ?? '').trim()
-      const id = String(args.id ?? args.section ?? args.section_id ?? '').trim()
+      let id = String(args.id ?? args.section ?? args.section_id ?? '').trim()
       const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
       if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
       if (!id) {
@@ -1706,7 +2100,26 @@ async function executeTool(name, rawArgs, projectId) {
         return { text: `Error: "${filePath}" does not exist (use create_file).`, rejected: true }
       }
       const normalized = normalizeEol(existingSection)
-      const block = findSectionBlock(normalized, id)
+      const requestedId = id
+      let block = findSectionBlock(normalized, id)
+      let resolutionNote = ''
+      if (!block && requestedId) {
+        const resolution = resolveSectionRequest(normalized, requestedId)
+        if (resolution?.section) {
+          id = resolution.section.id
+          block = findSectionBlock(normalized, id)
+          if (block) {
+            const heading = resolution.section.heading || resolution.section.title
+            resolutionNote = `Requested "${requestedId}" — resolved to section #${id} (${resolution.section.type || 'section'}${heading ? `: ${truncate(heading, 60)}` : ''}).`
+          }
+        }
+        if (!block) {
+          return {
+            text: `Error: no element with id/data-section "${requestedId}" was found in "${filePath}", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "${filePath}", outline: true } shows the same list):\n${fileOutline(normalized, filePath)}`,
+            rejected: true,
+          }
+        }
+      }
       if (block && block.ambiguous) {
         return { text: `Error: "${id}" is used by more than one element in "${filePath}", so the section edit would be ambiguous. Give the target section a unique id first.`, rejected: true }
       }
@@ -1760,7 +2173,7 @@ async function executeTool(name, rawArgs, projectId) {
       const existedBefore = existsInWorkspace(projectId, filePath)
       let savedSection
       try {
-        savedSection = writeFileToWorkspace(projectId, filePath, next)
+        savedSection = writeFileToWorkspace(projectId, filePath, finalizeHtmlWrite(next, filePath))
       } catch (error) {
         debugToolCall(name, filePath, next, 'error')
         return { text: toolErrorMessage(name, args, error) }
@@ -1768,10 +2181,55 @@ async function executeTool(name, rawArgs, projectId) {
       debugToolCall(name, savedSection, next, 'section')
       const slotsLeft = [...next.matchAll(/<!--\s*SLOT:([a-z0-9-]+)\s*-->/g)].map((match) => match[1])
       return {
-        text: `Updated section #${id} in ${savedSection} (${action}).${slotsLeft.length > 0 ? ` Empty slots left: ${slotsLeft.join(', ')}.` : ''}`,
+        text: `${resolutionNote ? `${resolutionNote} ` : ''}Updated section #${id} in ${savedSection} (${action}).${slotsLeft.length > 0 ? ` Empty slots left: ${slotsLeft.join(', ')}.` : ''}`,
         modelText: `ok, section ${id} ${action}, ${countLines(next)} lines`,
+        resolvedSection: resolutionNote ? id : undefined,
         lines: countLines(next),
         fsChanges: [{ path: savedSection, type: existedBefore ? 'change' : 'add' }],
+      }
+    }
+    case 'edit_css': {
+      const filePath = String(args.path ?? '').trim()
+      const selector = String(args.selector ?? args.rule ?? '').trim()
+      const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
+      if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
+      if (!selector) {
+        return { text: 'Error: edit_css needs a "selector", for example ".pricing .grid".', rejected: true }
+      }
+      if (!content.trim()) {
+        return { text: `Error: edit_css needs the "content" — the CSS declarations for "${selector}" without braces.`, rejected: true }
+      }
+      const braces = (content.match(/{/g) || []).length - (content.match(/}/g) || []).length
+      if (braces !== 0) {
+        return { text: 'Error: the declarations must NOT contain unbalanced braces — pass only the declarations, e.g. "grid-template-columns: repeat(3, minmax(0, 1fr));".', rejected: true }
+      }
+      if (!existsInWorkspace(projectId, filePath)) {
+        return { text: `Error: "${filePath}" does not exist. Target an existing stylesheet, for example css/base.css.`, rejected: true }
+      }
+      const existingCss = await readWorkspaceFileSafe(projectId, filePath)
+      if (existingCss === null) {
+        return { text: `Error: "${filePath}" does not exist.`, rejected: true }
+      }
+      const rule = renderCssRule(selector, content)
+      const range = cssRuleRange(existingCss, selector)
+      const append = String(args.mode ?? 'replace').toLowerCase() === 'append' || !range
+      const next = !append
+        ? existingCss.slice(0, range.start) + rule + existingCss.slice(range.end)
+        : `${existingCss.trimEnd()}\n\n${rule}\n`
+      const existedBefore = existsInWorkspace(projectId, filePath)
+      let savedCss
+      try {
+        savedCss = writeFileToWorkspace(projectId, filePath, next)
+      } catch (error) {
+        return { text: toolErrorMessage(name, args, error) }
+      }
+      debugToolCall(name, savedCss, next, append ? 'css-appended' : 'css-replaced')
+      return {
+        text: `${range && !append ? 'Replaced' : 'Added'} the rule for "${selector}" in ${savedCss}.`,
+        modelText: `ok, ${range && !append ? 'replaced' : 'added'} ${selector}`,
+        lines: countLines(next),
+        written: [{ path: savedCss, lines: countLines(next) }],
+        fsChanges: [{ path: savedCss, type: existedBefore ? 'change' : 'add' }],
       }
     }
     case 'list_directory': {
@@ -2092,6 +2550,7 @@ export async function runAgent({
 
   if (keys.length === 0) {
     const error = new Error('No API key is available for this run.')
+    agentLog({ scope: 'agent', tool: 'key', message: error.message })
     event('error', error.message, { status: 'done' })
     throw error
   }
@@ -2100,6 +2559,7 @@ export async function runAgent({
   try {
     candidates = await resolveModelPlan(keys, { userId, requestedProvider, requestedModel })
   } catch (error) {
+    agentLog({ scope: 'agent', tool: 'model', message: `model plan failed: ${error?.message ?? error}` })
     event('error', error.message, { status: 'done' })
     throw error
   }
@@ -2383,6 +2843,9 @@ export async function runAgent({
       ...extra,
     })
 
+  const logNote = (message, extra = {}) =>
+    agentLog({ scope: 'agent', tool: extra.tool ?? 'note', file: extra.file ?? '', message })
+
   if (resume && vanillaMode && !repairIntent) {
     try {
       const connection = await connectionCheck({ projectId })
@@ -2421,7 +2884,7 @@ export async function runAgent({
 
   let streamedAny = false
 
-  async function sendCompletion(wireMessages, maxCompletionTokens, temperature, { allowStream = true } = {}) {
+  async function sendCompletion(wireMessages, maxCompletionTokens, temperature, { allowStream = true, tools = OPENAI_TOOLS } = {}) {
     const usedProvider = active.providerId
     const usedModel = active.model
     const keyId = active.key.id ?? null
@@ -2430,7 +2893,7 @@ export async function runAgent({
       apiKey: active.key.plain,
       model: usedModel,
       messages: normalizeMessagesForProvider(wireMessages, usedProvider),
-      tools: OPENAI_TOOLS,
+      tools,
       temperature,
       maxCompletionTokens,
       onResponse: keyId
@@ -2460,7 +2923,7 @@ export async function runAgent({
         })
       } catch (error) {
         if (!canRetryWithoutStreaming(error)) throw error
-        note('The provider stopped streaming — retrying this turn without streaming…')
+        logNote('The provider stopped streaming — retrying this turn without streaming…', { tool: 'retry' })
         if (streamedAny) {
           // Drop the half-streamed text before the non-streamed answer arrives.
           emitDelta({ text: '', reset: true })
@@ -2529,7 +2992,7 @@ export async function runAgent({
         if (error.status === 413) {
           if (shrinkLevel < 2) {
             shrinkLevel += 1
-            note('Request too large (413) — trimming history and retrying…')
+            logNote('Request too large (413) — trimming history and retrying…', { tool: 'retry' })
             continue
           }
           error.tooLarge = true
@@ -2589,15 +3052,11 @@ export async function runAgent({
     return true
   }
 
-  const switchNote = (previous, reason, extra = {}) =>
-    event_('fallback', `${reason}, switching to ${providerLabel(active.providerId)} (${active.model})`, {
-      status: 'done',
-      model,
-      provider: active.providerId,
+  const switchNote = (previous, reason) =>
+    agentLog({
+      scope: 'agent',
       tool: 'fallback',
-      switchTo: active.providerId,
-      from: previous.providerId,
-      ...extra,
+      message: `${reason}, switching to ${providerLabel(active.providerId)} (${active.model})`,
     })
 
   async function requestCompletion(temperature) {
@@ -2677,7 +3136,7 @@ export async function runAgent({
         if (error.status >= 500 || error.code === 'TIMEOUT' || error.code === 'NETWORK') {
           if (!transientRetried) {
             transientRetried = true
-            note(`${previousLabel} had a transient error — retrying once…`, null, { retrying: true })
+            logNote(`${previousLabel} had a transient error — retrying once…`, { tool: 'retry' })
             continue
           }
           coolCandidate(previous, TRANSIENT_COOLING_MS)
@@ -2694,6 +3153,59 @@ export async function runAgent({
     }
 
     throw lastError ?? new Error('Could not complete the request.')
+  }
+
+  const EDIT_ACTION_WORD =
+    /\b(add|insert|include|new|update|change|edit|fix|remove|delete|replace|make|redesign|restyle|move)\b/i
+  const EDIT_TARGET_WORD =
+    /\b(hero|banner|headline|faq|faqs|questions?|accordion|pricing|plans?|packages?|prices?|reviews?|testimonials?|quotes?|services?|features?|stats?|process|steps|gallery|portfolio|about|team|blogs?|contact|cta|header|footer|nav|navigation|menu|columns?|footer)\b/i
+  const editModeTask =
+    !resume &&
+    vanillaMode &&
+    !repairIntent &&
+    Boolean(projectSnapshotInfo) &&
+    (targetedEdit || (EDIT_ACTION_WORD.test(String(task ?? '')) && EDIT_TARGET_WORD.test(String(task ?? '')) ))
+
+  function editElementRange(text, tag) {
+    const { tags } = scanHtml(String(text ?? ''))
+    const stack = []
+    for (const entry of tags) {
+      if (entry.name !== tag || entry.selfClosing) continue
+      if (!entry.closing) {
+        stack.push({ start: entry.index, id: entry.attrs?.id ?? '' })
+        continue
+      }
+      const top = stack.pop()
+      if (!top) continue
+      return { start: top.start, end: entry.end, id: top.id, text: String(text).slice(top.start, entry.end) }
+    }
+    return null
+  }
+
+  async function runEditMode() {
+    return runEditModeEdit({
+      projectId,
+      task,
+      candidates,
+      getActive: () => active,
+      moveTo,
+      advanceCandidate,
+      isCooling,
+      coolCandidate,
+      markKeyCooling,
+      markKeyInvalid,
+      sendCompletion,
+      event: event_,
+      agentLog,
+      persistSession,
+      stopRequested,
+      getTaskTotals: () => (taskId ? getTaskTotals(taskId) : null),
+      addToolCalls: (count) => {
+        toolCalls += count
+      },
+      requestedModel,
+      startedAt,
+    })
   }
 
   event_('thinking', 'Starting the agent…', {
@@ -2816,24 +3328,46 @@ export async function runAgent({
     writeStreak = 0
     writesWithoutNewFile = 0
     parseRetries = 0
-    note(`Continuing automatically (${autoContinues} of ${MAX_AUTO_CONTINUES}) — ${reason}.`)
+    logNote(`Continuing automatically (${autoContinues} of ${MAX_AUTO_CONTINUES}) — ${reason}.`, { tool: 'retry' })
     return true
   }
 
   const blockFinishing = (label, failures, code) => {
     const list = (Array.isArray(failures) ? failures : []).filter(Boolean)
-    const message = `Stopped: ${label}. ${list.length} problem(s) are still unresolved after every repair round: ${list
-      .slice(0, 4)
-      .join(' ')}`
-    event_('error', message, {
-      status: 'done',
-      model,
-      provider: active.providerId,
-      tool: 'gate',
-      failures: list.slice(0, 12),
+    agentLog({
+      scope: 'agent',
+      tool: 'validate',
+      message: `${label} — ${list.length} unresolved problem(s): ${list.join(' | ')}`,
     })
     persistSession(code)
-    throw new Error(message)
+    const error = new Error(
+      'The task could not be finished to a valid state. The files were saved — review them and try a more specific request.',
+    )
+    error.code = code ?? 'BLOCKED'
+    throw error
+  }
+
+  if (editModeTask) {
+    const explicit = requestedModel
+      ? candidates.find(
+          (candidate) =>
+            candidate.model === requestedModel &&
+            (!requestedProvider || candidate.providerId === requestedProvider),
+        )
+      : null
+    const mistralLarge =
+      !requestedModel && (!requestedProvider || requestedProvider === 'mistral')
+        ? candidates.find(
+            (candidate) =>
+              candidate.providerId === 'mistral' && candidate.model === PREFERRED_AGENT_MODEL.mistral,
+          )
+        : null
+    const preferred = explicit ?? mistralLarge
+    if (preferred && preferred !== active && !isCooling(preferred)) moveTo(preferred)
+  }
+
+  if (editModeTask) {
+    return await runEditMode()
   }
 
   for (;;) {
@@ -2848,24 +3382,26 @@ export async function runAgent({
       if (isToolCallParseError(error)) {
         if (parseRetries < MAX_PARSE_RETRIES) {
           parseRetries += 1
-          note('Tool call was malformed, retrying with smaller chunks…')
+          logNote('Tool call was malformed, retrying with smaller chunks…', { tool: 'retry' })
           appendGuidance(messages, TOOL_CALL_CORRECTION_NOTE)
           continue
         }
         const next = advanceCandidate()
         if (next) {
           parseRetries = 0
-          event_('fallback', `Repeated malformed tool calls — switching to ${model}.`, {
-            status: 'done',
-            model,
-            provider: active.providerId,
-            tool: 'fallback',
-          })
+          logNote(`Repeated malformed tool calls — switching to ${model}.`, { tool: 'fallback' })
           appendGuidance(messages, TOOL_CALL_CORRECTION_NOTE)
           continue
         }
       }
-      event_('error', error.message, { status: 'done', model })
+      agentLog({ scope: 'agent', tool: 'request', message: `request failed: ${error?.message ?? error}` })
+      const plainMessage =
+        error?.status === 401 || error?.status === 403
+          ? 'The provider rejected the API key. Update it in Settings → AI and try again.'
+          : error?.status === 429
+            ? 'The provider is rate limited right now. Wait a moment and try again.'
+            : 'The agent could not reach the model. Check the API key and your connection, then try again.'
+      event_('error', plainMessage, { status: 'done', model })
       persistSession(error.code ?? 'error')
       throw error
     }
@@ -2939,13 +3475,13 @@ export async function runAgent({
         model,
         provider: active.providerId,
       }
-    }
-    const midEdit = [...failedEditsByFile.values()].some((streak) => streak > 0)
+    }    const midEdit = [...failedEditsByFile.values()].some((streak) => streak > 0)
     if (!wrapUpNotified && !midEdit && !targetedEdit && usedTokens >= effectiveBudget * TASK_WRAP_UP_RATIO) {
       wrapUpNotified = true
       appendGuidance(messages, await wrapUpHint(usedTokens))
-      note(
+      logNote(
         `Token budget at ${Math.round((usedTokens / effectiveBudget) * 100)}% — telling the agent to wrap up…`,
+        { tool: 'budget' },
       )
     }
 
@@ -2954,11 +3490,12 @@ export async function runAgent({
       if (emptyRetries < MAX_EMPTY_RETRIES && autoContinues < MAX_AUTO_CONTINUES) {
         emptyRetries += 1
         autoContinues += 1
-        note('The provider returned an empty response — retrying automatically…')
+        logNote('The provider returned an empty response — retrying automatically…', { tool: 'retry' })
         appendGuidance(messages, 'Your previous reply was empty. Continue the task now.')
         continue
       }
       const error = new Error('The provider returned an empty response. Try again.')
+      agentLog({ scope: 'agent', tool: 'request', message: 'the provider returned an empty response' })
       event_('error', error.message, { status: 'done' })
       persistSession('empty_response')
       throw error
@@ -3084,7 +3621,7 @@ export async function runAgent({
             '; ',
           )}. Finish each one now: fill the remaining <!-- SLOT:name --> markers with edit_file { path, old_string: "<!-- SLOT:hero -->", new_string: "<section …>…</section>" } — several in ONE reply — and create a page with create_file only when it does not exist yet.`,
         )
-        note(`Verifying the plan — ${issues.length} file(s) still incomplete…`)
+        logNote(`Verifying the plan — ${issues.length} file(s) still incomplete…`, { tool: 'validate' })
         continue
       }
       // Cheap, token-free verification FIRST: a lost chunk, a page that does
@@ -3093,25 +3630,22 @@ export async function runAgent({
       // result. It costs no model tokens on the happy path.
       let quick
       try {
-        quick = await quickCheck({ projectId, plan: planDoc, files: plan })
+        quick = await quickCheck({
+          projectId,
+          plan: planDoc,
+          files: plan,
+          requiredSections: targetedEdit ? [] : requestedFeatureSections(task),
+        })
       } catch (error) {
         quick = { ok: false, problems: [`The automatic check could not run: ${error.message}`] }
       }
       if (!quick.ok && quickCheckRounds < MAX_QUICK_CHECK_ROUNDS && toolCalls < toolCallCap) {
         quickCheckRounds += 1
-        event_(
-          'gate',
-          `Automatic check found ${quick.problems.length} problem(s) — repair round ${quickCheckRounds} of ${MAX_QUICK_CHECK_ROUNDS}.`,
-          {
-            status: 'done',
-            tool: 'gate',
-            passed: false,
-            round: quickCheckRounds,
-            failures: quick.problems.slice(0, 12),
-          },
+        logNote(
+          `Automatic check found ${quick.problems.length} problem(s) — repair round ${quickCheckRounds}: ${quick.problems.join(' | ')}`,
+          { tool: 'validate' },
         )
         appendGuidance(messages, formatQuickCheck(quick))
-        note(`Fixing the automatic check failures — round ${quickCheckRounds}…`)
         continue
       }
       if (!quick.ok) {
@@ -3166,19 +3700,11 @@ export async function runAgent({
         if (connection && !connection.ok && connection.checked.length > 0) {
           if (connectionRounds < MAX_CONNECTION_ROUNDS && toolCalls < toolCallCap) {
             connectionRounds += 1
-            event_(
-              'gate',
-              `Link/style check found ${connection.problems.length} problem(s) — repair round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}.`,
-              {
-                status: 'done',
-                tool: 'gate',
-                passed: false,
-                round: connectionRounds,
-                failures: connection.problems.slice(0, 12),
-              },
+            logNote(
+              `Link/style check found ${connection.problems.length} problem(s) — repair round ${connectionRounds}: ${connection.problems.join(' | ')}`,
+              { tool: 'validate' },
             )
             appendGuidance(messages, formatConnectionReport(connection))
-            note(`Repairing the link/style problems — round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}…`)
             continue
           }
           if (tryAutoContinue('the link/style check still found problems')) {
@@ -3200,15 +3726,11 @@ export async function runAgent({
         } else if (visual && !visual.ok) {
           if (connectionRounds < MAX_CONNECTION_ROUNDS && toolCalls < toolCallCap) {
             connectionRounds += 1
-            event_('gate', `Visual check found ${visual.problems.length} problem(s) — repair round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}.`, {
-              status: 'done',
-              tool: 'gate',
-              passed: false,
-              round: connectionRounds,
-              failures: visual.problems.slice(0, 12),
-            })
+            logNote(
+              `Visual check found ${visual.problems.length} problem(s) — repair round ${connectionRounds}: ${visual.problems.join(' | ')}`,
+              { tool: 'validate' },
+            )
             appendGuidance(messages, formatVisualReport(visual))
-            note(`Repairing the rendering problems — round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}…`)
             continue
           }
           if (tryAutoContinue('the site still does not render like a styled site')) {
@@ -3242,20 +3764,11 @@ export async function runAgent({
           })
         } else if (gateRounds < MAX_GATE_ROUNDS && toolCalls < toolCallCap) {
           gateRounds += 1
-          event_(
-            'gate',
-            `Quality gate found ${gate.failures.length} problem(s) — repair round ${gateRounds} of ${MAX_GATE_ROUNDS}.`,
-            {
-              status: 'done',
-              tool: 'gate',
-              passed: false,
-              round: gateRounds,
-              failures: gate.failures.slice(0, 12),
-              checks: gate.checks.length,
-            },
+          logNote(
+            `Quality gate found ${gate.failures.length} problem(s) — repair round ${gateRounds}: ${gate.failures.join(' | ')}`,
+            { tool: 'validate' },
           )
           appendGuidance(messages, formatGateReport(gate, { maxRounds: MAX_GATE_ROUNDS }))
-          note(`Repair round ${gateRounds} of ${MAX_GATE_ROUNDS} — fixing the gate failures…`)
           continue
         } else {
           if (tryAutoContinue('the quality gate still found problems')) {
@@ -3264,17 +3777,6 @@ export async function runAgent({
             continue
           }
           gateFailure = gate
-          event_(
-            'gate',
-            `Quality gate still failing (${gate.failures.length} problem(s)) after ${gateRounds} repair round(s).`,
-            {
-              status: 'done',
-              tool: 'gate',
-              passed: false,
-              failures: gate.failures.slice(0, 12),
-              checks: gate.checks.length,
-            },
-          )
           // The gate failing after every repair round means the page is still
           // under-sized or unfinished. Never report that as a successful run.
           blockFinishing('the quality gate still fails', gate.failures, 'gate_failed')
@@ -3289,7 +3791,7 @@ export async function runAgent({
           messages,
           'Your last reply was cut off by the token limit. Finish your short summary now — at most two sentences — then stop.',
         )
-        note('The final summary was cut off — asking the model to finish it…')
+        logNote('The final summary was cut off — asking the model to finish it…', { tool: 'retry' })
         continue
       }
 
@@ -3482,7 +3984,7 @@ export async function runAgent({
               messages,
               `You have failed ${streak} edits on "${filePath}" in a row. STOP retrying the same old_string. Do this next: read_file { path: "${filePath}", outline: true }, then change the target section with edit_section { path: "${filePath}", id: "<section id>", content: "<the complete new section>" } — it needs no old text.`,
             )
-            note(`Switching edit strategy on ${filePath} after ${streak} failed edits…`)
+            logNote(`Switching edit strategy on ${filePath} after ${streak} failed edits…`, { tool: 'retry', file: filePath })
           }
         } else {
           failedEditsByFile.delete(filePath)
@@ -3496,15 +3998,28 @@ export async function runAgent({
         for (const change of outcome.fsChanges) queueAgentFsChange(projectId, change)
       }
       if (ruleBlock) {
+        agentLog({
+          scope: 'tool',
+          tool: name,
+          file: filePath,
+          message: `blocked by your rule: ${ruleBlock.rule} — ${String(outcome.text ?? '').slice(0, 1200)}`,
+        })
         event_('rule_blocked', `Blocked by your rule: ${truncate(ruleBlock.rule, 80)}`, {
           tool: name,
           args: { path: args.path, command: args.command },
           status: 'done',
           actionId,
-          result: truncate(outcome.text, 8000),
           rule: ruleBlock.rule,
         })
       } else {
+        if (failed) {
+          agentLog({
+            scope: 'tool',
+            tool: name,
+            file: filePath,
+            message: `ERROR ${String(outcome.text ?? '').slice(0, 1200)}`,
+          })
+        }
         event_(
           TOOL_LABELS[name] ?? 'thinking',
           failed
@@ -3515,7 +4030,7 @@ export async function runAgent({
             args: { path: args.path, command: args.command },
             status: failed ? 'error' : 'done',
             actionId,
-            result: truncate(outcome.text, 8000),
+            ...(failed ? {} : { result: truncate(outcome.text, 8000) }),
             ...(outcome.details ?? {}),
           },
         )
@@ -3648,26 +4163,21 @@ export async function runAgent({
         failureEscalation = 1
         forceNonStreamOnce = true
         appendGuidance(messages, guidance.nonStream)
-        note('Two tool calls in a row failed — retrying this turn without streaming…')
+        logNote('Two tool calls in a row failed — retrying this turn without streaming…', { tool: 'retry' })
         continue
       }
       if (failureEscalation === 1) {
         failureEscalation = 2
         forceNonStreamOnce = true
         appendGuidance(messages, guidance.corrective)
-        note('Still failing — sending the exact argument names for that tool and retrying…')
+        logNote('Still failing — sending the exact argument names for that tool and retrying…', { tool: 'retry' })
         continue
       }
       if (failureEscalation === 2) {
         failureEscalation = 3
         const previous = active
         if (advanceCandidate()) {
-          event_('fallback', `Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, {
-            status: 'done',
-            model,
-            provider: active.providerId,
-            tool: 'fallback',
-          })
+          logNote(`Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, { tool: 'fallback' })
           appendGuidance(messages, guidance.escalate)
           continue
         }
@@ -3676,27 +4186,27 @@ export async function runAgent({
         failureEscalation = 4
         const previous = active
         if (advanceCandidate()) {
-          event_('fallback', `Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, {
-            status: 'done',
-            model,
-            provider: active.providerId,
-            tool: 'fallback',
-          })
+          logNote(`Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, { tool: 'fallback' })
           appendGuidance(messages, guidance.escalate)
           continue
         }
         appendGuidance(messages, guidance.final)
-        note('One corrective message before giving up…')
+        logNote('One corrective message before giving up…', { tool: 'retry' })
         continue
       }
-      const failureError = new Error(
-        `Stopped: the agent's tool calls failed ${consecutiveFailures} turns in a row${
+      agentLog({
+        scope: 'agent',
+        tool: 'validate',
+        message: `the agent's tool calls failed ${consecutiveFailures} turns in a row${
           writtenThisRun.size > 0
             ? ` (${writtenThisRun.size} file(s) were written earlier in this run)`
             : ' and no files were written'
-        } after every automatic recovery attempt (non-streaming retry, corrective message, model fallback) was exhausted. Last error: ${lastFailureText || 'unknown'}`,
+        } after every recovery attempt. Last error: ${lastFailureText || 'unknown'}`,
+      })
+      const failureError = new Error(
+        'The agent could not make the change after several attempts. The files were left as they were — try a more specific request.',
       )
-      event_('error', failureError.message, { status: 'done', model, toolFailures: consecutiveFailures })
+      failureError.code = 'TOOL_FAILURE'
       persistSession('tool_failure')
       throw failureError
     }
@@ -3714,4 +4224,10 @@ export const __testables = {
   fileOutline,
   sliceLines,
   findSectionBlock,
+  resolveSectionRequest,
+  describeSections,
+  cssRuleRange,
+  documentIntegrityIssues,
+  hasSlotMarkers,
+  requestedFeatureSections,
 }

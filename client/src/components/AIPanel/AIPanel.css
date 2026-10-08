@@ -498,6 +498,14 @@
   color: var(--danger);
 }
 
+.ai-line.is-recovered {
+  opacity: 0.72;
+}
+
+.ai-line.is-recovered .ai-line-icon {
+  color: var(--success, #4ade80);
+}
+
 .ai-line-text {
   flex: 1 1 auto;
   min-width: 0;

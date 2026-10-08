@@ -1,12 +1,12 @@
 import { useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import ActivityBar from './components/ActivityBar/ActivityBar'
-import AIPanel from './components/AIPanel/AIPanel'
 import AuthModal from './components/Auth/AuthModal'
 import EditorArea from './components/Editor/EditorArea'
 import StorageNotice from './components/Notices/StorageNotice'
 import WorkspaceMissingNotice from './components/Notices/WorkspaceMissingNotice'
 import SettingsModal from './components/Settings/SettingsModal'
+import RightPanel from './components/RightPanel/RightPanel'
 import SidebarContainer from './components/Sidebar/SidebarContainer'
 import TerminalPanel from './components/Terminal/TerminalPanel'
 import Toast from './components/Toast/Toast'
@@ -16,11 +16,13 @@ import { fetchApiKeys, fetchKeyUsage } from './features/aiSlice'
 import { clearExplorerHistory } from './features/explorerHistorySlice'
 import { clearProjectTrees } from './features/projectsSlice'
 import { clearWorkspace } from './features/fileSystemSlice'
+import { resetSidebarTerminal } from './features/sidebarTerminalSlice'
 import { fetchAvailableShells, resetTerminals } from './features/terminalSlice'
 import { clearTsConfig } from './features/tsconfigSlice'
 import { loadWorkspaceTsConfig } from './features/workspaceThunks'
 import {
   AI_PANEL_WIDTH_KEY,
+  RIGHT_PANEL_TAB_KEY,
   SIDEBAR_WIDTH_KEY,
   resetStorageNotice,
   setAiPanelWidth,
@@ -42,6 +44,7 @@ export default function App() {
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
   const sidebarWidth = useSelector((state) => state.ui.sidebarWidth)
   const aiPanelWidth = useSelector((state) => state.ui.aiPanelWidth)
+  const rightPanelTab = useSelector((state) => state.ui.rightPanelTab)
   const isTerminalOpen = useSelector((state) => state.terminal.isTerminalPanelOpen)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
@@ -125,6 +128,7 @@ export default function App() {
     dispatch(clearWorkspace())
     dispatch(clearProjectTrees())
     dispatch(resetTerminals())
+    dispatch(resetSidebarTerminal())
     clearWorkspaceRef()
     clearFileContentCache()
   }, [isAuthenticated, dispatch])
@@ -140,6 +144,12 @@ export default function App() {
       localStorage.setItem(AI_PANEL_WIDTH_KEY, String(aiPanelWidth))
     } catch {}
   }, [aiPanelWidth])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(RIGHT_PANEL_TAB_KEY, rightPanelTab)
+    } catch {}
+  }, [rightPanelTab])
 
   function startSidebarResize(event) {
     event.preventDefault()
@@ -223,7 +233,7 @@ export default function App() {
           className={`panel-slot panel-slot-ai ${isAIPanelOpen ? 'is-open' : ''}`}
           style={{ width: isAIPanelOpen ? aiPanelWidth : 0 }}
         >
-          <AIPanel />
+          <RightPanel />
           {isAIPanelOpen && (
             <div
               className="ai-resize-handle"

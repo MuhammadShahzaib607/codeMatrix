@@ -15,6 +15,15 @@ import { WORKSPACES_ROOT } from './src/utils/workspaceManager.js'
 
 fs.mkdirSync(WORKSPACES_ROOT, { recursive: true })
 
+// node-pty's Windows ConPTY kill path fires a helper and, if the shell already
+// exited, throws inside a fire-and-forget .then(). node-pty exposes no hook for
+// it, so an unhandled rejection there would otherwise take the whole server
+// down. Keep the process alive and log it instead.
+process.on('unhandledRejection', (reason) => {
+  const message = reason?.stack ?? reason?.message ?? String(reason)
+  console.error(`[server] unhandled rejection (kept alive): ${message}`)
+})
+
 const server = http.createServer(app);
 
 // Fail gracefully on listen errors instead of dumping an unhandled stack trace.

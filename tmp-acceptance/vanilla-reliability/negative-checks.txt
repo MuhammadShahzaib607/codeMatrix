@@ -1,0 +1,7 @@
+no-h1 rejected: true | "index.html" must contain exactly one <h1> (found 0).
+missing-footer rejected: true | matches footer: true
+leftover-slot rejected: true | matches slot: true
+missing named feature rejected: true | The request names pricing, but no page has a pricing section. Add <section class="section" id="pricing" data-section="pricing"> with real content (use edit_section, or compose_page for a new build).
+bad footer + empty card caught: true
+  contrast problem: true
+  empty-box problem: true

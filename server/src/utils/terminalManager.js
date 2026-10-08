@@ -18,6 +18,7 @@ try {
 }
 
 const sessions = new Map()
+const detachTimers = new Map()
 
 export function isTerminalAvailable() {
   return pty !== null && typeof pty.spawn === 'function'
@@ -144,37 +145,46 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
       cols: Number(options.cols) || 80,
       rows: Number(options.rows) || 24,
       cwd,
-      env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
-      // WINDOWS ONLY: force the older winpty backend instead of ConPTY.
-      // node-pty's ConPTY kill path does, inside a fire-and-forget promise:
-      //     this._getConsoleProcessList().then((list) => list.forEach(...))
-      // getConsoleProcessList() forks a helper that reports the console's
-      // process ids. If the shell has ALREADY exited by the time the helper
-      // answers, the message carries no `consoleProcessList`, so `.forEach`
-      // throws inside a .then() — an unhandled rejection, which Node treats as
-      // fatal and kills the whole server. winpty has no such path (it calls the
-      // synchronous native getProcessList), so we avoid that crash entirely.
-      // Linux/macOS keep node-pty's defaults.
-      ...(process.platform === 'win32' ? { useConpty: false } : {}),
+      env: {
+        ...process.env,
+        TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
+        LANG: process.env.LANG || 'en_US.UTF-8',
+        LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
+      },
+      // WINDOWS ONLY: use ConPTY rather than the legacy winpty backend. winpty
+      // does not pass through the escape sequences, arrow/Tab/Esc keys and mouse
+      // reporting that full-screen TUIs (freebuff, vim, htop) need, so ConPTY is
+      // required for them to be usable. Its known quirk — a kill-path helper
+      // rejecting after the shell already exited — is neutralised by the
+      // process-wide unhandledRejection guard in server.js.
+      ...(process.platform === 'win32' ? { useConpty: true } : {}),
     })
   } catch (error) {
     throw new ApiError(500, `Could not start a shell process: ${error.message}`, 'SPAWN_FAILED')
   }
 
-  sessions.set(terminalId, {
+  const session = {
     terminalId,
     projectId,
+    socket,
     socketId: socket.id,
     ptyProcess,
-  })
+  }
+  sessions.set(terminalId, session)
 
+  // Output always goes to the session's CURRENT socket, which a reconnect can
+  // swap (see attachTerminalSession) without touching the running pty.
   ptyProcess.onData((data) => {
-    if (socket.connected) socket.emit('terminal:output', { terminalId, data })
+    const target = sessions.get(terminalId)?.socket
+    if (target?.connected) target.emit('terminal:output', { terminalId, data })
   })
 
   ptyProcess.onExit(({ exitCode, signal }) => {
     sessions.delete(terminalId)
-    if (socket.connected) socket.emit('terminal:exit', { terminalId, exitCode, signal })
+    if (session.socket?.connected) {
+      session.socket.emit('terminal:exit', { terminalId, exitCode, signal })
+    }
   })
 
   socket.emit('terminal:ready', {
@@ -191,6 +201,44 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
     shell: shellInfo.label,
     shellId: shellInfo.id,
     pid: ptyProcess.pid,
+  }
+}
+
+/**
+ * Re-binds an existing pty to a new socket (a reconnect reuses the SAME
+ * terminalId). Returns false when the session no longer exists, so the caller
+ * can spawn a fresh one instead.
+ */
+export function attachTerminalSession(terminalId, socket) {
+  const session = sessions.get(terminalId)
+  if (!session) return false
+  const timer = detachTimers.get(terminalId)
+  if (timer) {
+    clearTimeout(timer)
+    detachTimers.delete(terminalId)
+  }
+  session.socket = socket
+  session.socketId = socket.id
+  return true
+}
+
+/**
+ * A socket dropped: keep its ptys alive for a grace period so a transient
+ * reconnect reattaches them with their scrollback intact, and only kill what
+ * was never reclaimed.
+ */
+export function detachTerminalsForSocket(socketId, graceMs = 120000) {
+  for (const [terminalId, session] of sessions) {
+    if (session.socketId !== socketId) continue
+    const existing = detachTimers.get(terminalId)
+    if (existing) clearTimeout(existing)
+    const timer = setTimeout(() => {
+      detachTimers.delete(terminalId)
+      const current = sessions.get(terminalId)
+      if (current && current.socketId === socketId) killTerminal(terminalId)
+    }, graceMs)
+    timer.unref?.()
+    detachTimers.set(terminalId, timer)
   }
 }
 
@@ -227,6 +275,11 @@ export function resizeTerminal(terminalId, cols, rows) {
 export function killTerminal(terminalId) {
   const session = sessions.get(terminalId)
   if (!session) return false
+  const timer = detachTimers.get(terminalId)
+  if (timer) {
+    clearTimeout(timer)
+    detachTimers.delete(terminalId)
+  }
   // Delete first, so the session is gone even when kill() throws below.
   sessions.delete(terminalId)
   try {

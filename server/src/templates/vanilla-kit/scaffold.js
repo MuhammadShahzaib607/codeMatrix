@@ -55,6 +55,67 @@ function normalizePages(pages) {
   return list
 }
 
+export const DOCUMENT_COMMENT = `  <!-- ONE DOCUMENT PER FILE: the header above and the footer below are written
+       exactly ONCE. Every section of this page belongs INSIDE the main element,
+       back to back, in the slot order below. Replace each slot marker with one
+       section block and nothing else. Never re-emit a closing main, footer or
+       document tag: each of them already exists exactly once, at the end. -->`
+
+export const DOCUMENT_COMMENT_PATTERN = /<!--[^>]*ONE DOCUMENT PER FILE[\s\S]*?-->/g
+
+export function stripTemplateComments(text) {
+  return String(text ?? '').replace(DOCUMENT_COMMENT_PATTERN, '')
+}
+
+function renderFooterColumn(column) {
+  const title = String(column?.title ?? '').trim()
+  if (column?.contact) {
+    const lines = (Array.isArray(column.lines) ? column.lines : [])
+      .map((line) => `          <li>${line}</li>`)
+      .join('\n')
+    return `      <div class="footer-col">
+        <h2 class="footer-col__title">${title}</h2>
+        <ul class="footer-contact">
+${lines}
+        </ul>
+      </div>`
+  }
+  const links = (Array.isArray(column?.links) ? column.links : [])
+    .map((link) => `          <li><a class="footer-link" href="${link.href}">${link.label}</a></li>`)
+    .join('\n')
+  return `      <div class="footer-col">
+        <h2 class="footer-col__title">${title}</h2>
+        <ul class="footer-col__list">
+${links}
+        </ul>
+      </div>`
+}
+
+function defaultFooterColumns({ href, pages, navEntries, brand }) {
+  const home = pages[0]?.file ?? 'index.html'
+  const exploreLinks = navEntries.map((entry) => ({ label: entry.label, href: entry.href }))
+  return [
+    renderFooterColumn({ title: 'Explore', links: exploreLinks }),
+    renderFooterColumn({
+      title: 'Services',
+      links: [
+        { label: 'Web design', href: `${href(home)}#services` },
+        { label: 'Development', href: `${href(home)}#services` },
+        { label: 'SEO and content', href: `${href(home)}#services` },
+      ],
+    }),
+    renderFooterColumn({
+      title: 'Contact',
+      contact: true,
+      lines: [
+        `hello@${String(brand).toLowerCase().replace(/[^a-z0-9]+/g, '')}.com`,
+        '+44 20 7946 0123',
+        '14 Bridge Street, London',
+      ],
+    }),
+  ].join('\n')
+}
+
 export function initialMark(brand) {
   const words = String(brand ?? '')
     .split(/[^A-Za-z0-9]+/)
@@ -72,7 +133,17 @@ export function normalizeScaffoldInput(input) {
   return { brand, tagline, theme, pages }
 }
 
-export function buildPageShell({ brand, tagline, theme, pages, page, description }) {
+export function buildPageShell({
+  brand,
+  tagline,
+  theme,
+  pages,
+  page,
+  description,
+  bodyHtml = null,
+  navItems = null,
+  footerColumns = null,
+}) {
   const href = (target) => relativeHref(page.file, target)
   const isLegalPage = (entry) => LEGAL_PAGE.test(entry.file) || LEGAL_PAGE.test(entry.navLabel)
   const primaryPages = pages.filter((entry) => !isLegalPage(entry))
@@ -82,18 +153,28 @@ export function buildPageShell({ brand, tagline, theme, pages, page, description
     .map((entry) => `<a class="footer-link" href="${href(entry.file)}">${entry.navLabel}</a>`)
     .join('\n        ')
 
-  const navLinks = navPages
-    .map((entry) => {
-      const isCurrent = entry.file === page.file
-      return `          <li class="nav-item"><a class="nav-link${isCurrent ? ' is-active' : ''}" href="${href(entry.file)}"${isCurrent ? ' aria-current="page"' : ''}>${entry.navLabel}</a></li>`
-    })
+  const navEntries = Array.isArray(navItems)
+    ? navItems
+    : navPages.map((entry) => ({
+        label: entry.navLabel,
+        href: href(entry.file),
+        current: entry.file === page.file,
+      }))
+  const navLinks = navEntries
+    .map(
+      (entry) =>
+        `          <li class="nav-item"><a class="nav-link${entry.current ? ' is-active' : ''}" href="${entry.href}"${entry.current ? ' aria-current="page"' : ''}>${entry.label}</a></li>`,
+    )
     .join('\n')
 
   const contactPage = pages.find((entry) => /contact/i.test(entry.file))
   const ctaHref = contactPage?.file ?? pages[0]?.file ?? '#main'
   const slots = page.sections.map((section) => `      <!-- SLOT:${section} -->`).join('\n')
+  const mainContent = bodyHtml != null ? bodyHtml : slots
   const descriptionText = String(description ?? '').trim() || `${tagline} — ${brand}.`
-
+  const footerGrid = Array.isArray(footerColumns)
+    ? footerColumns.map((column) => renderFooterColumn(column)).join('\n')
+    : defaultFooterColumns({ href, pages, navEntries, brand })
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -128,13 +209,9 @@ ${navLinks}
       </nav>
     </div>
   </header>
-  <!-- ONE DOCUMENT PER FILE: the header above and the footer below are written
-       exactly ONCE. Every section of this page belongs INSIDE the main element,
-       back to back, in the slot order below. Replace each slot marker with one
-       section block and nothing else. Never re-emit a closing main, footer or
-       document tag: each of them already exists exactly once, at the end. -->
+${bodyHtml == null ? DOCUMENT_COMMENT : ''}
   <main id="main">
-${slots}
+${mainContent}
   </main>
   <footer class="site-footer">
     <div class="container site-footer__grid">
@@ -148,28 +225,7 @@ ${slots}
           ${socialLinks(brand)}
         </div>
       </div>
-      <div class="footer-col">
-        <h2 class="footer-col__title">Explore</h2>
-        <ul class="footer-col__list">
-${navPages.map((entry) => `          <li><a class="footer-link" href="${href(entry.file)}">${entry.navLabel}</a></li>`).join('\n')}
-        </ul>
-      </div>
-      <div class="footer-col">
-        <h2 class="footer-col__title">Services</h2>
-        <ul class="footer-col__list">
-          <li><a class="footer-link" href="${href(pages[0]?.file ?? 'index.html')}#services">Web design</a></li>
-          <li><a class="footer-link" href="${href(pages[0]?.file ?? 'index.html')}#services">Development</a></li>
-          <li><a class="footer-link" href="${href(pages[0]?.file ?? 'index.html')}#services">SEO and content</a></li>
-        </ul>
-      </div>
-      <div class="footer-col">
-        <h2 class="footer-col__title">Contact</h2>
-        <ul class="footer-contact">
-          <li>hello@${String(brand).toLowerCase().replace(/[^a-z0-9]+/g, '')}.com</li>
-          <li>+44 20 7946 0123</li>
-          <li>14 Bridge Street, London</li>
-        </ul>
-      </div>
+${footerGrid}
     </div>
     <div class="container site-footer__bottom">
       <p class="footer-note">&copy; <span data-year>2026</span> ${brand}. All rights reserved.</p>

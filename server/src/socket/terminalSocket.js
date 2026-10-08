@@ -1,9 +1,10 @@
 import {
+  attachTerminalSession,
   createTerminalSession,
+  detachTerminalsForSocket,
   getTerminalUnavailableReason,
   isTerminalAvailable,
   killTerminal,
-  killTerminalsForSocket,
   resizeTerminal,
   writeToTerminal,
 } from '../utils/terminalManager.js'
@@ -23,6 +24,13 @@ export default function registerTerminalSocket(io) {
           throw new Error(
             getTerminalUnavailableReason() || 'Terminal is unavailable on this server.',
           )
+        }
+
+        // A reconnecting client re-uses its terminalId: reattach the SAME pty
+        // (and its scrollback) instead of spawning a second shell.
+        if (attachTerminalSession(terminalId, socket)) {
+          acknowledge?.({ ok: true, terminalId, reattached: true })
+          return
         }
 
         // No project imported -> spawn in a throwaway scratch workspace so the
@@ -58,8 +66,10 @@ export default function registerTerminalSocket(io) {
       if (terminalId) killTerminal(terminalId)
     })
 
+    // Keep ptys alive for a grace period so a reconnect reattaches them; the
+    // grace timer kills anything that is never reclaimed.
     socket.on('disconnect', () => {
-      killTerminalsForSocket(socket.id)
+      detachTerminalsForSocket(socket.id)
     })
   })
 }

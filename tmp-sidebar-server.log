@@ -1,0 +1,545 @@
+[db] connected to MongoDB
+[workspace] folder migration: checked 1, renamed 0
+[server] listening on http://localhost:4000
+[server] health check: http://localhost:4000/api/health
+[server] workspaces root: D:\Projects\CodeMatrix\server\workspaces
+[server] NOTE: workspace files on disk are ephemeral on the free tier.
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+[watcher] container: 1 fs event(s) -> 1 treeChanged
+[watcher] container: 1 fs event(s) -> 1 treeChanged
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+[watcher] container: 1 fs event(s) -> 1 treeChanged
+[watcher] container: 1 fs event(s) -> 1 treeChanged
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (D:\Projects\CodeMatrix\server\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1871:14)
+    at Object..js (node:internal/modules/cjs/loader:2002:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v24.18.0
+[watcher] 876d3834-e508-49b3-bc0b-9887c82ce6d6: 9 fs event(s) suppressed (own API change)
+[watcher] container: 3 fs event(s) -> 1 treeChanged
+[watcher] scratch-6ac206d781c7e207307dab35: 7 fs event(s) -> 1 treeChanged (1ms)
+[watcher] container: 9 fs event(s) -> 1 treeChanged
+[agent] [agent] 2026-10-06 08:43:48 tool=validate Verifying the plan — 2 file(s) still incomplete…
+[agent] [tool] 2026-10-06 08:44:13 tool=edit_file file=index.html ERROR Error: old_string was not found in "index.html", so nothing was changed. The closest match is at line 41: 39 | document tag: each of them already exists exactly once, at the end. --> 40 | <main id="main"> 41 | <!-- SLOT:hero --> 42 | </main> 43 | <footer class="site-footer"> Empty slots still in the file: <!-- SLOT:hero -->. Do NOT send the same text again — use edit_section { path, id, content } to replace the section by its id, or read_file { path, outline: true } first and copy the exact lines.
+[agent] [agent] 2026-10-06 08:44:13 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:44:13 tool=edit_file file=index.html ERROR Error: old_string was not found in "index.html", so nothing was changed. The closest match is at line 41: 39 | document tag: each of them already exists exactly once, at the end. --> 40 | <main id="main"> 41 | <!-- SLOT:hero --> 42 | </main> 43 | <footer class="site-footer"> Empty slots still in the file: <!-- SLOT:hero -->. Do NOT send the same text again — use edit_section { path, id, content } to replace the section by its id, or read_file { path, outline: true } first and copy the exact lines.
+[agent] [tool] 2026-10-06 08:44:13 tool=edit_file file=index.html ERROR Error: old_string was not found in "index.html", so nothing was changed. The closest match is at line 41: 39 | document tag: each of them already exists exactly once, at the end. --> 40 | <main id="main"> 41 | <!-- SLOT:hero --> 42 | </main> 43 | <footer class="site-footer"> Empty slots still in the file: <!-- SLOT:hero -->. Do NOT send the same text again — use edit_section { path, id, content } to replace the section by its id, or read_file { path, outline: true } first and copy the exact lines.
+[agent] [agent] 2026-10-06 08:44:13 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:44:13 tool=edit_file file=index.html ERROR Error: old_string was not found in "index.html", so nothing was changed. The closest match is at line 41: 39 | document tag: each of them already exists exactly once, at the end. --> 40 | <main id="main"> 41 | <!-- SLOT:hero --> 42 | </main> 43 | <footer class="site-footer"> Empty slots still in the file: <!-- SLOT:hero -->. Do NOT send the same text again — use edit_section { path, id, content } to replace the section by its id, or read_file { path, outline: true } first and copy the exact lines.
+[agent] [tool] 2026-10-06 08:44:17 tool=edit_section file=index.html ERROR Error: no element with id/data-section "hero" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:44:20 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:44:20 tool=edit_section file=index.html ERROR Error: no element with id/data-section "about" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:44:20 tool=retry Two tool calls in a row failed — retrying this turn without streaming…
+[agent] [agent] 2026-10-06 08:44:25 tool=budget Token budget at 73% — telling the agent to wrap up…
+[agent] [tool] 2026-10-06 08:44:25 tool=edit_section file=index.html ERROR Error: no element with id/data-section "skills" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:44:29 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:44:29 tool=edit_section file=index.html ERROR Error: no element with id/data-section "projects" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:44:29 tool=retry Two tool calls in a row failed — retrying this turn without streaming…
+[agent] [tool] 2026-10-06 08:44:33 tool=edit_section file=index.html ERROR Error: no element with id/data-section "experience" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:44:38 tool=retry Continuing automatically (1 of 5) — an edit was still failing when the budget was reached.
+[agent] [agent] 2026-10-06 08:44:44 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:44:44 tool=edit_section file=index.html ERROR Error: no element with id/data-section "contact" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:44:45 tool=budget Token budget at 97% — telling the agent to wrap up…
+[agent] [agent] 2026-10-06 08:44:51 tool=retry Continuing automatically (2 of 5) — the token budget was spent before the files were finished.
+[agent] [agent] 2026-10-06 08:44:55 tool=budget Token budget at 87% — telling the agent to wrap up…
+[agent] [tool] 2026-10-06 08:44:55 tool=edit_section file=index.html ERROR Error: no element with id/data-section "hero" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:44:58 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:44:58 tool=edit_section file=index.html ERROR Error: no element with id/data-section "about" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:44:58 tool=retry Two tool calls in a row failed — retrying this turn without streaming…
+[agent] [agent] 2026-10-06 08:45:03 tool=retry Continuing automatically (3 of 5) — the token budget was spent before the files were finished.
+[agent] [agent] 2026-10-06 08:45:09 tool=budget Token budget at 89% — telling the agent to wrap up…
+[agent] [tool] 2026-10-06 08:45:09 tool=edit_section file=index.html ERROR Error: no element with id/data-section "skills" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:45:14 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:45:14 tool=edit_section file=index.html ERROR Error: no element with id/data-section "projects" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:45:14 tool=retry Two tool calls in a row failed — retrying this turn without streaming…
+[agent] [agent] 2026-10-06 08:45:18 tool=retry Continuing automatically (4 of 5) — the token budget was spent before the files were finished.
+[agent] [agent] 2026-10-06 08:45:22 tool=budget Token budget at 91% — telling the agent to wrap up…
+[agent] [tool] 2026-10-06 08:45:22 tool=edit_section file=index.html ERROR Error: no element with id/data-section "experience" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:45:29 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:45:29 tool=edit_section file=index.html ERROR Error: no element with id/data-section "contact" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[agent] [agent] 2026-10-06 08:45:29 tool=retry Two tool calls in a row failed — retrying this turn without streaming…
+[agent] [agent] 2026-10-06 08:45:35 tool=retry Continuing automatically (5 of 5) — the token budget was spent before the files were finished.
+[agent] [agent] 2026-10-06 08:45:39 tool=budget Token budget at 100% — telling the agent to wrap up…
+[agent] [tool] 2026-10-06 08:45:39 tool=edit_section file=index.html ERROR Error: no element with id/data-section "hero" was found in "index.html", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "index.html", outline: true } shows the same list): index.html — 93 line(s), 6069 char(s) 16 | <header .site-header> 27 | <nav #site-nav> 40 | <main #main> 43 | <footer .site-footer> 59 | <h2 .footer-col__title> 65 | <h2 .footer-col__title> 73 | <h2 .footer-col__title> Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.
+[watcher] scratch-6ac206d781c7e207307dab35: 1 fs event(s) -> 1 treeChanged (1ms)
+[watcher] container: 1 fs event(s) -> 1 treeChanged
+[watcher] scratch-6ac206d781c7e207307dab35: 2 fs event(s) -> 1 treeChanged (0ms)
+[watcher] container: 2 fs event(s) -> 1 treeChanged
+[agent] [tool] 2026-10-06 08:50:02 tool=edit_file file=index.html ERROR Error: edit_file needs a non-empty "new_string" — the real markup that replaces "<footer class="site-footer"> <div class="container site- [… 3657 more characters truncated …]".
+[agent] [agent] 2026-10-06 08:50:02 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:50:02 tool=edit_file file=index.html ERROR Error: edit_file needs a non-empty "new_string" — the real markup that replaces "<nav class="site-nav" id="site-nav" aria-label="Main navigat [… 265 more characters truncated …]".
+[watcher] container: 1 fs event(s) -> 1 treeChanged
+[watcher] scratch-6ac206d781c7e207307dab35: 1 fs event(s) -> 1 treeChanged (1ms)
+[agent] [tool] 2026-10-06 08:50:21 tool=edit_file file=index.html ERROR Error: edit_file needs a non-empty "new_string" — the real markup that replaces "<footer class="site-footer"> <div class="container site- [… 3657 more characters truncated …]".
+[agent] [agent] 2026-10-06 08:50:21 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:50:21 tool=edit_file file=index.html ERROR Error: edit_file needs a non-empty "new_string" — the real markup that replaces "<nav class="site-nav" id="site-nav" aria-label="Main navigat [… 265 more characters truncated …]".
+[watcher] scratch-6ac206d781c7e207307dab35: 1 fs event(s) -> 1 treeChanged (1ms)
+[watcher] container: 1 fs event(s) -> 1 treeChanged
+[agent] [agent] 2026-10-06 08:50:36 tool=budget Token budget at 72% — telling the agent to wrap up…
+[agent] [tool] 2026-10-06 08:50:36 tool=edit_file file=index.html ERROR Error: edit_file needs a non-empty "new_string" — the real markup that replaces "<footer class="site-footer"> <div class="container site- [… 3657 more characters truncated …]".
+[agent] [agent] 2026-10-06 08:50:36 tool=retry file=index.html Switching edit strategy on index.html after 2 failed edits…
+[agent] [tool] 2026-10-06 08:50:36 tool=edit_file file=index.html ERROR Error: edit_file needs a non-empty "new_string" — the real markup that replaces "<nav class="site-nav" id="site-nav" aria-label="Main navigat [… 265 more characters truncated …]".
+[watcher] scratch-6ac206d781c7e207307dab35: 1 fs event(s) -> 1 treeChanged (1ms)
+[watcher] container: 1 fs event(s) -> 1 treeChanged
+[watcher] scratch-6ac206d781c7e207307dab35: 5 fs event(s) -> 1 treeChanged (1ms)
+[watcher] container: 5 fs event(s) -> 1 treeChanged
+[watcher] scratch-6ac206d781c7e207307dab35: 1 fs event(s) -> 1 treeChanged (1ms)
+[watcher] container: 1 fs event(s) -> 1 treeChanged

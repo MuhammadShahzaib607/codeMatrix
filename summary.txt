@@ -8885,3 +8885,229 @@ OPEN ITEMS
     when a file is selected (consistent with New File / New Folder); the literal
     spec only mentioned "the container root, or the selected folder".
 ================================================================================
+================================================================================
+AI Code Editor — Port-4000 Shutdown Fix, Explorer Drag/Drop Move/Copy, 5 More
+               Terrible Themes
+        (2026-10-08)
+================================================================================
+
+STATUS: complete. Client oxlint 0 warnings / 0 errors (89 files), vite build OK,
+        node --check OK on every changed server file. Verified live against the
+        real server on :4000 and headless Chrome on :5173.
+
+--------------------------------------------------------------------------------
+TASK 1 — PORT 4000 CRASH LOOP
+--------------------------------------------------------------------------------
+DIAGNOSIS (measured, not guessed)
+  Port 4000 was held by PID 25428, an ORPHANED `node server.js` (parent: a
+  bash.exe one-liner from an earlier audit harness that ran
+  `(node server.js > ../tmp-audit-server.log 2>&1 &)` — a detached background
+  launch). The real dev runner is `npm run dev` = `node --watch server.js`
+  (started by npm, child of cmd.exe). Because the orphan never exited, the
+  watcher's child hit EADDRINUSE on every start and printed
+  "Failed running 'server.js'. Waiting for file changes before restarting...".
+  `predev` ran `kill-port 4000 || true` only at the START of `npm run dev`,
+  never on a watcher restart, and kill-port terminates ANY holder — including
+  unrelated programs — which the request forbids.
+
+FIX
+  server/src/utils/portOwner.js (NEW) — findListeningPid(port) (netstat -ano on
+    Windows, lsof on POSIX), describeProcess(pid), killProcess(pid),
+    isCodeMatrixServer(port) (probes GET /api/health and requires the app's
+    { status:'ok', database, terminal } shape).
+  server/scripts/freePort.js (NEW) — the predev script. Frees port 4000 ONLY
+    when the holder answers the CodeMatrix health probe; when there is no
+    listener it reports the port free; otherwise it prints ONE clear line naming
+    the PID and the process and exits non-zero WITHOUT killing anything.
+  server/package.json — predev is now `node scripts/freePort.js` (kill-port left
+    as a dependency, unused, so the lockfile stays in sync).
+  server/server.js —
+    * graceful shutdown on SIGINT, SIGTERM and SIGBREAK: killAllTerminals(),
+      await closeAllWatchers(), server.closeAllConnections(), io.close(),
+      server.close(exitNow), plus a 3s force-exit fallback and a synchronous
+      killAllTerminals() on the 'exit' event. A re-entry guard stops a second
+      signal from running it twice.
+    * EADDRINUSE is now ONE clear line naming the holder PID and the suggestion
+      ("Run \"npm run predev\" in server/ ...") followed by process.exit(1).
+      An in-process retry was tried first and DROPPED after a measured failure:
+      on Windows, re-listen() after a failed bind never sets server.listening, so
+      the retry became a ~3s log storm (captured live).
+
+NOTE ON PTY CHILDREN: terminal ptys are spawned by node-pty; Node marks its
+listening socket non-inheritable, and shutdown kills every pty (killAllTerminals)
+before closing the HTTP server, so a spawned shell cannot keep holding the
+listening handle.
+
+VERIFICATION (live, Windows)
+  - Orphan case: `node scripts/freePort.js` identified PID 25428 via the health
+    probe, stopped it, and the watcher's next start reclaimed the port.
+  - Unrelated case: an unrelated HTTP server on 4001 -> predev printed
+    "[predev] Port 4001 is held by PID ... (node), which is not a CodeMatrix
+    server. Leaving it alone." and did NOT kill it (still answered after).
+  - Start while a CodeMatrix server is running: `npm run dev` printed
+    "[predev] Stopping stale CodeMatrix server on port 4000 (PID ...)." then
+    "[predev] Port 4000 is now free." then listened ONCE with no EADDRINUSE.
+  - Second server while one holds the port: one EADDRINUSE line naming the
+    holder, then a clean exit(1) — no crash loop.
+  - File-change restart: `node --watch` restarted cleanly ("Restarting
+    'server.js'") and bound once, no EADDRINUSE. Stopping the dev tree freed
+    port 4000.
+
+--------------------------------------------------------------------------------
+TASK 2 — DRAG-AND-DROP MOVE / COPY IN THE EXPLORER
+--------------------------------------------------------------------------------
+SERVER
+  workspaceManager.js  movePathWithFallback(from, to, isDirectory) — atomic
+    fs.rename when possible; for folders it reuses renameFolderWithRetry (retry
+    ladder + copy fallback); across devices (EXDEV) it copies then removes.
+    renameFolderWithRetry now sends EXDEV straight to the copy fallback instead
+    of throwing.
+  safeDelete.js  transferFailureError(error, absolutePath, displayName) — the
+    SAME short readable messages the delete path uses, including
+    "A terminal is running inside this folder. Close it or run cd .. and try
+    again." for EBUSY/EPERM when a terminal cwd sits inside the moved folder.
+  workspace.controller.js  moveContainerEntryAt — authenticated, derives the
+    owner from the JWT, uses resolveContainerOwnerPath for path-traversal
+    protection, rejects moving a folder into itself/its own descendant, treats a
+    drop onto the current parent as a no-op, forbids moving a top-level project
+    folder into another folder, resolves name conflicts with uniqueNameInFolder
+    ("name (copy).ext", nothing overwritten), suppresses both the source and
+    target watchers to avoid an event flood, and uses async fs throughout.
+  workspace.routes.js  POST /api/workspace/container/move (inside protect).
+
+CLIENT
+  utils/dropFiles.js      EXPLORER_DRAG_TYPE, isExplorerDrag (distinguishes an
+    internal Explorer drag from an external OS file drag) and isCopyModifier
+    (Ctrl / Cmd / Alt).
+  utils/explorerTransfer.js (NEW)  transferTargetFolderPath, isTopLevelFolder,
+    isInvalidTransferTarget (self / descendant / top-level-folder rules) and
+    uniqueChildName (client-side conflict naming matching the server).
+  features/fileSystemSlice.js  moveNode and copyNode reducers (optimistic tree
+    relocation / clone).
+  features/workspaceThunks.js  transferWorkspaceEntry — optimistic UI first,
+    server call second, rollback (refreshWorkspaceTree + remapPaths) on failure;
+    a move remaps tabs/buffers only after success so unsaved edits survive.
+  components/Sidebar/FileTree.jsx  rows are draggable; row and root-area
+    dragover/drop handle internal drags; the dragged row is dimmed
+    (.is-dragging), the target folder highlights (.is-drop-target), the empty
+    area below the tree highlights (.file-tree.is-root-drop-target), a collapsed
+    folder auto-expands after ~700ms of hover, and invalid targets set
+    dropEffect 'none' (not-allowed cursor). External file drags take the
+    unchanged upload path.
+  components/Sidebar/Sidebar.jsx  handleTransferEntry — records undo/redo
+    ('move' / 'duplicate'), shows a toast, and skips a drop onto the current
+    parent.
+  services/api.js  moveContainerPath.
+  components/Sidebar/UploadDrop.css  dragged-row dim + root highlight styles.
+  Multi-selection note: the Explorer has a SINGLE selected row, so per the
+  request this is single-item drag only; no selection features were added.
+
+VERIFICATION (headless Chrome + real server; 21/21 checks)
+  - drag a file into a nested folder; from the nested folder to the root; a
+    folder into a sibling project folder; a folder into its own child is
+    rejected; each result appears exactly once, live, with no page reload;
+  - Ctrl+drop copies and a name conflict becomes "readme (copy).md" without
+    overwriting the original;
+  - an EXTERNAL file drop still uploads;
+  - an open editor tab follows a moved file without duplicating;
+  - Ctrl+Z (Explorer undo) restores a drag move;
+  - no uncaught page exceptions.
+  Server move suite (12/12): 401 without a token; file into a nested folder; to
+  the container root; into a sibling project; folder into a sibling; folder into
+  its own child rejected 400; current-parent no-op; top-level project folder move
+  rejected 400; conflict -> "(copy)"; traversal rejected 400; moved entries
+  appear exactly once.
+
+--------------------------------------------------------------------------------
+TASK 3 — FIVE MORE DELIBERATELY BAD THEMES
+--------------------------------------------------------------------------------
+client/src/utils/themes.js  five specs appended AFTER the existing 5 terrible
+  ones, same data-driven buildTheme path (full CSS palette, Monaco base +
+  monacoColors, 5 preview swatches, xterm via terminalThemes.js):
+    Expired Mustard (mustard / vomit-beige / rust),
+    Neon Hospital (sickly mint / surgical blue / hot orange),
+    Toxic Grape Soda (acid purple / slime green / rust red),
+    Disco Sunburn (burnt orange / magenta / electric blue),
+    Cartoon Overdose (childish primaries, candy/bubblegum).
+  Layout, spacing, fonts and component structure are untouched; only colours
+  differ. THEMES.length is now 58; index 47 is still high-contrast-light and the
+  previous 5 terrible themes keep their exact positions/order.
+
+VERIFICATION
+  - contrast checks mirroring server/tmp-theme-verify.mjs: every one of the 10
+    terrible themes keeps primary text >= 4.5:1, secondary text >= 3:1, accent
+    button text >= 3:1, Monaco selection visible, cursor != background, folder/
+    file icons differ from the sidebar background (all pass);
+  - headless Chrome: Settings renders 58 swatches, the last five are the new
+    names in order, clicking Cartoon Overdose sets <html data-theme> and
+    --accent (#ff0066) and the choice survives a reload.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+SERVER  server.js
+        src/utils/portOwner.js (NEW)
+        scripts/freePort.js (NEW)
+        package.json (predev)
+        src/utils/workspaceManager.js (movePathWithFallback, EXDEV fallback)
+        src/utils/safeDelete.js (transferFailureError)
+        src/controllers/workspace.controller.js (moveContainerEntryAt)
+        src/routes/workspace.routes.js (POST /container/move)
+CLIENT  src/utils/themes.js
+        src/utils/dropFiles.js
+        src/utils/explorerTransfer.js (NEW)
+        src/features/fileSystemSlice.js
+        src/features/workspaceThunks.js
+        src/services/api.js
+        src/components/Sidebar/FileTree.jsx
+        src/components/Sidebar/Sidebar.jsx
+        src/components/Sidebar/UploadDrop.css
+
+--------------------------------------------------------------------------------
+LEFTOVER TEMPORARY SCRIPTS / FOLDERS (NOT deleted)
+--------------------------------------------------------------------------------
+server/  tmp-audit-preview.mjs, tmp-audit-upload.mjs, tmp-ebusy-diagnose.mjs,
+         tmp-theme-tune.mjs, tmp-theme-verify.mjs, tmp-ui-verify.mjs,
+         tmp-vanilla-agent-test.mjs
+Also at the project root (unchanged): tmp-acceptance/, tmp-harness/,
+tmp-agent-server.log, tmp-editmode-inline.txt, tmp-mock-groq.log,
+tmp-sidebar-client.log, tmp-sidebar-server.log.
+Two temporary audit scripts created for THIS change (server/tmp-move-verify.mjs
+and server/tmp-dnd-verify.mjs) were removed after the runs.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Move/copy of a TOP-LEVEL project folder into another folder is still
+    rejected (it would nest a project). Dragging such a row shows the
+    not-allowed cursor; the existing "A project folder can only be renamed, not
+    moved inside another folder." message is returned if called directly.
+  - Moving a folder to the container root makes it a new project only when the
+    tree is next read (listContainerEntries auto-registers it); no MongoDB
+    Project row is created for it on that path.
+  - Multi-item drag is not supported (the Explorer has no multi-selection).
+  - The EBUSY "terminal running inside this folder" message path was shared with
+    the delete helper and code-reviewed, but was not forced by an actual locked
+    folder in this run.
+  - Existing items still open: the freebuff 1-second thinking flicker;
+    server/tmp-ebusy-diagnose.mjs can be deleted; a loose top-level HTML file has
+    no preview watcher.
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY (WHERE THINGS STAND)
+--------------------------------------------------------------------------------
+  - TASK 1 (port 4000): complete and VERIFIED live — predev frees only a stale
+    CodeMatrix server, leaves unrelated holders alone with a clear one-line
+    message, the server reports EADDRINUSE once and exits, and a watcher restart
+    rebinds cleanly with the port free after stopping.
+  - TASK 2 (drag/drop move+copy): complete and VERIFIED — 12/12 server move
+    checks and 21/21 headless-Chrome UI checks (move, root, sibling project,
+    self-child rejection, conflict naming, Ctrl copy, external upload, tab
+    follow, undo, live tree with no reload).
+  - TASK 3 (5 more terrible themes): complete and VERIFIED — 58 themes, the new
+    five last, all readable, applied to the UI and persisted across reload.
+  - NOT verified: a real OS-level drag from the desktop (drags were synthesized
+    with DragEvent + DataTransfer in the page); a forced EBUSY from a real
+    terminal cwd inside the moved folder; and MongoDB-backed project metadata for
+    a folder moved to the container root.
+================================================================================

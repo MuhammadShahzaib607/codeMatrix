@@ -12,8 +12,9 @@ import { closeAllWatchers } from './src/utils/fileWatcher.js'
 import { killAllTerminals } from './src/utils/terminalManager.js'
 import { migrateWorkspaceFolders } from './src/utils/workspaceMigration.js'
 import { WORKSPACES_ROOT } from './src/utils/workspaceManager.js'
+import { describeProcess, findListeningPid } from './src/utils/portOwner.js'
 
-fs.mkdirSync(WORKSPACES_ROOT, { recursive: true })
+fs.mkdirSync(WORKSPACES_ROOT, { recursive: true })  
 
 // node-pty's Windows ConPTY kill path fires a helper and, if the shell already
 // exited, throws inside a fire-and-forget .then(). node-pty exposes no hook for
@@ -26,15 +27,28 @@ process.on('unhandledRejection', (reason) => {
 
 const server = http.createServer(app);
 
+let shuttingDown = false
+
+function onListening() {
+  console.log(`[server] listening on http://localhost:${env.port}`)
+  console.log(`[server] health check: http://localhost:${env.port}/api/health`)
+  console.log(`[server] workspaces root: ${WORKSPACES_ROOT}`)
+  console.log('[server] NOTE: workspace files on disk are ephemeral on the free tier.')
+}
+
+function reportPortInUse() {
+  const pid = findListeningPid(env.port)
+  const owner = pid ? `by PID ${pid} (${describeProcess(pid)})` : 'by another process'
+  console.error(
+    `[server] Port ${env.port} is already in use ${owner}. Run "npm run predev" in server/ to free it when that is a stale CodeMatrix server.`,
+  )
+}
+
 // Fail gracefully on listen errors instead of dumping an unhandled stack trace.
 server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(
-      `[server] Port ${env.port} is already in use. Stop the other process or the predev script will handle it next run.`,
-    )
-    process.exit(1)
-  }
-  throw err
+  if (err.code !== 'EADDRINUSE') throw err
+  reportPortInUse()
+  process.exit(1)
 })
 
 const io = new Server(server, {
@@ -70,24 +84,35 @@ async function start() {
     console.warn(`[workspace] folder migration failed: ${error.message}`)
   }
 
-  server.listen(env.port, () => {
-    console.log(`[server] listening on http://localhost:${env.port}`)
-    console.log(`[server] health check: http://localhost:${env.port}/api/health`)
-    console.log(`[server] workspaces root: ${WORKSPACES_ROOT}`)
-    console.log('[server] NOTE: workspace files on disk are ephemeral on the free tier.')
-  })
+  server.listen(env.port, onListening)
 }
 
-function shutdown(signal) {
+function exitNow() {
+  process.exit(0)
+}
+
+async function shutdown(signal) {
+  if (shuttingDown) return
+  shuttingDown = true
   console.log(`[server] ${signal} received, shutting down.`)
   killAllTerminals()
-  closeAllWatchers()
-  io.close()
-  server.close(() => process.exit(0))
+  try {
+    await closeAllWatchers()
+  } catch (error) {
+    console.warn(`[server] watcher shutdown failed: ${error?.message ?? error}`)
+  }
+  server.closeAllConnections?.()
+  try {
+    io.close()
+  } catch {}
+  server.close(exitNow)
+  setTimeout(exitNow, 3000).unref()
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'))
 process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGBREAK', () => shutdown('SIGBREAK'))
+process.on('exit', () => killAllTerminals())
 
 start()
 

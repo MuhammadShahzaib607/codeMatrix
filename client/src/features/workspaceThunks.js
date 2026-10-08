@@ -10,11 +10,15 @@ import {
 } from '../utils/monacoTsconfig'
 import { markSaved, removeContent, setContent } from './editorSlice'
 import { clearTsConfig, setTsConfig } from './tsconfigSlice'
+import { folderNodeForPath, uniqueChildName } from '../utils/explorerTransfer'
+import { findNode } from '../utils/tree'
 import {
   addTab,
   applyAgentProject,
   clearWorkspace,
+  copyNode,
   markWorkspaceMissing,
+  moveNode,
   refreshTree,
   remapPaths,
   removeNode,
@@ -237,6 +241,57 @@ export const duplicateWorkspaceEntry = createAsyncThunk(
  * type-check JSX. A project without either file simply clears the config and
  * falls back to Monaco's modern React defaults.
  */
+export const transferWorkspaceEntry = createAsyncThunk(
+  'workspace/transferEntry',
+  async ({ sourcePath, targetFolderPath, mode }, { dispatch, getState }) => {
+    const isCopy = mode === 'copy'
+    const folderPath = targetFolderPath ?? ''
+    const tree = getState().fileSystem.tree
+    const sourceNode = findNode(tree, sourcePath)
+    if (!sourceNode) throw new Error('The selected item no longer exists.')
+
+    const targetNode = folderNodeForPath(tree, folderPath)
+    const name = uniqueChildName(targetNode, sourceNode.name)
+    const optimisticPath = folderPath ? `${folderPath}/${name}` : name
+
+    if (isCopy) {
+      dispatch(copyNode({ sourcePath, newPath: optimisticPath }))
+    } else {
+      dispatch(moveNode({ oldPath: sourcePath, newPath: optimisticPath }))
+      dispatch(remapPaths({ oldPath: sourcePath, newPath: optimisticPath }))
+    }
+
+    try {
+      const result = isCopy
+        ? await workspaceApi.duplicateContainerPath(sourcePath, folderPath)
+        : await workspaceApi.moveContainerPath(sourcePath, folderPath)
+      const resolvedPath = result?.newPath ?? optimisticPath
+
+      if (resolvedPath !== optimisticPath) {
+        if (isCopy) {
+          dispatch(removeNode(optimisticPath))
+          dispatch(copyNode({ sourcePath, newPath: resolvedPath }))
+        } else {
+          dispatch(moveNode({ oldPath: optimisticPath, newPath: resolvedPath }))
+          dispatch(remapPaths({ oldPath: optimisticPath, newPath: resolvedPath }))
+        }
+      }
+
+      dispatch(refreshWorkspaceTree({}))
+      return {
+        sourcePath,
+        targetFolderPath: folderPath,
+        mode: isCopy ? 'copy' : 'move',
+        newPath: resolvedPath,
+      }
+    } catch (error) {
+      if (!isCopy) dispatch(remapPaths({ oldPath: optimisticPath, newPath: sourcePath }))
+      dispatch(refreshWorkspaceTree({}))
+      throw handleFailure(error, dispatch)
+    }
+  },
+)
+
 export const loadWorkspaceTsConfig = createAsyncThunk(
   'workspace/loadTsConfig',
   async ({ projectId }, { dispatch }) => {

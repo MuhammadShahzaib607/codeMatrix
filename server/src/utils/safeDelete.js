@@ -45,3 +45,29 @@ export async function runDeletion(deleteIt, absolutePath, displayName) {
     throw deleteFailureError(error, absolutePath, displayName)
   }
 }
+
+export function transferFailureError(error, absolutePath, displayName) {
+  const name = String(displayName ?? 'that item')
+  console.warn(
+    `[transfer] ${name}: ${error?.code ?? 'UNKNOWN'} ${error?.message ?? error}` +
+      (absolutePath ? ` (${absolutePath})` : ''),
+  )
+
+  if (IN_USE_CODES.has(error?.code)) {
+    const terminals = findTerminalsCwdInside(absolutePath)
+    if (terminals.length > 0) {
+      return new ApiError(
+        409,
+        'A terminal is running inside this folder. Close it or run cd .. and try again.',
+        'FOLDER_IN_USE',
+      )
+    }
+    return new ApiError(
+      409,
+      `Could not move "${name}" right now — it is being used by another program. Close it and try again.`,
+      'FOLDER_IN_USE',
+    )
+  }
+
+  return new ApiError(409, `Could not move "${name}".`, 'MOVE_FAILED')
+}

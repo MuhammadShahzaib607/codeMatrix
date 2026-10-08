@@ -19,9 +19,16 @@ import {
 } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import { toggleFolder } from '../../features/fileSystemSlice'
+import { setFolderOpen, toggleFolder } from '../../features/fileSystemSlice'
 import { CONTAINER_ID } from '../../services/fileSystemAccess'
-import { hasDroppedFolder, isFileDrag } from '../../utils/dropFiles'
+import {
+  EXPLORER_DRAG_TYPE,
+  hasDroppedFolder,
+  isCopyModifier,
+  isExplorerDrag,
+  isFileDrag,
+} from '../../utils/dropFiles'
+import { isInvalidTransferTarget, transferTargetFolderPath } from '../../utils/explorerTransfer'
 import { isBinaryPath } from '../../utils/fileTypes'
 import { isHtmlPath } from '../../utils/preview'
 import { findNode } from '../../utils/tree'
@@ -132,6 +139,9 @@ const TreeNode = memo(function TreeNode({
   clipboardPath,
   onOpenFile,
   dragOverId,
+  draggingId,
+  onRowDragStart,
+  onRowDragEnd,
   onRowDragOver,
   onRowDragLeave,
   onRowDrop,
@@ -141,6 +151,7 @@ const TreeNode = memo(function TreeNode({
 
   const isFolder = node.type === 'folder'
   const isDropTarget = dragOverId === node.id
+  const isDragging = draggingId === node.id
   const isSelected = selectedId === node.id
   const isRevealed = revealedId === node.id
   const isLocked = lockedId !== null && node.id === lockedId
@@ -185,11 +196,14 @@ const TreeNode = memo(function TreeNode({
       <div
         key={isRevealed ? `reveal-${revealNonce}` : undefined}
         data-node-id={node.id}
+        draggable
         className={`tree-row ${isSelected ? 'is-selected' : ''} ${isRevealed ? 'is-revealed' : ''} ${
           clipboardPath === node.id ? 'is-cut' : ''
-        } ${isDropTarget ? 'is-drop-target' : ''}`}
+        } ${isDropTarget ? 'is-drop-target' : ''} ${isDragging ? 'is-dragging' : ''}`}
         onClick={handleRowClick}
         onContextMenu={handleContextMenu}
+        onDragStart={(event) => onRowDragStart?.(event, node)}
+        onDragEnd={() => onRowDragEnd?.()}
         onDragOver={(event) => onRowDragOver?.(event, node)}
         onDragLeave={(event) => onRowDragLeave?.(event, node)}
         onDrop={(event) => onRowDrop?.(event, node)}
@@ -288,6 +302,9 @@ const TreeNode = memo(function TreeNode({
               clipboardPath={clipboardPath}
               onOpenFile={onOpenFile}
               dragOverId={dragOverId}
+              draggingId={draggingId}
+              onRowDragStart={onRowDragStart}
+              onRowDragEnd={onRowDragEnd}
               onRowDragOver={onRowDragOver}
               onRowDragLeave={onRowDragLeave}
               onRowDrop={onRowDrop}
@@ -323,6 +340,7 @@ function FileTree({
   onOpenFile,
   onUploadFiles,
   onDropFiles,
+  onTransfer,
 }) {
   const revealedNode = useSelector((state) => state.ui.revealedNode)
   const clipboard = useSelector((state) => state.clipboard)
@@ -332,33 +350,128 @@ function FileTree({
   const [menu, setMenu] = useState(null)
   const [renamingId, setRenamingId] = useState(null)
   const [dragOverId, setDragOverId] = useState(null)
+  const [dragSource, setDragSource] = useState(null)
+  const [rootOver, setRootOver] = useState(false)
+  const expandTimerRef = useRef(null)
+  const expandHoverRef = useRef(null)
 
   const closeMenu = useCallback(() => setMenu(null), [])
   const clearForcedRename = useCallback(() => setRenamingId(null), [])
 
-  const handleRowDragOver = useCallback((event, node) => {
-    if (!isFileDrag(event)) return
-    event.preventDefault()
-    event.stopPropagation()
-    event.dataTransfer.dropEffect = 'copy'
-    setDragOverId(node.id)
+  const clearExpandTimer = useCallback(() => {
+    if (expandTimerRef.current) {
+      clearTimeout(expandTimerRef.current)
+      expandTimerRef.current = null
+    }
+    expandHoverRef.current = null
   }, [])
 
-  const handleRowDragLeave = useCallback((event, node) => {
-    if (event.currentTarget.contains(event.relatedTarget)) return
-    setDragOverId((current) => (current === node.id ? null : current))
+  const resetDrag = useCallback(() => {
+    setDragSource(null)
+    setDragOverId(null)
+    setRootOver(false)
+    clearExpandTimer()
+  }, [clearExpandTimer])
+
+  const handleRowDragStart = useCallback((event, node) => {
+    event.stopPropagation()
+    const payload = node.path ?? node.id
+    event.dataTransfer.setData(EXPLORER_DRAG_TYPE, payload)
+    event.dataTransfer.setData('text/plain', payload)
+    event.dataTransfer.effectAllowed = 'copyMove'
+    setDragSource(node)
   }, [])
+
+  const handleRowDragOver = useCallback(
+    (event, node) => {
+      if (isExplorerDrag(event)) {
+        event.preventDefault()
+        event.stopPropagation()
+        if (rootOver) setRootOver(false)
+        const folderPath = transferTargetFolderPath(node)
+        const invalid = isInvalidTransferTarget(dragSource, folderPath)
+        event.dataTransfer.dropEffect = invalid ? 'none' : isCopyModifier(event) ? 'copy' : 'move'
+        setDragOverId(invalid ? null : node.id)
+
+        if (node.type === 'folder' && dragSource?.id !== node.id && !node.isOpen) {
+          if (expandHoverRef.current !== node.id) {
+            clearExpandTimer()
+            expandHoverRef.current = node.id
+            expandTimerRef.current = setTimeout(() => {
+              dispatch(setFolderOpen({ id: node.id, isOpen: true }))
+              expandTimerRef.current = null
+            }, 700)
+          }
+        } else {
+          clearExpandTimer()
+        }
+        return
+      }
+
+      if (!isFileDrag(event)) return
+      event.preventDefault()
+      event.stopPropagation()
+      event.dataTransfer.dropEffect = 'copy'
+      setDragOverId(node.id)
+    },
+    [clearExpandTimer, dragSource, rootOver],
+  )
+
+  const handleRowDragLeave = useCallback(
+    (event, node) => {
+      if (event.currentTarget.contains(event.relatedTarget)) return
+      setDragOverId((current) => (current === node.id ? null : current))
+      if (expandHoverRef.current === node.id) clearExpandTimer()
+    },
+    [clearExpandTimer],
+  )
 
   const handleRowDrop = useCallback(
     (event, node) => {
+      if (isExplorerDrag(event)) {
+        event.preventDefault()
+        event.stopPropagation()
+        const source = dragSource
+        const copy = isCopyModifier(event)
+        resetDrag()
+        if (!source) return
+        const folderPath = transferTargetFolderPath(node)
+        if (isInvalidTransferTarget(source, folderPath)) return
+        onTransfer?.(source, folderPath, { copy })
+        return
+      }
+
       if (!isFileDrag(event)) return
       event.preventDefault()
       event.stopPropagation()
       setDragOverId(null)
       onDropFiles?.(node, event.dataTransfer.files, { hasDirectory: hasDroppedFolder(event) })
     },
-    [onDropFiles],
+    [dragSource, onDropFiles, onTransfer, resetDrag],
   )
+
+  function handleTreeDragOver(event) {
+    if (!isExplorerDrag(event)) return
+    event.preventDefault()
+    const invalid = isInvalidTransferTarget(dragSource, '')
+    event.dataTransfer.dropEffect = invalid ? 'none' : isCopyModifier(event) ? 'copy' : 'move'
+    setRootOver(!invalid && Boolean(dragSource))
+  }
+
+  function handleTreeDragLeave(event) {
+    if (event.currentTarget.contains(event.relatedTarget)) return
+    setRootOver(false)
+  }
+
+  function handleTreeDrop(event) {
+    if (!isExplorerDrag(event)) return
+    event.preventDefault()
+    const source = dragSource
+    const copy = isCopyModifier(event)
+    resetDrag()
+    if (!source || isInvalidTransferTarget(source, '')) return
+    onTransfer?.(source, '', { copy })
+  }
 
   useEffect(() => {
     if (!revealedNode?.id) return
@@ -579,11 +692,14 @@ function FileTree({
 
   return (
     <div
-      className="file-tree"
+      className={`file-tree ${rootOver ? 'is-root-drop-target' : ''}`}
       ref={rootRef}
       tabIndex={-1}
       onMouseDown={handleMouseDown}
       onKeyDown={handleKeyDown}
+      onDragOver={handleTreeDragOver}
+      onDragLeave={handleTreeDragLeave}
+      onDrop={handleTreeDrop}
       onContextMenu={(event) => {
         if (event.target?.closest?.('[data-node-id]')) return
         event.preventDefault()
@@ -622,6 +738,9 @@ function FileTree({
           clipboardPath={clipboard.mode === 'cut' ? clipboard.path : null}
           onOpenFile={onOpenFile}
           dragOverId={dragOverId}
+          draggingId={dragSource?.id ?? null}
+          onRowDragStart={handleRowDragStart}
+          onRowDragEnd={resetDrag}
           onRowDragOver={handleRowDragOver}
           onRowDragLeave={handleRowDragLeave}
           onRowDrop={handleRowDrop}

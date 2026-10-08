@@ -23,7 +23,7 @@ import {
   suppressContainerWatcher,
   suppressWatcher,
 } from '../utils/fileWatcher.js'
-import { runDeletion } from '../utils/safeDelete.js'
+import { runDeletion, transferFailureError } from '../utils/safeDelete.js'
 import { contentTypeFor } from './preview.controller.js'
 import {
   copyDirectoryRecursive,
@@ -43,6 +43,7 @@ import {
   getOwnerContainerPath,
   isScratchFolderName,
   listContainerEntries,
+  movePathWithFallback,
   resolveContainerOwnerPath,
   statWorkspaceEntry,
   findScratchWorkspaceId,
@@ -579,6 +580,74 @@ export const renameContainerEntryAt = asyncHandler(async (req, res) => {
   await fsp.mkdir(path.dirname(to.absolute), { recursive: true })
   await fsp.rename(from.absolute, to.absolute)
   res.json({ oldPath: from.relative, newPath: to.relative, renamed: true })
+})
+
+export const moveContainerEntryAt = asyncHandler(async (req, res) => {
+  const sourcePath = requirePath(req.body?.sourcePath, 'sourcePath')
+  const targetFolderPath =
+    typeof req.body?.targetFolderPath === 'string' ? req.body.targetFolderPath.trim() : ''
+  const source = resolveContainerOwnerPath(req.user.id, sourcePath)
+
+  const sourceStats = await fsp.stat(source.absolute).catch(() => null)
+  if (!sourceStats) {
+    throw new ApiError(404, `"${source.relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+  const sourceIsDirectory = sourceStats.isDirectory()
+
+  const targetResolved = targetFolderPath
+    ? resolveContainerOwnerPath(req.user.id, targetFolderPath)
+    : null
+  const targetAbsolute = targetResolved ? targetResolved.absolute : ensureOwnerContainer(req.user.id)
+  const targetStats = await fsp.stat(targetAbsolute).catch(() => null)
+  if (targetStats && !targetStats.isDirectory()) {
+    throw new ApiError(400, 'The drop target is not a folder.', 'NOT_A_FOLDER')
+  }
+
+  if (!source.inner && sourceIsDirectory) {
+    throw new ApiError(
+      400,
+      'A project folder can only be renamed, not moved inside another folder.',
+      'INVALID_PATH',
+    )
+  }
+
+  const sourceAbsolute = path.resolve(source.absolute)
+  const resolvedTarget = path.resolve(targetAbsolute)
+
+  if (path.dirname(sourceAbsolute) === resolvedTarget) {
+    return res.json({ sourcePath: source.relative, newPath: source.relative, moved: false })
+  }
+
+  if (
+    sourceIsDirectory &&
+    (resolvedTarget === sourceAbsolute || resolvedTarget.startsWith(`${sourceAbsolute}${path.sep}`))
+  ) {
+    throw new ApiError(
+      400,
+      `Cannot move "${source.relative}" into itself or one of its own folders.`,
+      'INVALID_PATH',
+    )
+  }
+
+  await fsp.mkdir(targetAbsolute, { recursive: true })
+  const name = await uniqueNameInFolder(targetAbsolute, path.basename(source.absolute))
+  const destination = path.join(targetAbsolute, name)
+
+  suppressContainerFor(req.user.id, source)
+  if (targetResolved) suppressContainerFor(req.user.id, targetResolved)
+
+  try {
+    await movePathWithFallback(source.absolute, destination, sourceIsDirectory)
+  } catch (error) {
+    throw transferFailureError(error, source.absolute, source.relative.split('/').pop())
+  }
+
+  const newPath = path
+    .relative(ensureOwnerContainer(req.user.id), destination)
+    .split(path.sep)
+    .join('/')
+
+  res.json({ sourcePath: source.relative, newPath, moved: true })
 })
 
 export const duplicateContainerEntryAt = asyncHandler(async (req, res) => {

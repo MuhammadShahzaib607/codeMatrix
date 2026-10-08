@@ -345,6 +345,13 @@ export const workspaceApi = {
     })
   },
 
+  moveContainerPath(sourcePath, targetFolderPath) {
+    return request('/api/workspace/container/move', {
+      method: 'POST',
+      body: JSON.stringify({ sourcePath, targetFolderPath: targetFolderPath ?? '' }),
+    })
+  },
+
   // A top-level FOLDER is a new project; a top-level FILE lives beside the
   // projects in the container.
   createContainerEntry(name, type) {

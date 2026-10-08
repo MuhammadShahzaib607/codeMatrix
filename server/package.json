@@ -7,7 +7,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "predev": "kill-port 4000 || true",
+    "predev": "node scripts/freePort.js",
     "dev": "node --watch server.js"
   },
   "dependencies": {

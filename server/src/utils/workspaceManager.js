@@ -452,6 +452,7 @@ export async function renameFolderWithRetry(fromAbsolute, toAbsolute, renameImpl
       return true
     } catch (error) {
       lastError = error
+      if (error?.code === 'EXDEV') break
       if (!RENAME_RETRY_CODES.has(error?.code)) throw error
       if (attempt < RENAME_RETRY_DELAYS_MS.length - 1) {
         await sleep(RENAME_RETRY_DELAYS_MS[attempt])
@@ -467,6 +468,21 @@ export async function renameFolderWithRetry(fromAbsolute, toAbsolute, renameImpl
     await fsp.rm(toAbsolute, { recursive: true, force: true }).catch(() => {})
     throw lastError ?? fallbackError
   }
+}
+
+export async function movePathWithFallback(fromAbsolute, toAbsolute, isDirectory) {
+  if (isDirectory) return renameFolderWithRetry(fromAbsolute, toAbsolute)
+
+  try {
+    await fsp.rename(fromAbsolute, toAbsolute)
+    return true
+  } catch (error) {
+    if (error?.code !== 'EXDEV') throw error
+  }
+
+  await fsp.copyFile(fromAbsolute, toAbsolute)
+  await fsp.rm(fromAbsolute, { force: true })
+  return true
 }
 
 /**

@@ -31,6 +31,7 @@ router.post('/container/create', workspaceController.createContainerEntryAt)
 router.delete('/container/delete', workspaceController.deleteContainerEntryAt)
 router.patch('/container/rename', workspaceController.renameContainerEntryAt)
 router.post('/container/duplicate', workspaceController.duplicateContainerEntryAt)
+router.post('/container/move', workspaceController.moveContainerEntryAt)
 router.post('/container/upload', receiveUpload, uploadContainerFiles)
 
 router.use('/:projectId', validateProjectId, authorizeProject)

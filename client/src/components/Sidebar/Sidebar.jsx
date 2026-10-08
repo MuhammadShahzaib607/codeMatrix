@@ -17,6 +17,7 @@ import {
   duplicateWorkspaceEntry,
   refreshWorkspaceTree,
   renameWorkspaceEntry,
+  transferWorkspaceEntry,
 } from '../../features/workspaceThunks'
 import useAuthGuard from '../../hooks/useAuthGuard'
 import useUploadFiles from '../../hooks/useUploadFiles'
@@ -222,6 +223,40 @@ export default function Sidebar() {
       reportError(`Could not copy ${name}: ${error.message}`)
     }
   }
+
+  const handleTransferEntry = useCallback(
+    async (sourceNode, targetFolderPath, { copy } = {}) => {
+      const sourcePath = sourceNode?.path ?? sourceNode?.id
+      if (!sourcePath) return
+      const folderPath = targetFolderPath ?? ''
+      if (folderPath === parentPathOf(sourcePath)) return
+
+      const label = baseNameOf(sourcePath)
+      try {
+        const result = await dispatch(
+          transferWorkspaceEntry({ sourcePath, targetFolderPath: folderPath, mode: copy ? 'copy' : 'move' }),
+        ).unwrap()
+        dispatch(
+          recordExplorerAction(
+            copy
+              ? { kind: 'duplicate', sourcePath, targetFolderPath: folderPath, newPath: result.newPath }
+              : { kind: 'move', oldPath: sourcePath, newPath: result.newPath },
+          ),
+        )
+        dispatch(
+          showToast({
+            message: copy
+              ? `Copied ${label} → ${result.newPath}`
+              : `Moved ${label} → ${result.newPath}`,
+            type: 'success',
+          }),
+        )
+      } catch (error) {
+        reportError(`Could not ${copy ? 'copy' : 'move'} ${label}: ${error.message}`)
+      }
+    },
+    [dispatch, reportError],
+  )
 
   /** Opens a file from ANY project folder. Focus follows the file's project. */
   const handleOpenFile = useCallback(
@@ -546,6 +581,7 @@ export default function Sidebar() {
           onOpenFile={handleOpenFile}
           onUploadFiles={handleUploadFiles}
           onDropFiles={handleDropFiles}
+          onTransfer={handleTransferEntry}
           onCopyRelativePath={handleCopyRelativePath}
           onCopyPathRelativeToFile={handleCopyPathRelativeToFile}
         />

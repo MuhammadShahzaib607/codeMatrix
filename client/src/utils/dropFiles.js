@@ -1,5 +1,15 @@
+export const EXPLORER_DRAG_TYPE = 'application/x-codematrix-explorer'
+
 export function isFileDrag(event) {
   return Array.from(event.dataTransfer?.types ?? []).includes('Files')
+}
+
+export function isExplorerDrag(event) {
+  return Array.from(event.dataTransfer?.types ?? []).includes(EXPLORER_DRAG_TYPE)
+}
+
+export function isCopyModifier(event) {
+  return Boolean(event?.ctrlKey || event?.metaKey || event?.altKey)
 }
 
 /**

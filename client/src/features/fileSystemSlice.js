@@ -145,6 +145,27 @@ const fileSystemSlice = createSlice({
       pruneTabs(state)
     },
 
+    moveNode(state, action) {
+      const { oldPath, newPath } = action.payload ?? {}
+      if (!oldPath || !newPath || oldPath === newPath) return
+      const node = findNode(state.tree, oldPath)
+      if (!node) return
+      const [relocated] = remapTreeIds([node], oldPath, newPath)
+      state.tree = dropNodeFrom(state.tree, oldPath)
+      const parentId = parentPathOf(newPath) || ROOT_ID
+      state.tree = insertNode(state.tree, parentId, relocated)
+    },
+
+    copyNode(state, action) {
+      const { sourcePath, newPath } = action.payload ?? {}
+      if (!sourcePath || !newPath || sourcePath === newPath) return
+      const source = findNode(state.tree, sourcePath)
+      if (!source || findNode(state.tree, newPath)) return
+      const [clone] = remapTreeIds([source], sourcePath, newPath)
+      const parentId = parentPathOf(newPath) || ROOT_ID
+      state.tree = insertNode(state.tree, parentId, clone)
+    },
+
     markWorkspaceMissing(state) {
       state.workspaceMissing = true
     },
@@ -291,6 +312,8 @@ export const {
   applyFsChanges,
   applyAgentProject,
   removeNode,
+  moveNode,
+  copyNode,
   markWorkspaceMissing,
   clearWorkspaceMissing,
   clearWorkspace,

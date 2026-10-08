@@ -1,11 +1,13 @@
 import { ChevronDown, ChevronRight, FileCode, Folder, Loader2, Search, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import { addTab, setFolderOpen } from '../../features/fileSystemSlice'
+import { addTab, focusContainerProject, setFolderOpen } from '../../features/fileSystemSlice'
 import { revealLineInEditor, revealTreeNode, setActiveSidebarView } from '../../features/uiSlice'
 import { getFileContent } from '../../services/fileContentCache'
+import { projectIdForPath, projectNameForPath } from '../../utils/containerPaths'
+import { isBinaryPath } from '../../utils/fileTypes'
 import { collectAncestorFolderIds, flattenTreeNodes } from '../../utils/tree'
-import { hasActiveWorkspace } from '../../utils/workspace'
+import Tooltip from '../Common/Tooltip'
 import './SearchInFiles.css'
 
 const DEBOUNCE_MS = 300
@@ -28,7 +30,6 @@ function HighlightedText({ text, query }) {
 export default function SearchInFiles() {
   const dispatch = useDispatch()
   const tree = useSelector((state) => state.fileSystem.tree)
-  const workspace = useSelector((state) => state.fileSystem.workspace)
   const contentByFileId = useSelector((state) => state.editor.contentByFileId)
 
   const contentRef = useRef(contentByFileId)
@@ -65,16 +66,18 @@ export default function SearchInFiles() {
         }
       }
 
-      const files = nodes.filter((node) => node.type === 'file').slice(0, MAX_FILES_TO_SEARCH)
+      const files = nodes
+        .filter((node) => node.type === 'file' && !isBinaryPath(node.id))
+        .slice(0, MAX_FILES_TO_SEARCH)
       for (const file of files) {
         if (cancelled) return
 
         let content = contentRef.current[file.id]
-        // Content comes from the server for both imported projects and the
-        // scratch workspace; buffers already open in the editor win.
-        if (content === undefined && hasActiveWorkspace(workspace)) {
+        // Content comes from the server for every project in the container;
+        // buffers already open in the editor win.
+        if (content === undefined) {
           try {
-            content = await getFileContent(workspace.projectId, file.id)
+            content = await getFileContent(file.id)
           } catch {
             content = undefined
           }
@@ -106,7 +109,7 @@ export default function SearchInFiles() {
     return () => {
       cancelled = true
     }
-  }, [debounced, tree, workspace])
+  }, [debounced, tree])
 
   const summary = useMemo(() => {
     const total = groups.reduce(
@@ -139,12 +142,26 @@ export default function SearchInFiles() {
     dispatch(revealTreeNode(id))
   }
 
+  function focusProject(path) {
+    const projectId = projectIdForPath(path, tree)
+    if (!projectId) return
+    dispatch(
+      focusContainerProject({
+        projectId,
+        name: projectNameForPath(path, tree),
+        source: String(projectId).startsWith('scratch-') ? 'scratch' : 'cloud',
+      }),
+    )
+  }
+
   function openLine(group, line) {
+    focusProject(group.id)
     dispatch(addTab(group.id))
     dispatch(revealLineInEditor({ fileId: group.id, line }))
   }
 
   function openFile(group) {
+    focusProject(group.id)
     dispatch(addTab(group.id))
     dispatch(revealTreeNode(group.id))
   }
@@ -173,18 +190,19 @@ export default function SearchInFiles() {
           }}
         />
         {query && (
-          <button
-            type="button"
-            className="sif-clear"
-            title="Clear"
-            aria-label="Clear search"
-            onClick={() => {
-              clearQuery()
-              inputRef.current?.focus()
-            }}
-          >
-            <X size={13} />
-          </button>
+          <Tooltip label="Clear">
+            <button
+              type="button"
+              className="sif-clear"
+              aria-label="Clear search"
+              onClick={() => {
+                clearQuery()
+                inputRef.current?.focus()
+              }}
+            >
+              <X size={13} />
+            </button>
+          </Tooltip>
         )}
       </div>
 

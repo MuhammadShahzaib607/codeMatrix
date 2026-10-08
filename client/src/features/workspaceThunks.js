@@ -10,11 +10,15 @@ import {
 } from '../utils/monacoTsconfig'
 import { markSaved, removeContent, setContent } from './editorSlice'
 import { clearTsConfig, setTsConfig } from './tsconfigSlice'
+import { folderNodeForPath, uniqueChildName } from '../utils/explorerTransfer'
+import { findNode } from '../utils/tree'
 import {
   addTab,
   applyAgentProject,
   clearWorkspace,
+  copyNode,
   markWorkspaceMissing,
+  moveNode,
   refreshTree,
   remapPaths,
   removeNode,
@@ -42,14 +46,14 @@ function vanishedFileIds(previous, next) {
 
 export const refreshWorkspaceTree = createAsyncThunk(
   'workspace/refreshTree',
-  async ({ projectId, name }, { dispatch, getState }) => {
+  async (_arg, { dispatch, getState }) => {
     try {
-      const data = await workspaceApi.getTree(projectId)
+      const data = await workspaceApi.getContainerTree()
       const previous = getState().fileSystem.tree
       const tree = [toReduxTree(data.tree, previous)]
       const removed = vanishedFileIds(previous, tree)
 
-      dispatch(refreshTree({ tree, name: data.name ?? name }))
+      dispatch(refreshTree({ tree }))
       if (removed.length) dispatch(removeContent(removed))
       return data
     } catch (error) {
@@ -80,16 +84,17 @@ export const openScratchWorkspace = createAsyncThunk(
       const data = await workspaceApi.openScratch(task)
       const name = data?.name ?? 'Scratch'
       const projectId = data.projectId
+      const container = await workspaceApi.getContainerTree()
       dispatch(
         setScratchWorkspace({
           projectId,
           name,
-          tree: [toReduxTree(data.tree)],
+          tree: [toReduxTree(container.tree)],
         }),
       )
       // A workspace opened with its final project name is a REAL project from
       // the start (isScratch: false): flip the source and the root label right
-      // away instead of waiting for a mid-run adoption to do it at the end.
+      // away instead of waiting for a mid-workspace adoption to do it at the end.
       if (data.isScratch === false) {
         dispatch(applyAgentProject({ projectId, name }))
       }
@@ -159,12 +164,12 @@ export const importWorkspace = createAsyncThunk(
 
 export const createWorkspaceEntry = createAsyncThunk(
   'workspace/createEntry',
-  async ({ projectId, path, type }, { dispatch }) => {
+  async ({ path, type }, { dispatch }) => {
     try {
-      await workspaceApi.createEntry(projectId, path, type)
-      await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
+      const result = await workspaceApi.createContainerPath(path, type)
+      await dispatch(refreshWorkspaceTree({})).unwrap()
       if (type === 'file') dispatch(addTab(path))
-      return { path, type }
+      return { path, type, projectId: result?.projectId ?? null }
     } catch (error) {
       throw handleFailure(error, dispatch)
     }
@@ -173,19 +178,19 @@ export const createWorkspaceEntry = createAsyncThunk(
 
 export const deleteWorkspaceEntry = createAsyncThunk(
   'workspace/deleteEntry',
-  async ({ projectId, path }, { dispatch }) => {
+  async ({ path }, { dispatch }) => {
     try {
-      await workspaceApi.deleteEntry(projectId, path)
+      await workspaceApi.deleteContainerPath(path)
       // Optimistic UI removal: the node is dropped from Redux the instant the
       // DELETE API confirms, so the Explorer reflects the deletion immediately
-      // — it does NOT wait on a full GET /tree re-walk first. Deleting a folder
+      // — it does NOT wait on a full tree re-walk first. Deleting a folder
       // with node_modules used to take 10-15s end to end because the UI only
       // updated after that expensive refetch finished.
       dispatch(removeNode(path))
       // Direct post-action refetch, fired in the BACKGROUND (not awaited): the
       // Explorer is already correct, this just reconciles any drift. The chokidar
       // watcher remains a second, debounced safety net.
-      dispatch(refreshWorkspaceTree({ projectId }))
+      dispatch(refreshWorkspaceTree({}))
       return { path }
     } catch (error) {
       throw handleFailure(error, dispatch)
@@ -195,12 +200,13 @@ export const deleteWorkspaceEntry = createAsyncThunk(
 
 export const renameWorkspaceEntry = createAsyncThunk(
   'workspace/renameEntry',
-  async ({ projectId, oldPath, newPath }, { dispatch }) => {
+  async ({ oldPath, newPath }, { dispatch }) => {
     try {
-      await workspaceApi.renameEntry(projectId, oldPath, newPath)
-      dispatch(remapPaths({ oldPath, newPath }))
-      await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
-      return { oldPath, newPath }
+      const result = await workspaceApi.renameContainerPath(oldPath, newPath)
+      const resolvedNewPath = result?.newPath ?? newPath
+      dispatch(remapPaths({ oldPath, newPath: resolvedNewPath }))
+      await dispatch(refreshWorkspaceTree({})).unwrap()
+      return { oldPath, newPath: resolvedNewPath }
     } catch (error) {
       throw handleFailure(error, dispatch)
     }
@@ -209,10 +215,9 @@ export const renameWorkspaceEntry = createAsyncThunk(
 
 export const duplicateWorkspaceEntry = createAsyncThunk(
   'workspace/duplicateEntry',
-  async ({ projectId, sourcePath, targetFolderPath }, { dispatch }) => {
+  async ({ sourcePath, targetFolderPath }, { dispatch }) => {
     try {
-      const result = await workspaceApi.duplicateEntry(
-        projectId,
+      const result = await workspaceApi.duplicateContainerPath(
         sourcePath,
         targetFolderPath ?? '',
       )
@@ -222,7 +227,7 @@ export const duplicateWorkspaceEntry = createAsyncThunk(
       // paste appear only after a manual reload. The watcher still sees these
       // same files and schedules its own refresh; that extra fetch is
       // debounced/coalesced and harmless.
-      await dispatch(refreshWorkspaceTree({ projectId })).unwrap()
+      await dispatch(refreshWorkspaceTree({})).unwrap()
       return result
     } catch (error) {
       throw handleFailure(error, dispatch)
@@ -236,6 +241,57 @@ export const duplicateWorkspaceEntry = createAsyncThunk(
  * type-check JSX. A project without either file simply clears the config and
  * falls back to Monaco's modern React defaults.
  */
+export const transferWorkspaceEntry = createAsyncThunk(
+  'workspace/transferEntry',
+  async ({ sourcePath, targetFolderPath, mode }, { dispatch, getState }) => {
+    const isCopy = mode === 'copy'
+    const folderPath = targetFolderPath ?? ''
+    const tree = getState().fileSystem.tree
+    const sourceNode = findNode(tree, sourcePath)
+    if (!sourceNode) throw new Error('The selected item no longer exists.')
+
+    const targetNode = folderNodeForPath(tree, folderPath)
+    const name = uniqueChildName(targetNode, sourceNode.name)
+    const optimisticPath = folderPath ? `${folderPath}/${name}` : name
+
+    if (isCopy) {
+      dispatch(copyNode({ sourcePath, newPath: optimisticPath }))
+    } else {
+      dispatch(moveNode({ oldPath: sourcePath, newPath: optimisticPath }))
+      dispatch(remapPaths({ oldPath: sourcePath, newPath: optimisticPath }))
+    }
+
+    try {
+      const result = isCopy
+        ? await workspaceApi.duplicateContainerPath(sourcePath, folderPath)
+        : await workspaceApi.moveContainerPath(sourcePath, folderPath)
+      const resolvedPath = result?.newPath ?? optimisticPath
+
+      if (resolvedPath !== optimisticPath) {
+        if (isCopy) {
+          dispatch(removeNode(optimisticPath))
+          dispatch(copyNode({ sourcePath, newPath: resolvedPath }))
+        } else {
+          dispatch(moveNode({ oldPath: optimisticPath, newPath: resolvedPath }))
+          dispatch(remapPaths({ oldPath: optimisticPath, newPath: resolvedPath }))
+        }
+      }
+
+      dispatch(refreshWorkspaceTree({}))
+      return {
+        sourcePath,
+        targetFolderPath: folderPath,
+        mode: isCopy ? 'copy' : 'move',
+        newPath: resolvedPath,
+      }
+    } catch (error) {
+      if (!isCopy) dispatch(remapPaths({ oldPath: optimisticPath, newPath: sourcePath }))
+      dispatch(refreshWorkspaceTree({}))
+      throw handleFailure(error, dispatch)
+    }
+  },
+)
+
 export const loadWorkspaceTsConfig = createAsyncThunk(
   'workspace/loadTsConfig',
   async ({ projectId }, { dispatch }) => {
@@ -261,10 +317,10 @@ export const loadWorkspaceTsConfig = createAsyncThunk(
 
 export const saveWorkspaceFile = createAsyncThunk(
   'workspace/saveFile',
-  async ({ projectId, path, content }, { dispatch }) => {
+  async ({ path, content }, { dispatch }) => {
     try {
-      const result = await workspaceApi.saveFile(projectId, path, content)
-      setCachedFileContent(projectId, path, content)
+      const result = await workspaceApi.saveContainerFile(path, content)
+      setCachedFileContent(path, content)
       dispatch(markSaved(path))
       return result
     } catch (error) {
@@ -275,9 +331,9 @@ export const saveWorkspaceFile = createAsyncThunk(
 
 export const readWorkspaceFile = createAsyncThunk(
   'workspace/readFile',
-  async ({ projectId, path, fileId }, { dispatch }) => {
+  async ({ path, fileId }, { dispatch }) => {
     try {
-      const data = await workspaceApi.getFile(projectId, path)
+      const data = await workspaceApi.getContainerFile(path)
       dispatch(setContent({ fileId: fileId ?? path, content: data.content }))
       return data
     } catch (error) {

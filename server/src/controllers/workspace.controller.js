@@ -1,15 +1,32 @@
 import archiver from 'archiver'
+import fs from 'node:fs'
+import path from 'node:path'
 import { isDatabaseConnected } from '../config/db.js'
 import {
+  deleteProject,
   findProject,
   findScratchProjectForOwner,
   touchProject,
+  updateProjectDiskInfo,
   upsertProject,
 } from '../models/project.repository.js'
+import { fallbackProjectName } from '../services/agentFrameworks.js'
+import { slugifyProjectName } from '../services/agentService.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
-import { suppressWatcher } from '../utils/fileWatcher.js'
 import {
+  closeWatching,
+  pauseContainerWatching,
+  pauseWatching,
+  resumeContainerWatching,
+  resumeWatching,
+  suppressContainerWatcher,
+  suppressWatcher,
+} from '../utils/fileWatcher.js'
+import { runDeletion, transferFailureError } from '../utils/safeDelete.js'
+import { contentTypeFor } from './preview.controller.js'
+import {
+  copyDirectoryRecursive,
   copyFileIntoContainer,
   copyPathInWorkspace,
   createContainerFile,
@@ -17,9 +34,17 @@ import {
   createFolderInWorkspace,
   createWorkspaceFolder,
   deleteFromWorkspace,
+  deleteWorkspaceFolder,
+  ensureOwnerContainer,
   ensureScratchWorkspace,
+  findContainerProjectId,
   findProjectIdForFolder,
+  getContainerTree,
+  getOwnerContainerPath,
+  isScratchFolderName,
   listContainerEntries,
+  movePathWithFallback,
+  resolveContainerOwnerPath,
   statWorkspaceEntry,
   findScratchWorkspaceId,
   getWorkspacePath,
@@ -30,10 +55,15 @@ import {
   readFileFromWorkspace,
   registerWorkspaceFromDiskPath,
   renamePathInWorkspace,
+  removePathWithRetry,
   renameWorkspaceFolder,
+  resolveWorkspaceFile,
+  uniqueNameInFolder,
   workspaceFolderPath,
   writeFileToWorkspace,
 } from '../utils/workspaceManager.js'
+
+const fsp = fs.promises
 
 const MAX_IMPORT_FILES = 5000
 
@@ -180,10 +210,10 @@ export const getTree = asyncHandler(async (req, res) => {
 export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
   const ownerId = req.user.id
 
-  // The folder is ALWAYS born anonymous and is named later, by the agent flow,
-  // from a dedicated AI naming call (never from words taken out of the prompt).
-  const isAnonymous = true
-  const displayName = 'Scratch'
+  const task = typeof req.body?.task === 'string' ? req.body.task.trim() : ''
+  const taskName = task ? slugifyProjectName(task) || fallbackProjectName(null) : null
+  const isAnonymous = !taskName
+  const displayName = taskName ?? 'Scratch'
 
   let projectId = null
   let created = false
@@ -210,12 +240,12 @@ export const openScratchWorkspaceHandler = asyncHandler(async (req, res) => {
 
   // An anonymous scratch being (re)used for a TASK gets its real name now — a
   // folder rename, not a copy, so contents stay exactly where they are.
-  if (!isAnonymous) {
-    await renameWorkspaceFolder(projectId, { displayName })
+  if (taskName) {
+    await renameWorkspaceFolder(projectId, { displayName: taskName })
   }
 
   const record = getWorkspaceRecord(projectId)
-  const name = isAnonymous ? 'Scratch' : record?.folderName ?? displayName
+  const name = record?.folderName ?? displayName
 
   // One upsert: keeps lastAccessedAt/Recent Projects fresh, and flags a
   // task-named workspace as a REAL project (isScratch: false) so the next
@@ -306,6 +336,392 @@ export const pasteToContainer = asyncHandler(async (req, res) => {
   res.status(201).json({ type: 'file', name, projectId: null })
 })
 
+// ---------------------------------------------------------------------------
+// The container as a whole: every project folder plus every top-level file in
+// ONE tree, with container-relative paths. This is the Explorer's single tree,
+// so the user works in every top-level folder at once instead of one "active"
+// project. A path whose first segment names a project folder is delegated to
+// that project's existing helpers; a top-level file is read/written directly.
+// The container is always derived from the JWT, never from the request body.
+// ---------------------------------------------------------------------------
+
+function suppressContainerFor(ownerId, resolved) {
+  suppressContainerWatcher(getOwnerContainerPath(ownerId))
+  if (resolved?.inner) {
+    const projectId = findContainerProjectId(ownerId, resolved.top)
+    if (projectId) suppressWatcher(projectId)
+  }
+}
+
+export const getContainerTreeHandler = asyncHandler(async (req, res) => {
+  const tree = await getContainerTree(req.user.id)
+  const children = []
+  for (const child of tree.children ?? []) {
+    // An anonymous scratch folder is an implementation detail and is never a
+    // project row (it is still the terminal's cwd).
+    if (child.type === 'folder' && isScratchFolderName(child.name)) continue
+    // Tag each top-level folder with the project it represents, so the client
+    // can resolve a container path's project (terminal/preview/export/agent
+    // scope) without a second request.
+    if (child.type === 'folder') {
+      child.projectId = findContainerProjectId(req.user.id, child.name)
+    }
+    children.push(child)
+  }
+  tree.children = children
+  res.json({ name: tree.name, tree })
+})
+
+export const readContainerFile = asyncHandler(async (req, res) => {
+  const filePath = requirePath(req.query.path)
+  const resolved = resolveContainerOwnerPath(req.user.id, filePath)
+
+  const stats = await fsp.stat(resolved.absolute).catch(() => null)
+  if (!stats) {
+    throw new ApiError(404, `"${resolved.relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+  if (stats.isDirectory()) {
+    throw new ApiError(400, `"${resolved.relative}" is a folder, not a file.`, 'NOT_A_FILE')
+  }
+
+  const content = await fsp.readFile(resolved.absolute, 'utf8')
+  if (resolved.inner) {
+    const projectId = findContainerProjectId(req.user.id, resolved.top)
+    if (projectId) await touchProject(projectId)
+  }
+  res.json({ path: resolved.relative, content })
+})
+
+export const saveContainerFile = asyncHandler(async (req, res) => {
+  const filePath = requirePath(req.body?.path)
+  const content = typeof req.body?.content === 'string' ? req.body.content : ''
+  const resolved = resolveContainerOwnerPath(req.user.id, filePath)
+
+  const stats = await fsp.stat(resolved.absolute).catch(() => null)
+  if (stats?.isDirectory()) {
+    throw new ApiError(400, `"${resolved.relative}" is a folder, not a file.`, 'NOT_A_FILE')
+  }
+
+  suppressContainerFor(req.user.id, resolved)
+  await fsp.mkdir(path.dirname(resolved.absolute), { recursive: true })
+  await fsp.writeFile(resolved.absolute, content, 'utf8')
+
+  if (resolved.inner) {
+    const projectId = findContainerProjectId(req.user.id, resolved.top)
+    if (projectId) await touchProject(projectId)
+  }
+  res.json({ path: resolved.relative, saved: true, bytes: Buffer.byteLength(content, 'utf8') })
+})
+
+export const createContainerEntryAt = asyncHandler(async (req, res) => {
+  const targetPath = requirePath(req.body?.path)
+  const type = req.body?.type
+  if (type !== 'file' && type !== 'folder') {
+    throw new ApiError(400, '"type" must be either "file" or "folder".', 'INVALID_TYPE')
+  }
+
+  const resolved = resolveContainerOwnerPath(req.user.id, targetPath)
+
+  // A TOP-LEVEL folder is a new project (registry + MongoDB metadata).
+  if (!resolved.inner && type === 'folder') {
+    suppressContainerWatcher(getOwnerContainerPath(req.user.id))
+    const created = await createContainerProject(req.user.id, resolved.top)
+    await upsertProject({
+      projectId: created.projectId,
+      name: created.name,
+      owner: req.user.id,
+      diskPath: created.path,
+      diskFolderName: created.name,
+      isScratch: false,
+    })
+    return res.status(201).json({ path: created.name, type: 'folder', projectId: created.projectId })
+  }
+
+  const exists = await fsp.stat(resolved.absolute).catch(() => null)
+  if (exists) {
+    throw new ApiError(409, `"${resolved.relative}" already exists.`, 'ALREADY_EXISTS')
+  }
+
+  suppressContainerFor(req.user.id, resolved)
+  if (type === 'folder') {
+    await fsp.mkdir(resolved.absolute, { recursive: true })
+  } else {
+    await fsp.mkdir(path.dirname(resolved.absolute), { recursive: true })
+    await fsp.writeFile(resolved.absolute, '', 'utf8')
+  }
+
+  if (resolved.inner) {
+    const projectId = findContainerProjectId(req.user.id, resolved.top)
+    if (projectId) await touchProject(projectId)
+  }
+  res.status(201).json({ path: resolved.relative, type })
+})
+
+export const deleteContainerEntryAt = asyncHandler(async (req, res) => {
+  const targetPath = requirePath(req.body?.path)
+  const resolved = resolveContainerOwnerPath(req.user.id, targetPath)
+
+  const stats = await fsp.stat(resolved.absolute).catch(() => null)
+  if (!stats) {
+    throw new ApiError(404, `"${resolved.relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+
+  const containerPath = getOwnerContainerPath(req.user.id)
+
+  // Deleting a TOP-LEVEL folder removes the whole project (folder + record).
+  if (!resolved.inner && stats.isDirectory()) {
+    const projectId = findContainerProjectId(req.user.id, resolved.top)
+    if (projectId) {
+      // Close this project's watcher (the folder is going away) and pause the
+      // container watcher so nothing holds a handle on the folder mid-removal.
+      await closeWatching(projectId)
+      await pauseContainerWatching(containerPath)
+      try {
+        await runDeletion(
+          () => deleteWorkspaceFolder(projectId),
+          resolved.absolute,
+          resolved.top,
+        )
+      } catch (error) {
+        await resumeContainerWatching(containerPath)
+        throw error
+      }
+      await resumeContainerWatching(containerPath)
+      await deleteProject(projectId)
+      return res.json({ path: resolved.relative, deleted: true })
+    }
+  }
+
+  const innerProjectId = resolved.inner
+    ? findContainerProjectId(req.user.id, resolved.top)
+    : null
+
+  await pauseContainerWatching(containerPath)
+  if (innerProjectId) await pauseWatching(innerProjectId)
+  try {
+    await runDeletion(
+      () => removePathWithRetry(resolved.absolute),
+      resolved.absolute,
+      resolved.relative.split('/').pop(),
+    )
+  } catch (error) {
+    if (innerProjectId) await resumeWatching(innerProjectId)
+    await resumeContainerWatching(containerPath)
+    throw error
+  }
+  if (innerProjectId) await resumeWatching(innerProjectId)
+  await resumeContainerWatching(containerPath)
+
+  if (innerProjectId) await touchProject(innerProjectId)
+  res.json({ path: resolved.relative, deleted: true })
+})
+
+export const renameContainerEntryAt = asyncHandler(async (req, res) => {
+  const oldPath = requirePath(req.body?.oldPath, 'oldPath')
+  const newPath = requirePath(req.body?.newPath, 'newPath')
+  const from = resolveContainerOwnerPath(req.user.id, oldPath)
+  const to = resolveContainerOwnerPath(req.user.id, newPath)
+
+  if (from.relative === to.relative) {
+    return res.json({ oldPath: from.relative, newPath: to.relative, renamed: true })
+  }
+
+  const fromStats = await fsp.stat(from.absolute).catch(() => null)
+  if (!fromStats) {
+    throw new ApiError(404, `"${from.relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+
+  // Renaming a TOP-LEVEL project folder renames the project itself, so the
+  // registry and MongoDB keep pointing at the right folder.
+  if (!from.inner && fromStats.isDirectory()) {
+    if (to.inner) {
+      throw new ApiError(400, 'A project folder can only be renamed, not moved inside another folder.', 'INVALID_PATH')
+    }
+    const projectId = findContainerProjectId(req.user.id, from.top)
+    if (!projectId) {
+      throw new ApiError(404, `"${from.relative}" is not a project.`, 'FILE_MISSING')
+    }
+    await renameWorkspaceFolder(projectId, { displayName: to.top })
+    const record = getWorkspaceRecord(projectId)
+    if (record) {
+      await updateProjectDiskInfo(projectId, {
+        diskPath: workspaceFolderPath(record.container, record.folderName),
+        diskFolderName: record.folderName,
+      })
+    }
+    return res.json({
+      oldPath: from.relative,
+      newPath: record?.folderName ?? to.top,
+      renamed: true,
+    })
+  }
+
+  if (
+    fromStats.isDirectory() &&
+    (to.relative === from.relative || to.relative.startsWith(`${from.relative}/`))
+  ) {
+    throw new ApiError(
+      400,
+      `Cannot move "${from.relative}" into itself or one of its own folders.`,
+      'INVALID_PATH',
+    )
+  }
+
+  const toExists = await fsp.stat(to.absolute).then(
+    () => true,
+    () => false,
+  )
+  if (toExists) {
+    throw new ApiError(409, `"${to.relative}" already exists.`, 'ALREADY_EXISTS')
+  }
+
+  suppressContainerFor(req.user.id, from)
+  suppressContainerFor(req.user.id, to)
+  await fsp.mkdir(path.dirname(to.absolute), { recursive: true })
+  await fsp.rename(from.absolute, to.absolute)
+  res.json({ oldPath: from.relative, newPath: to.relative, renamed: true })
+})
+
+export const moveContainerEntryAt = asyncHandler(async (req, res) => {
+  const sourcePath = requirePath(req.body?.sourcePath, 'sourcePath')
+  const targetFolderPath =
+    typeof req.body?.targetFolderPath === 'string' ? req.body.targetFolderPath.trim() : ''
+  const source = resolveContainerOwnerPath(req.user.id, sourcePath)
+
+  const sourceStats = await fsp.stat(source.absolute).catch(() => null)
+  if (!sourceStats) {
+    throw new ApiError(404, `"${source.relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+  const sourceIsDirectory = sourceStats.isDirectory()
+
+  const targetResolved = targetFolderPath
+    ? resolveContainerOwnerPath(req.user.id, targetFolderPath)
+    : null
+  const targetAbsolute = targetResolved ? targetResolved.absolute : ensureOwnerContainer(req.user.id)
+  const targetStats = await fsp.stat(targetAbsolute).catch(() => null)
+  if (targetStats && !targetStats.isDirectory()) {
+    throw new ApiError(400, 'The drop target is not a folder.', 'NOT_A_FOLDER')
+  }
+
+  if (!source.inner && sourceIsDirectory) {
+    throw new ApiError(
+      400,
+      'A project folder can only be renamed, not moved inside another folder.',
+      'INVALID_PATH',
+    )
+  }
+
+  const sourceAbsolute = path.resolve(source.absolute)
+  const resolvedTarget = path.resolve(targetAbsolute)
+
+  if (path.dirname(sourceAbsolute) === resolvedTarget) {
+    return res.json({ sourcePath: source.relative, newPath: source.relative, moved: false })
+  }
+
+  if (
+    sourceIsDirectory &&
+    (resolvedTarget === sourceAbsolute || resolvedTarget.startsWith(`${sourceAbsolute}${path.sep}`))
+  ) {
+    throw new ApiError(
+      400,
+      `Cannot move "${source.relative}" into itself or one of its own folders.`,
+      'INVALID_PATH',
+    )
+  }
+
+  await fsp.mkdir(targetAbsolute, { recursive: true })
+  const name = await uniqueNameInFolder(targetAbsolute, path.basename(source.absolute))
+  const destination = path.join(targetAbsolute, name)
+
+  suppressContainerFor(req.user.id, source)
+  if (targetResolved) suppressContainerFor(req.user.id, targetResolved)
+
+  try {
+    await movePathWithFallback(source.absolute, destination, sourceIsDirectory)
+  } catch (error) {
+    throw transferFailureError(error, source.absolute, source.relative.split('/').pop())
+  }
+
+  const newPath = path
+    .relative(ensureOwnerContainer(req.user.id), destination)
+    .split(path.sep)
+    .join('/')
+
+  res.json({ sourcePath: source.relative, newPath, moved: true })
+})
+
+export const duplicateContainerEntryAt = asyncHandler(async (req, res) => {
+  const sourcePath = requirePath(req.body?.sourcePath, 'sourcePath')
+  const targetFolderPath =
+    typeof req.body?.targetFolderPath === 'string' ? req.body.targetFolderPath : ''
+  const source = resolveContainerOwnerPath(req.user.id, sourcePath)
+
+  const sourceStats = await fsp.stat(source.absolute).catch(() => null)
+  if (!sourceStats) {
+    throw new ApiError(404, `"${source.relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+  if (!source.inner && sourceStats.isDirectory()) {
+    throw new ApiError(
+      400,
+      'A top-level folder is a project and cannot be copied — create a new folder instead.',
+      'NOT_A_FILE',
+    )
+  }
+
+  const targetFolder = targetFolderPath
+    ? resolveContainerOwnerPath(req.user.id, targetFolderPath).absolute
+    : ensureOwnerContainer(req.user.id)
+  const targetStats = await fsp.stat(targetFolder).catch(() => null)
+  if (targetStats && !targetStats.isDirectory()) {
+    throw new ApiError(400, 'The paste target is not a folder.', 'NOT_A_FOLDER')
+  }
+
+  await fsp.mkdir(targetFolder, { recursive: true })
+  const name = await uniqueNameInFolder(targetFolder, path.basename(source.absolute))
+  const destination = path.join(targetFolder, name)
+
+  suppressContainerFor(req.user.id, source)
+  suppressContainerWatcher(getOwnerContainerPath(req.user.id))
+  if (sourceStats.isDirectory()) {
+    await copyDirectoryRecursive(source.absolute, destination, { copied: 0 })
+  } else {
+    await fsp.copyFile(source.absolute, destination)
+  }
+
+  const newPath = path
+    .relative(ensureOwnerContainer(req.user.id), destination)
+    .split(path.sep)
+    .join('/')
+  res.status(201).json({ sourcePath: source.relative, newPath, duplicated: true })
+})
+
+async function sendRawFile(res, absolute, relative) {
+  const stats = await fsp.stat(absolute).catch(() => null)
+  if (!stats) {
+    throw new ApiError(404, `"${relative}" was not found in this workspace.`, 'FILE_MISSING')
+  }
+  if (stats.isDirectory()) {
+    throw new ApiError(400, `"${relative}" is a folder, not a file.`, 'NOT_A_FILE')
+  }
+  const bytes = await fsp.readFile(absolute)
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Content-Type', contentTypeFor(absolute))
+  res.status(200).send(bytes)
+}
+
+export const readContainerFileRaw = asyncHandler(async (req, res) => {
+  const filePath = requirePath(req.query.path)
+  const resolved = resolveContainerOwnerPath(req.user.id, filePath)
+  await sendRawFile(res, resolved.absolute, resolved.relative)
+})
+
+export const getFileRaw = asyncHandler(async (req, res) => {
+  const filePath = requirePath(req.query.path)
+  const resolved = resolveWorkspaceFile(req.params.projectId, filePath)
+  await sendRawFile(res, resolved.absolute, resolved.relative)
+})
+
 export const getFile = asyncHandler(async (req, res) => {
   const { projectId } = req.params
   const filePath = requirePath(req.query.path)
@@ -356,7 +772,11 @@ export const deleteEntry = asyncHandler(async (req, res) => {
   const targetPath = requirePath(req.body?.path)
 
   suppressWatcher(projectId)
-  const deleted = await deleteFromWorkspace(projectId, targetPath)
+  const deleted = await runDeletion(
+    () => deleteFromWorkspace(projectId, targetPath),
+    resolveWorkspaceFile(projectId, targetPath).absolute,
+    targetPath.split('/').pop(),
+  )
   await touchProject(projectId)
 
   res.json({ path: deleted, deleted: true })

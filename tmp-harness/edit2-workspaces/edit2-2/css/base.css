@@ -1,0 +1,3 @@
+:root { --brand: #4f46e5; }
+#pricing .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.site-footer { background: #111827; color: #ffffff; }

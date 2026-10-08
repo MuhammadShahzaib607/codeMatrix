@@ -1,11 +1,13 @@
 import Editor from '@monaco-editor/react'
 import { emmetCSS, emmetHTML, emmetJSX } from 'emmet-monaco-es'
-import { AlertTriangle, Loader2 } from 'lucide-react'
+import { AlertTriangle, Image as ImageIcon, Loader2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { setContent, updateContent } from '../../features/editorSlice'
 import { readWorkspaceFile } from '../../features/workspaceThunks'
 import useAutoSave from '../../hooks/useAutoSave'
+import { workspaceApi } from '../../services/api'
+import { formatBytes, isBinaryPath, isImagePath, isSvgPath } from '../../utils/fileTypes'
 import { getLanguageFromFilename } from '../../utils/language'
 import { defineAppMonacoThemes, monacoThemeFor } from '../../utils/monacoThemes'
 import { applyMonacoTsConfig } from '../../utils/monacoTsconfig'
@@ -14,6 +16,7 @@ import { hasActiveWorkspace } from '../../utils/workspace'
 import EmptyState from './EmptyState'
 import TabBar from './TabBar'
 import './Editor.css'
+import './EditorAsset.css'
 
 // The monospace stack used when the font setting is "System Default".
 const DEFAULT_MONO_FONT =
@@ -37,6 +40,12 @@ function registerEmmet(monaco) {
   }
 }
 
+function fileKindOf(filePath) {
+  if (isImagePath(filePath)) return 'image'
+  if (isBinaryPath(filePath)) return 'binary'
+  return 'text'
+}
+
 export default function EditorArea() {
   // Auto-save runs as a component-level hook so it stays active for every open
   // file, not just the one Monaco currently renders.
@@ -48,6 +57,8 @@ export default function EditorArea() {
   const editorSettings = useSelector((state) => state.settings.editor)
   const appTheme = useSelector((state) => state.settings.theme)
   const [failure, setFailure] = useState(null)
+  const [asset, setAsset] = useState(null)
+  const [svgTextFileId, setSvgTextFileId] = useState(null)
 
   const editorRef = useRef(null)
   const monacoRef = useRef(null)
@@ -133,12 +144,60 @@ export default function EditorArea() {
   }, [])
 
   const activeNode = activeFileId ? findNode(tree, activeFileId) : null
+  const activeKind = activeNode ? fileKindOf(activeNode.id) : 'text'
+  const isSvgFile = activeNode ? isSvgPath(activeNode.id) : false
+  const showSvgText = Boolean(isSvgFile && svgTextFileId === activeFileId)
+  const showTextEditor = activeKind === 'text' || showSvgText
   const isLoaded = activeFileId ? Object.hasOwn(contentByFileId, activeFileId) : false
   const content = isLoaded ? contentByFileId[activeFileId] : ''
   const loadError = failure?.fileId === activeFileId ? failure.message : null
+  const assetForFile = asset?.fileId === activeFileId ? asset : null
 
   useEffect(() => {
-    if (!activeNode || activeNode.type !== 'file' || isLoaded) return undefined
+    if (activeKind === 'text' || !activeNode || showSvgText) return undefined
+    const fileId = activeFileId
+    let cancelled = false
+    let objectUrl = null
+
+    workspaceApi
+      .getContainerFileRaw(activeNode.id)
+      .then((result) => {
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(result.blob)
+        setAsset({ fileId, status: 'ready', url: objectUrl, bytes: result.bytes, width: 0, height: 0 })
+        if (fileKindOf(activeNode.id) !== 'image') return
+        const probe = new Image()
+        probe.onload = () => {
+          if (cancelled) return
+          setAsset((current) =>
+            current?.url === objectUrl
+              ? { ...current, width: probe.naturalWidth, height: probe.naturalHeight }
+              : current,
+          )
+        }
+        probe.src = objectUrl
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setAsset({
+          fileId,
+          status: 'error',
+          url: null,
+          bytes: 0,
+          width: 0,
+          height: 0,
+          message: error.message,
+        })
+      })
+
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [activeFileId, activeKind, activeNode, showSvgText])
+
+  useEffect(() => {
+    if (!activeNode || activeNode.type !== 'file' || isLoaded || !showTextEditor) return undefined
 
     // Both an imported project and the scratch workspace have real files on
     // the server; only a missing workspace falls back to an empty buffer.
@@ -168,7 +227,13 @@ export default function EditorArea() {
     return () => {
       cancelled = true
     }
-  }, [activeNode, isLoaded, workspace, dispatch])
+  }, [activeNode, isLoaded, showTextEditor, workspace, dispatch])
+
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    editor.updateOptions({ padding: { top: isSvgFile && showSvgText ? 38 : 12 } })
+  }, [isSvgFile, showSvgText])
 
   useEffect(() => {
     applyReveal()
@@ -192,14 +257,88 @@ export default function EditorArea() {
           </div>
         )}
 
-        {activeNode && !loadError && !isLoaded && (
+        {activeNode && !loadError && showTextEditor && !isLoaded && (
           <div className="editor-status">
             <Loader2 size={18} className="spin" />
             <p>Opening {activeNode.name}…</p>
           </div>
         )}
 
-        {activeNode && !loadError && isLoaded && (
+        {activeNode && !loadError && activeKind !== 'text' && !showSvgText && !assetForFile && (
+          <div className="editor-status">
+            <Loader2 size={18} className="spin" />
+            <p>Opening {activeNode.name}…</p>
+          </div>
+        )}
+
+        {activeNode && !loadError && activeKind !== 'text' && !showSvgText && assetForFile?.status === 'error' && (
+          <div className="editor-status is-error">
+            <AlertTriangle size={18} />
+            <p>
+              Could not open {activeNode.name}
+              <br />
+              <span>{assetForFile.message}</span>
+            </p>
+          </div>
+        )}
+
+        {activeNode &&
+          !loadError &&
+          activeKind === 'image' &&
+          !showSvgText &&
+          assetForFile?.status === 'ready' && (
+            <div className="editor-asset is-image">
+              <div className="editor-asset-frame">
+                <img className="editor-asset-image" src={assetForFile.url} alt={activeNode.name} />
+              </div>
+              <div className="editor-asset-meta">
+                <span className="editor-asset-name">{activeNode.name}</span>
+                {assetForFile.width > 0 && (
+                  <span className="editor-asset-dims">
+                    {assetForFile.width} × {assetForFile.height} px
+                  </span>
+                )}
+                <span className="editor-asset-size">{formatBytes(assetForFile.bytes)}</span>
+                {isSvgFile && (
+                  <button
+                    type="button"
+                    className="editor-asset-toggle"
+                    onClick={() => setSvgTextFileId(activeFileId)}
+                  >
+                    Edit text
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+        {activeNode && !loadError && activeKind === 'binary' && !showSvgText && assetForFile?.status === 'ready' && (
+          <div className="editor-asset is-binary">
+            <div className="editor-asset-binary-icon">
+              <ImageIcon size={26} strokeWidth={1.5} />
+            </div>
+            <p className="editor-asset-binary-title">Binary file</p>
+            <p className="editor-asset-binary-text">
+              {activeNode.name} · {formatBytes(assetForFile.bytes)}
+            </p>
+            <p className="editor-asset-binary-text">This file can’t be edited as text.</p>
+          </div>
+        )}
+
+        {activeNode && !loadError && isSvgFile && showSvgText && (
+          <div className="editor-asset-bar">
+            <span className="editor-asset-name">{activeNode.name}</span>
+            <button
+              type="button"
+              className="editor-asset-toggle"
+              onClick={() => setSvgTextFileId(null)}
+            >
+              Show preview
+            </button>
+          </div>
+        )}
+
+        {activeNode && !loadError && showTextEditor && isLoaded && (
           // The model URI keeps the REAL file name (…/CustomSelect.tsx) on
           // purpose: Monaco's TypeScript worker derives the script kind (TSX vs
           // TS) from the URI's extension, so a URI without ".tsx" is what makes

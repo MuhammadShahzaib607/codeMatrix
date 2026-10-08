@@ -35,6 +35,10 @@ export function hasActiveWorkspace(workspace) {
 // shown to the user, neither as an Explorer root row nor in the topbar chip.
 const ANONYMOUS_SCRATCH_NAME = /^scratch(-\d+)?$/i
 
+export function isAnonymousScratchName(name) {
+  return ANONYMOUS_SCRATCH_NAME.test(String(name ?? '').trim())
+}
+
 /** True while the workspace is still an unnamed throwaway scratch folder. */
 export function isAnonymousScratchWorkspace(workspace) {
   if (!isScratchWorkspace(workspace)) return false

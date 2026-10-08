@@ -1,0 +1,4 @@
+repaired files: css/base.css, css/theme.css, js/main.js, js/icons.js, index.html
+slots: 0 comments: 0
+h1: 1 heroCardText: true
+footer tokens: true

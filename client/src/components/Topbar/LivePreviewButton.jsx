@@ -2,6 +2,7 @@ import { Play } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSelector } from 'react-redux'
 import useAuthGuard from '../../hooks/useAuthGuard'
+import { previewTargetForPath } from '../../utils/containerPaths'
 import { collectHtmlFiles, isHtmlPath, openPreviewTab } from '../../utils/preview'
 import { findNode } from '../../utils/tree'
 import { hasActiveWorkspace } from '../../utils/workspace'
@@ -27,8 +28,14 @@ export default function LivePreviewButton() {
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const wrapRef = useRef(null)
 
-  const htmlFiles = useMemo(() => collectHtmlFiles(tree), [tree])
-  const canPreview = hasActiveWorkspace(workspace) && htmlFiles.length > 0
+  const previewTargets = useMemo(
+    () =>
+      collectHtmlFiles(tree)
+        .map((file) => ({ ...file, target: previewTargetForPath(file.path, tree) }))
+        .filter((file) => file.target),
+    [tree],
+  )
+  const canPreview = hasActiveWorkspace(workspace) && previewTargets.length > 0
 
   // Clicking anywhere outside closes the file picker.
   useEffect(() => {
@@ -39,15 +46,11 @@ export default function LivePreviewButton() {
     return () => document.removeEventListener('mousedown', handlePointerDown)
   }, [])
 
-  const openFile = useCallback(
-    (file) => {
-      const projectId = workspace.projectId
-      if (!projectId || !file?.path) return
-      openPreviewTab(projectId, file.path)
-      setIsMenuOpen(false)
-    },
-    [workspace.projectId],
-  )
+  const openFile = useCallback((file) => {
+    if (!file?.target) return
+    openPreviewTab(file.target.projectId, file.target.innerPath)
+    setIsMenuOpen(false)
+  }, [])
 
   function handleClick() {
     if (!canPreview) return
@@ -56,12 +59,20 @@ export default function LivePreviewButton() {
       const activeNode = activeFileId ? findNode(tree, activeFileId) : null
       const activePath = activeNode?.path ?? activeNode?.id
       if (activeNode && activeNode.type !== 'folder' && isHtmlPath(activePath)) {
-        openFile({ path: activePath })
-        return
+        const target = previewTargetForPath(activePath, tree)
+        if (target) {
+          openPreviewTab(target.projectId, target.innerPath)
+          setIsMenuOpen(false)
+          return
+        }
       }
 
       // 2. index.html at the project root.
-      const rootIndex = htmlFiles.find((file) => file.path.toLowerCase() === 'index.html')
+      const rootIndex = previewTargets.find(
+        (file) =>
+          file.target.projectId === workspace.projectId &&
+          file.target.innerPath.toLowerCase() === 'index.html',
+      )
       if (rootIndex) {
         openFile(rootIndex)
         return
@@ -69,8 +80,8 @@ export default function LivePreviewButton() {
 
       // 3. Nothing obvious to open: a lone .html file is opened directly, a
       //    project with several shows a menu so the user picks one.
-      if (htmlFiles.length === 1) {
-        openFile(htmlFiles[0])
+      if (previewTargets.length === 1) {
+        openFile(previewTargets[0])
         return
       }
       setIsMenuOpen((open) => !open)
@@ -93,10 +104,10 @@ export default function LivePreviewButton() {
         </button>
       </Tooltip>
 
-      {isMenuOpen && htmlFiles.length > 0 && (
+      {isMenuOpen && previewTargets.length > 0 && (
         <div className="live-preview-menu" role="menu">
           <div className="live-preview-menu-title">Choose a page to preview</div>
-          {htmlFiles.map((file) => (
+          {previewTargets.map((file) => (
             <button
               key={file.id}
               type="button"

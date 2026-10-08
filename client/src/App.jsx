@@ -1,12 +1,12 @@
 import { useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import ActivityBar from './components/ActivityBar/ActivityBar'
-import AIPanel from './components/AIPanel/AIPanel'
 import AuthModal from './components/Auth/AuthModal'
 import EditorArea from './components/Editor/EditorArea'
 import StorageNotice from './components/Notices/StorageNotice'
 import WorkspaceMissingNotice from './components/Notices/WorkspaceMissingNotice'
 import SettingsModal from './components/Settings/SettingsModal'
+import RightPanel from './components/RightPanel/RightPanel'
 import SidebarContainer from './components/Sidebar/SidebarContainer'
 import TerminalPanel from './components/Terminal/TerminalPanel'
 import Toast from './components/Toast/Toast'
@@ -16,11 +16,13 @@ import { fetchApiKeys, fetchKeyUsage } from './features/aiSlice'
 import { clearExplorerHistory } from './features/explorerHistorySlice'
 import { clearProjectTrees } from './features/projectsSlice'
 import { clearWorkspace } from './features/fileSystemSlice'
+import { resetSidebarTerminal } from './features/sidebarTerminalSlice'
 import { fetchAvailableShells, resetTerminals } from './features/terminalSlice'
 import { clearTsConfig } from './features/tsconfigSlice'
 import { loadWorkspaceTsConfig } from './features/workspaceThunks'
 import {
   AI_PANEL_WIDTH_KEY,
+  RIGHT_PANEL_TAB_KEY,
   SIDEBAR_WIDTH_KEY,
   resetStorageNotice,
   setAiPanelWidth,
@@ -34,7 +36,6 @@ import { clearFileContentCache } from './services/fileContentCache'
 import { writeSettings } from './services/settingsStorage'
 import { clearWorkspaceRef } from './services/workspaceStorage'
 import { getTheme } from './utils/themes'
-import { isCloudWorkspace } from './utils/workspace'
 import './App.css'
 
 export default function App() {
@@ -43,9 +44,11 @@ export default function App() {
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
   const sidebarWidth = useSelector((state) => state.ui.sidebarWidth)
   const aiPanelWidth = useSelector((state) => state.ui.aiPanelWidth)
+  const rightPanelTab = useSelector((state) => state.ui.rightPanelTab)
   const isTerminalOpen = useSelector((state) => state.terminal.isTerminalPanelOpen)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
+  const isAdmin = useSelector((state) => state.auth.user?.role === 'admin')
   const settings = useSelector((state) => state.settings)
 
   useGlobalShortcuts()
@@ -97,11 +100,12 @@ export default function App() {
   }, [dispatch])
 
   // The agent runs on a key the USER saved, so load the masked list whenever
-  // the user signs in (the panel needs it to show the zero-key prompt).
+  // an ADMIN signs in (the panel needs it to show the zero-key prompt). The
+  // keys API is admin-only, so a non-admin never receives a 403 here.
   useEffect(() => {
-    if (isAuthenticated) dispatch(fetchApiKeys())
-    if (isAuthenticated) dispatch(fetchKeyUsage())
-  }, [isAuthenticated, dispatch])
+    if (isAuthenticated && isAdmin) dispatch(fetchApiKeys())
+    if (isAuthenticated && isAdmin) dispatch(fetchKeyUsage())
+  }, [isAuthenticated, isAdmin, dispatch])
 
   // The content cache is keyed by workspace id, so drop it whenever the active
   // workspace changes (scratch included).
@@ -121,20 +125,12 @@ export default function App() {
     dispatch(loadWorkspaceTsConfig({ projectId: workspace.projectId }))
   }, [workspace.projectId, dispatch])
 
-  // Terminals only reset for a REAL imported project: entering the scratch
-  // workspace must not tear down terminals that already run in that same folder
-  // (the Explorer and the terminal share scratch-<userId>).
-  const cloudProjectId = isCloudWorkspace(workspace) ? workspace.projectId : null
-  useEffect(() => {
-    if (!cloudProjectId) return
-    dispatch(resetTerminals())
-  }, [cloudProjectId, dispatch])
-
   useEffect(() => {
     if (isAuthenticated) return
     dispatch(clearWorkspace())
     dispatch(clearProjectTrees())
     dispatch(resetTerminals())
+    dispatch(resetSidebarTerminal())
     clearWorkspaceRef()
     clearFileContentCache()
   }, [isAuthenticated, dispatch])
@@ -150,6 +146,13 @@ export default function App() {
       localStorage.setItem(AI_PANEL_WIDTH_KEY, String(aiPanelWidth))
     } catch {}
   }, [aiPanelWidth])
+
+  useEffect(() => {
+    if (!rightPanelTab) return
+    try {
+      localStorage.setItem(RIGHT_PANEL_TAB_KEY, rightPanelTab)
+    } catch {}
+  }, [rightPanelTab])
 
   function startSidebarResize(event) {
     event.preventDefault()
@@ -233,7 +236,7 @@ export default function App() {
           className={`panel-slot panel-slot-ai ${isAIPanelOpen ? 'is-open' : ''}`}
           style={{ width: isAIPanelOpen ? aiPanelWidth : 0 }}
         >
-          <AIPanel />
+          <RightPanel />
           {isAIPanelOpen && (
             <div
               className="ai-resize-handle"

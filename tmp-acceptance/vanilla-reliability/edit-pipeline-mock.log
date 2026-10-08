@@ -1,0 +1,19 @@
+[mock] request #1 task="add a contact form section to the home page" -> html=false css=false tools=false
+[case] 1 add contact form section: requests=1 ok=true changed=index.html
+[mock] request #2 task="update the UI of the FAQs on the home page" -> html=true css=false tools=false
+[case] 2 update the FAQ UI: requests=1 ok=true changed=index.html
+[mock] request #3 task="make the pricing 3 columns" -> html=false css=true tools=false
+[case] 3 pricing 3 columns: requests=1 ok=true changed=css/base.css
+[mock] request #4 task="change the hero heading" -> html=true css=false tools=false
+[case] 4 change hero heading: requests=1 ok=true changed=index.html
+[mock] request #5 task="make the footer darker" -> html=false css=true tools=false
+[case] 5 darker footer: requests=1 ok=true changed=css/base.css
+[mock] request #6 task="add a gallery section" -> html=true css=false tools=false
+[case] 6 nonexistent section (gallery): requests=1 ok=true changed=index.html
+[mock] request #7 task="add a team section" -> html=true css=false tools=false
+[mock] request #8 task="add a team section" -> html=true css=false tools=false
+[case] 7 broken fragment (team): requests=2 ok=false changed=none
+[case] thrown: I could not finish the change to Team — the file was left unchanged. Try naming the section explicitly, or ask for the change in smaller steps.
+[mock] request #9 task="change the hero heading" -> html=true css=false tools=false
+[case] 8 auto model, hero heading: requests=1 ok=true changed=index.html
+[harness] wrote edit-cases.result.json — 8 case(s)

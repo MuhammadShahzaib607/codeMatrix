@@ -2,7 +2,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
-import { resolveWorkspaceFile } from '../utils/workspaceManager.js'
+import {
+  WORKSPACES_ROOT,
+  findContainerProjectId,
+  getWorkspaceRecord,
+  isValidProjectId,
+  resolveContainerOwnerPath,
+  resolveWorkspaceFile,
+} from '../utils/workspaceManager.js'
 
 // A deliberately small, self-contained MIME lookup — no extra dependency. The
 // keys are lower-cased extensions including the leading dot. Anything unknown
@@ -110,27 +117,69 @@ export function injectReloadScript(html, projectId) {
  * resolveWorkspaceFile, whose traversal guard rejects anything outside the
  * workspace folder.
  */
+/**
+ * Resolves one preview path against the RIGHT root:
+ *   - a project id (registered, or a legacy folder named after the id) resolves
+ *     inside that project's workspace folder;
+ *   - anything else is the NAME of a top-level folder in the REQUESTER's own
+ *     container, which is how "../sibling/logo.png" from a previewed page
+ *     loads. The container is always derived from the verified JWT, so this
+ *     can never reach another user's files, and resolveContainerOwnerPath
+ *     applies the same traversal guard every other container path uses.
+ *
+ * Returns { absolute, inner } where `inner` is relative to that root.
+ */
+function resolvePreviewTarget(ownerId, segment, target) {
+  const isProjectRoot =
+    isValidProjectId(segment) &&
+    (Boolean(getWorkspaceRecord(segment)) || fs.existsSync(path.join(WORKSPACES_ROOT, segment)))
+
+  if (isProjectRoot) {
+    const resolved = resolveWorkspaceFile(segment, target)
+    return { absolute: resolved.absolute, inner: resolved.relative, projectId: segment }
+  }
+
+  const joined = target ? `${segment}/${target}` : segment
+  const resolved = resolveContainerOwnerPath(ownerId, joined)
+  return {
+    absolute: resolved.absolute,
+    inner: resolved.inner,
+    projectId: findContainerProjectId(ownerId, resolved.top) ?? segment,
+  }
+}
+
 export const servePreviewFile = asyncHandler(async (req, res) => {
-  const { projectId } = req.params
+  const segment = String(req.params.projectId ?? '')
   const requested = typeof req.params[0] === 'string' ? req.params[0] : ''
 
-  let target = requested.replace(/^\/+/, '')
-  if (!target) target = 'index.html'
+  const trimmed = requested.replace(/^\/+/, '')
 
-  let resolved = resolveWorkspaceFile(projectId, target)
+  // A bare /preview/<segment> is usually a project (-> index.html), but it can
+  // also be a loose top-level FILE beside the projects, so resolve the segment
+  // itself first and only fall back to index.html when it is not a file.
+  let resolved = resolvePreviewTarget(req.user.id, segment, trimmed)
   let stats = await fs.promises.stat(resolved.absolute).catch(() => null)
+
+  if (!trimmed && (!stats || stats.isDirectory())) {
+    resolved = resolvePreviewTarget(req.user.id, segment, 'index.html')
+    stats = await fs.promises.stat(resolved.absolute).catch(() => null)
+  }
 
   // Directory request (e.g. /preview/:id/ or /preview/:id/sub/) -> index.html.
   if (stats?.isDirectory()) {
-    target = resolved.relative ? `${resolved.relative}/index.html` : 'index.html'
-    resolved = resolveWorkspaceFile(projectId, target)
+    const inner = resolved.inner
+    resolved = resolvePreviewTarget(
+      req.user.id,
+      segment,
+      inner ? `${inner}/index.html` : 'index.html',
+    )
     stats = await fs.promises.stat(resolved.absolute).catch(() => null)
   }
 
   if (!stats || !stats.isFile()) {
     throw new ApiError(
       404,
-      `"${resolved.relative || target}" was not found in this workspace.`,
+      `"${resolved.inner || trimmed || 'index.html'}" was not found.`,
       'FILE_MISSING',
     )
   }
@@ -143,7 +192,7 @@ export const servePreviewFile = asyncHandler(async (req, res) => {
   if (isHtmlFile(resolved.absolute)) {
     const html = await fs.promises.readFile(resolved.absolute, 'utf8')
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
-    res.send(injectReloadScript(html, projectId))
+    res.send(injectReloadScript(html, resolved.projectId))
     return
   }
 

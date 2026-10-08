@@ -4,14 +4,28 @@ export const SIDEBAR_DEFAULT_WIDTH = 250
 export const SIDEBAR_MIN_WIDTH = 180
 export const SIDEBAR_MAX_WIDTH = 500
 
-// The right-hand AI panel resizes by dragging its LEFT edge (same pattern as
-// the sidebar, mirrored), clamped 280–600px and persisted to localStorage.
+// The right-hand panel resizes by dragging its LEFT edge (same pattern as
+// the sidebar, mirrored), clamped 280–1000px and persisted to localStorage.
+// The wider maximum leaves room for the sidebar terminal to show a full TUI.
 export const AI_PANEL_DEFAULT_WIDTH = 360
 export const AI_PANEL_MIN_WIDTH = 280
-export const AI_PANEL_MAX_WIDTH = 600
+export const AI_PANEL_MAX_WIDTH = 1000
 
 const SIDEBAR_WIDTH_KEY = 'code-matrix:sidebarWidth'
 const AI_PANEL_WIDTH_KEY = 'code-matrix:aiPanelWidth'
+export const RIGHT_PANEL_TAB_KEY = 'code-matrix:rightPanelTab'
+
+export const RIGHT_PANEL_TABS = ['agent', 'terminal']
+
+function readStoredRightPanelTab() {
+  try {
+    const value = localStorage.getItem(RIGHT_PANEL_TAB_KEY)
+    if (RIGHT_PANEL_TABS.includes(value)) return value
+  } catch {}
+  // Nothing stored: the default depends on the account role (admins get the
+  // Agent tab, everyone else lands on Terminal), so the caller resolves it.
+  return null
+}
 
 function readStoredSidebarWidth() {
   try {
@@ -37,6 +51,9 @@ const initialState = {
   activeSidebarView: 'explorer',
   sidebarWidth: readStoredSidebarWidth(),
   aiPanelWidth: readStoredAiPanelWidth(),
+  // Which view the right sidebar shows: the AI agent or a terminal. Persisted
+  // so a reload comes back to the same view.
+  rightPanelTab: readStoredRightPanelTab(),
   revealedNode: null,
   revealLine: null,
   authModal: { isOpen: false, mode: 'signin', message: null },
@@ -62,8 +79,8 @@ const uiSlice = createSlice({
       reducer(state, action) {
         state.toast = action.payload
       },
-      prepare({ message, type = 'info' }) {
-        return { payload: { id: nanoid(), message, type } }
+      prepare({ message, type = 'info', action = null }) {
+        return { payload: { id: nanoid(), message, type, action } }
       },
     },
 
@@ -98,6 +115,11 @@ const uiSlice = createSlice({
     setAiPanelWidth(state, action) {
       const value = Math.round(Number(action.payload) || 0)
       state.aiPanelWidth = Math.min(AI_PANEL_MAX_WIDTH, Math.max(AI_PANEL_MIN_WIDTH, value))
+    },
+
+    setRightPanelTab(state, action) {
+      if (!RIGHT_PANEL_TABS.includes(action.payload)) return
+      state.rightPanelTab = action.payload
     },
 
     revealTreeNode: {
@@ -151,6 +173,7 @@ export const {
   setActiveSidebarView,
   setSidebarWidth,
   setAiPanelWidth,
+  setRightPanelTab,
   revealTreeNode,
   revealLineInEditor,
   openAuthModal,

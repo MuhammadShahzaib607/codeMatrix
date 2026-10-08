@@ -58,6 +58,24 @@
   line-height: 1.5;
 }
 
+.toast-action {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toast-action:hover {
+  background: var(--accent);
+  color: var(--accent-on);
+}
+
 .toast-close {
   display: inline-flex;
   align-items: center;

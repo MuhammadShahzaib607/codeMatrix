@@ -96,6 +96,31 @@ function workspacePath(projectId, suffix) {
   return `/api/workspace/${encodeURIComponent(projectId)}${suffix}`
 }
 
+async function readRawFile(pathAndQuery) {
+  if (!API_BASE_URL) {
+    throw new ApiError('VITE_API_BASE_URL is not set in client/.env — cannot reach the API.', {
+      status: 0,
+      code: 'MISSING_API_BASE_URL',
+    })
+  }
+  let response
+  try {
+    response = await fetch(`${API_BASE_URL}${pathAndQuery}`, { headers: authHeaders() })
+  } catch {
+    throw new ApiError(`Could not reach the server at ${API_BASE_URL}. Is it running?`, {
+      status: 0,
+      code: 'NETWORK_ERROR',
+    })
+  }
+  if (!response.ok) throw await readError(response)
+  const blob = await response.blob()
+  return {
+    blob,
+    bytes: blob.size,
+    contentType: response.headers.get('content-type') ?? '',
+  }
+}
+
 export const authApi = {
   register(payload) {
     return request('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) })
@@ -200,6 +225,131 @@ export const workspaceApi = {
   // project folder as a sibling entry (and may hold plain top-level files).
   listContainer() {
     return request('/api/workspace/container')
+  },
+
+  // The WHOLE container as one tree (every project folder + top-level file),
+  // with container-relative paths. This is the Explorer's single tree.
+  getContainerTree() {
+    return request('/api/workspace/container/tree')
+  },
+
+  getContainerFile(filePath) {
+    return request(`/api/workspace/container/file?path=${encodeURIComponent(filePath)}`)
+  },
+
+  // Raw bytes (images and every other binary asset) — never JSON/base64 text.
+  async getContainerFileRaw(filePath) {
+    return readRawFile(`/api/workspace/container/file/raw?path=${encodeURIComponent(filePath)}`)
+  },
+
+  async getFileRaw(projectId, filePath) {
+    return readRawFile(
+      `${workspacePath(projectId, '/file/raw')}?path=${encodeURIComponent(filePath)}`,
+    )
+  },
+
+  // Raw bytes for ONE file inside a project (binary-safe export / sync).
+  async getProjectFileBytes(projectId, filePath) {
+    return readRawFile(`${workspacePath(projectId, '/file/raw')}?path=${encodeURIComponent(filePath)}`)
+  },
+
+  // Multipart upload into a container-relative folder ('' = the container root).
+  // XMLHttpRequest (not fetch) because only XHR reports upload progress, which
+  // drives the progress bar for large files.
+  uploadFiles(targetPath, files, onProgress) {
+    if (!API_BASE_URL) {
+      return Promise.reject(
+        new ApiError('VITE_API_BASE_URL is not set in client/.env — cannot reach the API.', {
+          status: 0,
+          code: 'MISSING_API_BASE_URL',
+        }),
+      )
+    }
+    const form = new FormData()
+    form.append('path', String(targetPath ?? ''))
+    for (const file of files) form.append('files', file, file.name)
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `${API_BASE_URL}/api/workspace/container/upload`)
+      const token = getAuthToken()
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.({ loaded: event.loaded, total: event.total })
+      }
+      xhr.onload = () => {
+        let body = null
+        try {
+          body = JSON.parse(xhr.responseText)
+        } catch {
+          body = null
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(body)
+          return
+        }
+        reject(
+          new ApiError(body?.error?.message ?? `Request failed with status ${xhr.status}.`, {
+            status: xhr.status,
+            code: body?.error?.code,
+          }),
+        )
+      }
+      xhr.onerror = () =>
+        reject(
+          new ApiError(`Could not reach the server at ${API_BASE_URL}. Is it running?`, {
+            status: 0,
+            code: 'NETWORK_ERROR',
+          }),
+        )
+      xhr.onabort = () =>
+        reject(new ApiError('The upload was cancelled.', { status: 0, code: 'ABORTED' }))
+
+      xhr.send(form)
+    })
+  },
+
+  saveContainerFile(filePath, content) {
+    return request('/api/workspace/container/file', {
+      method: 'PUT',
+      body: JSON.stringify({ path: filePath, content }),
+    })
+  },
+
+  createContainerPath(path, type) {
+    return request('/api/workspace/container/create', {
+      method: 'POST',
+      body: JSON.stringify({ path, type }),
+    })
+  },
+
+  deleteContainerPath(path) {
+    return request('/api/workspace/container/delete', {
+      method: 'DELETE',
+      body: JSON.stringify({ path }),
+    })
+  },
+
+  renameContainerPath(oldPath, newPath) {
+    return request('/api/workspace/container/rename', {
+      method: 'PATCH',
+      body: JSON.stringify({ oldPath, newPath }),
+    })
+  },
+
+  duplicateContainerPath(sourcePath, targetFolderPath) {
+    return request('/api/workspace/container/duplicate', {
+      method: 'POST',
+      body: JSON.stringify({ sourcePath, targetFolderPath }),
+    })
+  },
+
+  moveContainerPath(sourcePath, targetFolderPath) {
+    return request('/api/workspace/container/move', {
+      method: 'POST',
+      body: JSON.stringify({ sourcePath, targetFolderPath: targetFolderPath ?? '' }),
+    })
   },
 
   // A top-level FOLDER is a new project; a top-level FILE lives beside the

@@ -94,6 +94,7 @@ export async function quickCheck({
   files = null,
   written = null,
   checkReferences = true,
+  requiredSections = [],
 } = {}) {
   const problems = []
   let workspaceRoot = root
@@ -142,6 +143,12 @@ export async function quickCheck({
     return content
   }
 
+  // A utility app (css/app.css, no css/base.css) is a single screen and must
+  // NOT be told to add a marketing footer; the prompt forbids one. Requiring a
+  // footer here is exactly what pushed apps into adding one.
+  const appProject =
+    (await read('css/app.css')) !== null && (await read('css/base.css')) === null
+
   const checked = []
   for (const file of planned) {
     const content = await read(file)
@@ -181,7 +188,7 @@ export async function quickCheck({
     if (!/<header\b/i.test(content)) {
       problems.push(`"${file}" has no <header> — a page is incomplete without its site header.`)
     }
-    if (!/<footer\b/i.test(content)) {
+    if (!appProject && !/<footer\b/i.test(content)) {
       problems.push(`"${file}" has no <footer> landmark — the page is incomplete without its footer.`)
     }
     const h1Count = (content.match(/<h1\b/gi) || []).length
@@ -224,6 +231,39 @@ export async function quickCheck({
       }
     }
 
+  }
+
+  const htmlFiles = (await Promise.all(checked.filter((file) => /\.html?$/i.test(file)).map((file) => read(file))))
+    .filter((content) => typeof content === 'string')
+  const projectHtml = htmlFiles.join('\n')
+  for (const required of Array.isArray(requiredSections) ? requiredSections : []) {
+    const type = String(required?.type ?? '').trim()
+    if (!type) continue
+    const label = String(required?.label ?? type)
+    const types = (Array.isArray(required?.types) && required.types.length > 0 ? required.types : [type]).map(
+      (value) => String(value ?? '').trim(),
+    )
+    const sectionPattern = new RegExp(
+      `(?:data-section|id)\\s*=\\s*["'](?:${types.map((value) => value.replace(/[^a-z0-9-]/gi, '')).join('|')})["']`,
+      'i',
+    )
+    if (!sectionPattern.test(projectHtml)) {
+      problems.push(
+        `The request names ${label}, but no page has a section for it. Add <section class="section" id="${types[0]}" data-section="${types[0]}"> with real content (use edit_section, or compose_page for a new build).`,
+      )
+      continue
+    }
+    if (required?.form) {
+      const hasForm = /<form\b[^>]*data-validate/i.test(projectHtml)
+      const hasFields = ['name', 'email', 'message'].every((field) =>
+        new RegExp(`(?:name|id)\\s*=\\s*["']${field}["']`, 'i').test(projectHtml),
+      )
+      if (!hasForm || !hasFields) {
+        problems.push(
+          `The request names a working contact form, but the page has no <form data-validate novalidate> with labelled name, email and message fields. js/main.js wires the validation and the .form-success message.`,
+        )
+      }
+    }
   }
 
   return {

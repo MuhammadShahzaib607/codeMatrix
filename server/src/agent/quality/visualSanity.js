@@ -122,6 +122,219 @@ const PROBE_SCRIPT = `<script>
       }
       faqToggle.click();
     }
+    var rgbOf = function (value) {
+      var text = String(value || '');
+      var open = text.indexOf('(');
+      var close = text.indexOf(')');
+      if (open === -1 || close === -1) return null;
+      var parts = text.slice(open + 1, close).split(',');
+      if (parts.length < 3) return null;
+      var channels = [];
+      for (var i = 0; i < 3; i += 1) {
+        var channel = parseFloat(parts[i]);
+        if (isNaN(channel)) return null;
+        channels.push(channel);
+      }
+      return channels;
+    };
+    var lumOf = function (rgb) {
+      if (!rgb) return null;
+      var parts = rgb.map(function (c) { var v = c / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+      return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2];
+    };
+    var contrastOf = function (fg, bg) {
+      var a = lumOf(rgbOf(fg));
+      var b = lumOf(rgbOf(bg));
+      if (a === null || b === null) return null;
+      var hi = Math.max(a, b);
+      var lo = Math.min(a, b);
+      return Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100;
+    };
+    var rawBackground = String(out.bodyBackground || '');
+    if (!rawBackground || rawBackground === 'transparent' || rawBackground === 'rgba(0, 0, 0, 0)') out.bodyBackground = 'rgb(255, 255, 255)';
+    out.themeBg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+    var effectiveBg = function (element) {
+      var node = element;
+      while (node && node.nodeType === 1) {
+        var bg = getComputedStyle(node).backgroundColor;
+        if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') return bg;
+        node = node.parentElement;
+      }
+      return out.bodyBackground;
+    };
+    var heading = document.querySelector('main h1, h1');
+    var para = document.querySelector('main p, p');
+    out.headingContrast = heading ? contrastOf(getComputedStyle(heading).color, effectiveBg(heading)) : null;
+    out.bodyContrast = para ? contrastOf(getComputedStyle(para).color, effectiveBg(para)) : null;
+    var contrastBg = function (element) {
+      var node = element;
+      while (node && node.nodeType === 1) {
+        var style = getComputedStyle(node);
+        var bgColor = style.backgroundColor;
+        var solid = bgColor && bgColor !== 'transparent' && bgColor !== 'rgba(0, 0, 0, 0)';
+        if (solid) return bgColor;
+        var bgImage = style.backgroundImage;
+        if (bgImage && bgImage !== 'none') return null;
+        node = node.parentElement;
+      }
+      return out.bodyBackground;
+    };
+    var contrastTargets = [].slice.call(document.querySelectorAll(
+      'h1,h2,h3,h4,h5,h6,p,li,a,span,small,blockquote,figcaption,button,label,footer *, .social-link'
+    ));
+    var weakContrast = [];
+    var seenContrast = {};
+    contrastTargets.forEach(function (element) {
+      if (element.closest('.sr-only, .skip-link')) return;
+      var tag = String(element.tagName || '').toLowerCase();
+      if (tag === 'head' || tag === 'script' || tag === 'style' || tag === 'svg' || tag === 'path') return;
+      var style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) return;
+      var box = element.getBoundingClientRect();
+      if (box.width < 2 || box.height < 2) return;
+      var hasOwnText = false;
+      for (var n = 0; n < element.childNodes.length; n += 1) {
+        if (element.childNodes[n].nodeType === 3 && element.childNodes[n].textContent.trim() !== '') { hasOwnText = true; break; }
+      }
+      var hasIcon = Boolean(element.querySelector('svg, [data-icon]')) || tag === 'svg';
+      if (!hasOwnText && !hasIcon) return;
+      var surface = contrastBg(element);
+      if (!surface) return;
+      var ratio = contrastOf(style.color, surface);
+      if (ratio === null) return;
+      var fontSize = parseFloat(style.fontSize) || 16;
+      var weight = parseInt(style.fontWeight, 10) || 400;
+      var large = fontSize >= 24 || (fontSize >= 18.66 && weight >= 700);
+      var min = large ? 3 : 4.5;
+      if (ratio + 0.01 >= min) return;
+      var cls = typeof element.className === 'string' && element.className.trim() ? '.' + element.className.trim().split(/\s+/)[0] : '';
+      var label = tag + cls;
+      var key = label + '|' + ratio;
+      if (seenContrast[key]) return;
+      seenContrast[key] = true;
+      weakContrast.push({ el: label, ratio: ratio, text: String(element.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40) });
+    });
+    weakContrast.sort(function (a, b) { return a.ratio - b.ratio; });
+    out.weakContrast = weakContrast.slice(0, 12);
+    var navList = document.querySelector('.nav-list, nav ul, header ul');
+    out.navListStyle = navList ? getComputedStyle(navList).listStyleType : '';
+    var crumbs = document.querySelector('.breadcrumbs');
+    out.breadcrumbListStyle = crumbs ? getComputedStyle(crumbs).listStyleType : '';
+    var controls = [].slice.call(document.querySelectorAll('input:not([type="hidden"]), select, textarea, .btn, button'));
+    var controlGroups = [];
+    controls.forEach(function (control) {
+      var box = control.getBoundingClientRect();
+      if (box.height < 8 || !control.parentNode) return;
+      var parent = control.parentNode;
+      var group = null;
+      for (var i = 0; i < controlGroups.length; i += 1) {
+        if (controlGroups[i].parent === parent) { group = controlGroups[i]; break; }
+      }
+      if (!group) {
+        group = { parent: parent, label: parent.className ? String(parent.className).split(/\s+/)[0] : String(parent.tagName).toLowerCase(), rows: {} };
+        controlGroups.push(group);
+      }
+      var band = String(Math.round(box.top / 6));
+      (group.rows[band] = group.rows[band] || []).push(Math.round(box.height));
+    });
+    out.unequalControlRows = [];
+    controlGroups.forEach(function (group) {
+      Object.keys(group.rows).forEach(function (band) {
+        var heights = group.rows[band];
+        if (heights.length < 2) return;
+        var min = Math.min.apply(null, heights);
+        var max = Math.max.apply(null, heights);
+        if (max - min > 1) out.unequalControlRows.push({ group: group.label, heights: heights });
+      });
+    });
+    var unequalCardRows = [];
+    [].slice.call(document.querySelectorAll('[class*="grid"]')).forEach(function (grid) {
+      var layout = getComputedStyle(grid).display;
+      if (layout !== 'grid' && layout !== 'flex') return;
+      var cards = [].slice.call(grid.children).filter(function (child) {
+        var box = child.getBoundingClientRect();
+        return box.width > 60 && box.height > 40;
+      });
+      if (cards.length < 2) return;
+      var rows = {};
+      cards.forEach(function (child) {
+        var box = child.getBoundingClientRect();
+        var band = String(Math.round(box.top / 6));
+        var cls = child.className ? String(child.className).split(/\s+/)[0] : String(child.tagName).toLowerCase();
+        (rows[band] = rows[band] || []).push({ height: Math.round(box.height), cls: cls });
+      });
+      Object.keys(rows).forEach(function (band) {
+        var row = rows[band];
+        if (row.length < 2) return;
+        var heights = row.map(function (item) { return item.height; });
+        var min = Math.min.apply(null, heights);
+        var max = Math.max.apply(null, heights);
+        if (max - min > 12) unequalCardRows.push({ group: row[0].cls, heights: heights });
+      });
+    });
+    out.unequalCardRows = unequalCardRows;
+    var iconNoLabel = 0;
+    [].slice.call(document.querySelectorAll('button')).forEach(function (button) {
+      var text = (button.textContent || '').trim();
+      if (!text && button.querySelector('svg, img') && !button.getAttribute('aria-label') && !button.getAttribute('title') && !button.getAttribute('aria-labelledby')) iconNoLabel += 1;
+    });
+    out.iconButtonsMissingLabel = iconNoLabel;
+    var emptyBoxes = [];
+    [].slice.call(document.querySelectorAll('article, .card, .hero__card, .info-card, .service-card, .feature, .value-card, .process-step, .stat, .testimonial, .cta-banner, .blog-card, .pricing-card, .panel')).forEach(function (box) {
+      var rect = box.getBoundingClientRect();
+      if (rect.width < 80 || rect.height < 40) return;
+      var hasMedia = !!box.querySelector('svg, img, video, canvas, iframe, input, textarea, select, button, [data-icon]');
+      var text = String(box.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!hasMedia && text.length < 3) {
+        var cls = box.className ? String(box.className).split(/\s+/)[0] : box.tagName.toLowerCase();
+        emptyBoxes.push(cls + ' (' + Math.round(rect.width) + 'x' + Math.round(rect.height) + ')');
+      }
+    });
+    out.emptyBoxes = emptyBoxes;
+    var unhydratedIcons = 0;
+    [].slice.call(document.querySelectorAll('[data-icon]')).forEach(function (node) {
+      var svg = node.querySelector('svg');
+      if (!svg) { unhydratedIcons += 1; return; }
+      var ibox = svg.getBoundingClientRect();
+      if (ibox.width < 4 || ibox.height < 4) unhydratedIcons += 1;
+    });
+    out.unhydratedIcons = unhydratedIcons;
+    var narrowQuotes = [];
+    [].slice.call(document.querySelectorAll('blockquote, .testimonial__quote')).forEach(function (quote) {
+      var qbox = quote.getBoundingClientRect();
+      var parent = quote.parentElement;
+      if (!parent) return;
+      var pcs = getComputedStyle(parent);
+      var pbox = parent.getBoundingClientRect();
+      var content = pbox.width - (parseFloat(pcs.paddingLeft) || 0) - (parseFloat(pcs.paddingRight) || 0) - (parseFloat(pcs.borderLeftWidth) || 0) - (parseFloat(pcs.borderRightWidth) || 0);
+      if (content < 180) return;
+      if (qbox.width < content - 12) narrowQuotes.push(Math.round(qbox.width));
+    });
+    out.narrowQuotes = narrowQuotes;
+    var footer = document.querySelector('footer');
+    if (footer) {
+      var footerContent = footer.querySelector('.container') || footer.firstElementChild;
+      var mainContainers = [].slice.call(document.querySelectorAll('main .container'));
+      var mainContent = null;
+      mainContainers.forEach(function (candidate) {
+        if (!mainContent || candidate.getBoundingClientRect().width > mainContent.getBoundingClientRect().width) mainContent = candidate;
+      });
+      if (!mainContent) {
+        var mainEl = document.querySelector('main');
+        if (mainEl) {
+          var mainMax = getComputedStyle(mainEl).maxWidth;
+          if (mainMax && mainMax !== 'none' && parseFloat(mainMax) > 0) mainContent = mainEl;
+        }
+      }
+      if (footerContent && mainContent) {
+        var fbox = footerContent.getBoundingClientRect();
+        var mbox = mainContent.getBoundingClientRect();
+        out.footerLeftDelta = Math.round(Math.abs(fbox.left - mbox.left));
+        out.footerWidthDelta = Math.round(Math.abs(fbox.width - mbox.width));
+      }
+      var previous = footer.previousElementSibling;
+      out.footerGap = previous ? Math.round(footer.getBoundingClientRect().top - previous.getBoundingClientRect().bottom) : null;
+    }
     document.documentElement.setAttribute('data-visual-report', JSON.stringify(out));
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', report, { once: true });
@@ -129,15 +342,24 @@ const PROBE_SCRIPT = `<script>
 })();
 </script>`
 
-function inlineStyles(html, assets) {
+function resolveRelative(fromFile, reference) {
+  const clean = String(reference ?? '').split('?')[0].split('#')[0]
+  if (!clean || /^[a-z]+:/i.test(clean) || clean.startsWith('//')) return null
+  const dir = path.posix.dirname(String(fromFile ?? '').replace(/\\/g, '/'))
+  const joined = path.posix.normalize(path.posix.join(dir === '.' ? '' : dir, clean.replace(/^\.?\//, '')))
+  if (!joined || joined === '.' || joined.startsWith('..')) return null
+  return joined
+}
+
+function inlineStyles(html, assets, pageFile = '') {
   let output = html.replace(
     /<link\b[^>]*rel\s*=\s*["']?stylesheet["']?[^>]*>/gi,
     (tag) => {
       const match = /href\s*=\s*["']([^"']+)["']/i.exec(tag)
       const href = match ? match[1] : ''
       if (/^https?:/i.test(href)) return ''
-      const key = href.replace(/^\.?\//, '')
-      const css = assets.get(key)
+      const key = resolveRelative(pageFile, href)
+      const css = key ? assets.get(key) : null
       if (!css) return tag
       return `<style>${css}</style>`
     },
@@ -146,8 +368,8 @@ function inlineStyles(html, assets) {
     const src = /src\s*=\s*["']([^"']+)["']/i.exec(String(attrs ?? ''))?.[1] ?? ''
     if (!src) return tag
     if (/^(https?:)?\/\//i.test(src)) return ''
-    const key = src.replace(/^\.?\//, '')
-    const js = assets.get(key)
+    const key = resolveRelative(pageFile, src)
+    const js = key ? assets.get(key) : null
     if (!js) return ''
     return `<script>${js}</script>`
   })
@@ -163,6 +385,30 @@ async function readAssets(workspaceRoot, files) {
     } catch {}
   }
   return assets
+}
+
+const TEMP_SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.cache', '.visual'])
+
+async function collectHtmlFiles(root, relative = '', out = []) {
+  if (out.length >= 48) return out
+  let entries
+  try {
+    entries = await fs.readdir(path.join(root, relative || '.'), { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const entry of entries) {
+    const name = String(entry.name ?? '')
+    if (!name) continue
+    const next = relative ? `${relative}/${name}` : name
+    if (entry.isDirectory()) {
+      if (TEMP_SKIP_DIRS.has(name)) continue
+      await collectHtmlFiles(root, next, out)
+    } else if (/\.html?$/i.test(name)) {
+      out.push(next)
+    }
+  }
+  return out
 }
 
 function evaluateReport(report, file, problems) {
@@ -227,11 +473,75 @@ function evaluateReport(report, file, problems) {
       `"${file}": at ${NARROW_WIDTH}px the hamburger button did not open the nav (.site-nav never got is-open / aria-expanded stayed "false"). Keep the kit's nav-toggle markup and js/main.js wiring.`,
     )
   }
+  if (report.headingContrast != null && report.headingContrast < 3) {
+    problems.push(`"${file}" headings have only ${report.headingContrast}:1 contrast against the body background — they are hard to read. Use a theme text colour that reaches at least 4.5:1.`)
+  }
+  if (report.bodyContrast != null && report.bodyContrast < 3) {
+    problems.push(`"${file}" body text has only ${report.bodyContrast}:1 contrast against its background — increase the contrast.`)
+  }
+  if (Array.isArray(report.weakContrast) && report.weakContrast.length > 0) {
+    const worst = report.weakContrast[0]
+    const listed = report.weakContrast
+      .slice(0, 4)
+      .map((entry) => `${entry.el} (${entry.ratio}:1${entry.text ? `: "${entry.text}"` : ''})`)
+      .join(', ')
+    problems.push(
+      `"${file}" has ${report.weakContrast.length} text element(s) below the WCAG AA contrast minimum, worst ${worst.ratio}:1 for ${worst.el}: ${listed}. Set the text colour and its surface colour together (for example give the footer BOTH a dark background token and a light foreground token).`,
+    )
+  }
+  const defaultBg = !report.bodyBackground || /rgb\(\s*255,\s*255,\s*255\s*\)/.test(report.bodyBackground)
+  const themeBg = String(report.themeBg ?? '').trim()
+  const themeLight = /#fff|#ffffff|white|rgb\(\s*255/i.test(themeBg)
+  if (defaultBg && !themeLight) {
+    problems.push(
+      `"${file}" renders with a default/transparent body background (${report.bodyBackground || 'none'}) instead of the theme background (--bg: ${themeBg || 'undefined'}) — the page is not picking up its stylesheet. Check the <link> paths and give <body> the theme's background and text colours.`,
+    )
+  }
+  if (report.navListStyle && report.navListStyle !== 'none') {
+    problems.push(`"${file}" navigation renders as a browser-default list (list-style: ${report.navListStyle}) — set list-style: none on the nav list.`)
+  }
+  if (report.breadcrumbListStyle && report.breadcrumbListStyle !== 'none') {
+    problems.push(`"${file}" breadcrumbs render as a numbered/bulleted list (list-style: ${report.breadcrumbListStyle}) — style .breadcrumbs with list-style: none and an inline layout.`)
+  }
+  if (Array.isArray(report.unequalControlRows) && report.unequalControlRows.length > 0) {
+    const first = report.unequalControlRows[0]
+    problems.push(`"${file}" has controls on the same row with different heights (${first.group}: ${first.heights.join(', ')}px). Give buttons and inputs on one row the SAME rendered height.`)
+  }
+  if (Array.isArray(report.unequalCardRows) && report.unequalCardRows.length > 0) {
+    const first = report.unequalCardRows[0]
+    problems.push(`"${file}" has cards in the same grid row with different heights (${first.group}: ${first.heights.join(', ')}px) — make the cards equal height with no empty space at the bottom: display: flex; flex-direction: column; height: 100% on the card and margin-top: auto on its footer/meta.`)
+  }
+  if (report.iconButtonsMissingLabel > 0) {
+    problems.push(`"${file}" has ${report.iconButtonsMissingLabel} icon-only button(s) with no accessible name — add an aria-label (plus visible text where space allows).`)
+  }
+  if (Array.isArray(report.emptyBoxes) && report.emptyBoxes.length > 0) {
+    problems.push(
+      `"${file}" has ${report.emptyBoxes.length} visible card/box with no text, icon or media inside (${report.emptyBoxes.slice(0, 3).join(', ')}) — an empty box must never ship; fill it with real content (icon, title, text) or remove it.`,
+    )
+  }
+  if (report.unhydratedIcons > 0) {
+    problems.push(
+      `"${file}" has ${report.unhydratedIcons} icon(s) that did not render as a visible inline SVG (js/icons.js is missing/not loaded, the name is unknown, or the icon has zero size) — every data-icon must resolve to a visible icon.`,
+    )
+  }
+  if (Array.isArray(report.narrowQuotes) && report.narrowQuotes.length > 0) {
+    problems.push(
+      `"${file}" testimonial/quote text is squeezed into a too-narrow column (${report.narrowQuotes.slice(0, 3).join('px, ')}px wide) — reset the blockquote margin and padding to 0 and let the quote fill the full card width.`,
+    )
+  }
+  if (report.footerWidthDelta != null && report.footerWidthDelta > 8) {
+    problems.push(`"${file}" footer content does not align with the page container (${report.footerWidthDelta}px difference) — use the same container width and horizontal padding.`)
+  }
+  if (report.footerGap != null && report.footerGap < 8) {
+    problems.push(`"${file}" footer touches the content above it (only ${report.footerGap}px gap) — add spacing between the main content and the footer.`)
+  }
 }
 
-const NARROW_WIDTH = 390
-export const VISUAL_WIDTHS = [1440]
+const NARROW_WIDTH = 375
+const MID_WIDTH = 768
+export const VISUAL_WIDTHS = [1280, MID_WIDTH, NARROW_WIDTH]
 export const VISUAL_NARROW_WIDTH = NARROW_WIDTH
+export const VISUAL_MID_WIDTH = MID_WIDTH
 
 export async function visualSanityCheck({ projectId = null, root = null, files = null, narrow = true } = {}) {
   let workspaceRoot = root
@@ -247,14 +557,15 @@ export async function visualSanityCheck({ projectId = null, root = null, files =
     return { skipped: true, reason: 'no Chrome/Chromium executable found', problems: [], checked: [] }
   }
 
+  const allHtml = await collectHtmlFiles(workspaceRoot)
   let htmlFiles
-  if (Array.isArray(files) && files.length > 0) htmlFiles = files.filter((file) => /\.html?$/i.test(file))
-  else {
-    try {
-      htmlFiles = (await fs.readdir(workspaceRoot)).filter((file) => /\.html?$/i.test(file))
-    } catch {
-      htmlFiles = []
-    }
+  if (Array.isArray(files) && files.length > 0) {
+    const requested = files
+      .filter((file) => /\.html?$/i.test(file))
+      .map((file) => String(file).replace(/^\.?\//, ''))
+    htmlFiles = [...new Set([...requested, ...allHtml])]
+  } else {
+    htmlFiles = allHtml
   }
   if (htmlFiles.length === 0) return { ok: true, skipped: false, problems: [], checked: [], chrome }
 
@@ -263,10 +574,13 @@ export async function visualSanityCheck({ projectId = null, root = null, files =
   const checked = []
   const reports = []
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-visual-'))
-  const narrowFiles = new Set(narrow ? htmlFiles.slice(0, 2) : [])
-  const narrowProbes = new Map()
+  const multiWidthOrdered = (() => {
+    const preferred = htmlFiles.find((file) => /(^|\/)index\.html?$/i.test(file))
+    return preferred ? [preferred, ...htmlFiles.filter((file) => file !== preferred)] : htmlFiles
+  })()
+  const multiWidthFiles = new Set(narrow ? multiWidthOrdered.slice(0, 3) : [])
 
-  for (const file of htmlFiles.slice(0, 4)) {
+  for (const file of htmlFiles.slice(0, 8)) {
     let html
     try {
       html = await fs.readFile(path.join(workspaceRoot, file), 'utf8')
@@ -276,20 +590,25 @@ export async function visualSanityCheck({ projectId = null, root = null, files =
     const reachable = [
       ...[...html.matchAll(/href\s*=\s*["']([^"']+\.css)["']/gi)].map((match) => match[1]),
       ...[...html.matchAll(/src\s*=\s*["']([^"']+\.js)["']/gi)].map((match) => match[1]),
-    ].map((value) => value.replace(/^\.?\//, ''))
+    ]
+      .map((value) => resolveRelative(file, value))
+      .filter(Boolean)
     const assets = await readAssets(workspaceRoot, reachable)
 
     const slug = file.replace(/[\\/]/g, '_')
     const probeFile = path.join(tempRoot, `${slug}.html`)
-    await fs.writeFile(probeFile, inlineStyles(html, assets), 'utf8')
-    if (narrowFiles.has(file)) {
-      const wrapper = path.join(tempRoot, `${slug}.narrow.html`)
-      await fs.writeFile(
-        wrapper,
-        `<!DOCTYPE html>
+    await fs.writeFile(probeFile, inlineStyles(html, assets, file), 'utf8')
+    const widths = multiWidthFiles.has(file) ? VISUAL_WIDTHS : [VISUAL_WIDTHS[0]]
+    for (const width of widths) {
+      let target = probeFile
+      if (width !== VISUAL_WIDTHS[0]) {
+        const wrapper = path.join(tempRoot, `${slug}.w${width}.html`)
+        await fs.writeFile(
+          wrapper,
+          `<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>narrow probe</title>
-<style>html,body{margin:0;padding:0;background:#fff}iframe{width:${NARROW_WIDTH}px;height:900px;border:0;display:block;margin:0 auto}</style>
+<head><meta charset="utf-8"><title>probe</title>
+<style>html,body{margin:0;padding:0;background:#fff}iframe{width:${width}px;height:1000px;border:0;display:block;margin:0 auto}</style>
 </head>
 <body>
 <iframe id="probe" src="${slug}.html"></iframe>
@@ -301,22 +620,19 @@ export async function visualSanityCheck({ projectId = null, root = null, files =
       var inner = frame.contentDocument && frame.contentDocument.documentElement.getAttribute('data-visual-report')
       if (inner) document.documentElement.setAttribute('data-visual-report', inner)
     } catch (error) {
-      document.documentElement.setAttribute('data-visual-report', JSON.stringify({ width: ${NARROW_WIDTH} }))
+      document.documentElement.setAttribute('data-visual-report', JSON.stringify({ width: ${width} }))
     }
   }
-  frame.addEventListener('load', function () { copy(); window.setTimeout(copy, 120) })
+  frame.addEventListener('load', function () { copy(); window.setTimeout(copy, 150) })
 })()
 </script>
 </body>
 </html>
 `,
-        'utf8',
-      )
-      narrowProbes.set(file, wrapper)
-    }
-
-    const widths = narrowFiles.has(file) ? [1440, NARROW_WIDTH] : [1440]
-    for (const width of widths) {
+          'utf8',
+        )
+        target = wrapper
+      }
       const { stdout } = await runChrome(
         chrome,
         [
@@ -324,13 +640,13 @@ export async function visualSanityCheck({ projectId = null, root = null, files =
           '--disable-gpu',
           '--no-sandbox',
           '--hide-scrollbars',
-          `--window-size=${width},${width === NARROW_WIDTH ? 900 : 1200}`,
+          `--window-size=${width},${width < 800 ? 1000 : 1200}`,
           '--virtual-time-budget=2500',
           '--allow-file-access-from-files',
           '--dump-dom',
-          pathToFileURL(width === NARROW_WIDTH ? narrowProbes.get(file) : probeFile).href,
+          pathToFileURL(target).href,
         ],
-        width === NARROW_WIDTH ? 30000 : 25000,
+        width < 800 ? 30000 : 25000,
       )
 
       const match = /data-visual-report="([^"]+)"/.exec(stdout)
@@ -354,7 +670,7 @@ export async function visualSanityCheck({ projectId = null, root = null, files =
   return { ok: problems.length === 0, skipped: false, problems, checked, chrome, reports, problemFiles: [...problemFiles] }
 }
 
-export async function captureScreenshots({ projectId = null, root = null, files = [], outDir, widths = [1440, 390] } = {}) {
+export async function captureScreenshots({ projectId = null, root = null, files = [], outDir, widths = [1280, 768, 375] } = {}) {
   const workspaceRoot = root ?? getWorkspacePath(projectId)
   const chrome = await findChrome()
   if (!chrome) return { skipped: true, reason: 'no Chrome/Chromium executable found', shots: [] }

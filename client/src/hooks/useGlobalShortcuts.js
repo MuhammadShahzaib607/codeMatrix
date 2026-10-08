@@ -22,6 +22,16 @@ function isTextEntryFocused() {
   return Boolean(element.closest?.('.monaco-editor'))
 }
 
+/**
+ * True when an xterm terminal has the keyboard focus. Editor shortcuts must not
+ * fire then: Ctrl+B, Ctrl+P and Ctrl+S belong to the running program (readline
+ * backward-char, history, XOFF), not to the editor.
+ */
+function isTerminalFocused() {
+  if (typeof document === 'undefined') return false
+  return Boolean(document.activeElement?.closest?.('.terminal-view'))
+}
+
 export default function useGlobalShortcuts() {
   const dispatch = useDispatch()
   const saveActiveFile = useSaveActiveFile()
@@ -40,6 +50,8 @@ export default function useGlobalShortcuts() {
 
     function handleKeyDown(event) {
       if (!event.ctrlKey && !event.metaKey) return
+      // While a terminal is focused every Ctrl/Cmd chord goes to the program.
+      if (isTerminalFocused()) return
 
       switch (event.key.toLowerCase()) {
         case 'b':

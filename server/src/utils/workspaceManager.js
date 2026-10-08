@@ -188,12 +188,15 @@ export async function listContainerEntries(ownerId, { limit = 200 } = {}) {
     if (dirent.isDirectory()) {
       let projectId = findProjectIdForFolder(container, name)
       if (!projectId) {
+        if (isScratchFolderName(name)) continue
         projectId = crypto.randomUUID()
         try {
           setWorkspaceRecord(projectId, { container, folderName: name })
         } catch {
           projectId = null
         }
+      } else if (isScratchProjectId(projectId) && isScratchFolderName(name)) {
+        continue
       }
       if (projectId) claimed.add(projectId)
       entries.push({ name, type: 'folder', projectId })
@@ -262,6 +265,82 @@ export async function createContainerProject(ownerId, displayName, projectId = n
   const id = projectId ?? crypto.randomUUID()
   const folder = registerWorkspaceFolder(id, { ownerId, displayName, container })
   return { projectId: id, name: folder.folderName, container, path: folder.path }
+}
+
+/**
+ * The full Explorer tree of a user's container: every project folder and every
+ * top-level file, with CONTAINER-RELATIVE paths ("frontend/src/index.js"). This
+ * is the single tree the client renders, so the Explorer's top level is the real
+ * container instead of one active project.
+ */
+export async function getContainerTree(ownerId, options = {}) {
+  const container = workspaceOwnerKey(ownerId)
+  const containerPath = ensureOwnerContainer(ownerId)
+  const rootName = options.name || container
+  return walkDirectory(containerPath, rootName, '')
+}
+
+function cleanContainerRelative(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+}
+
+/**
+ * Resolves a CONTAINER-RELATIVE path to its absolute location on disk, with the
+ * same traversal guard as every other path builder. Returns the first path
+ * segment (`top`), the rest (`inner`), the absolute path and the normalized
+ * relative path.
+ */
+export function resolveContainerOwnerPath(ownerId, relativePath) {
+  const containerPath = ensureOwnerContainer(ownerId)
+  const cleaned = cleanContainerRelative(relativePath)
+  const segments = cleaned.split('/').filter(Boolean)
+  if (segments.length === 0) {
+    throw new ApiError(400, 'A path is required.', 'INVALID_PATH')
+  }
+
+  const top = segments[0]
+  const inner = segments.slice(1).join('/')
+  const absolute = path.resolve(containerPath, ...segments)
+  const relative = path.relative(containerPath, absolute)
+
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new ApiError(400, `Path "${relativePath}" is outside of your workspace.`, 'INVALID_PATH')
+  }
+
+  return {
+    containerPath,
+    top,
+    inner,
+    absolute,
+    relative: relative.split(path.sep).join('/'),
+  }
+}
+
+/**
+ * The project a top-level container folder belongs to. A folder that appeared
+ * outside the app (terminal) is registered on first sight, exactly like the
+ * container listing does, so a path into it is still usable.
+ */
+export function findContainerProjectId(ownerId, topName) {
+  const container = workspaceOwnerKey(ownerId)
+  const existing = findProjectIdForFolder(container, topName)
+  if (existing) return existing
+
+  if (isScratchFolderName(topName)) return null
+  const folderPath = path.join(ensureOwnerContainer(ownerId), topName)
+  if (!fs.existsSync(folderPath)) return null
+  try {
+    if (!fs.statSync(folderPath).isDirectory()) return null
+  } catch {
+    return null
+  }
+
+  const projectId = crypto.randomUUID()
+  setWorkspaceRecord(projectId, { container, folderName: topName })
+  return projectId
 }
 
 function folderPathFor(container, folderName) {
@@ -373,6 +452,7 @@ export async function renameFolderWithRetry(fromAbsolute, toAbsolute, renameImpl
       return true
     } catch (error) {
       lastError = error
+      if (error?.code === 'EXDEV') break
       if (!RENAME_RETRY_CODES.has(error?.code)) throw error
       if (attempt < RENAME_RETRY_DELAYS_MS.length - 1) {
         await sleep(RENAME_RETRY_DELAYS_MS[attempt])
@@ -388,6 +468,21 @@ export async function renameFolderWithRetry(fromAbsolute, toAbsolute, renameImpl
     await fsp.rm(toAbsolute, { recursive: true, force: true }).catch(() => {})
     throw lastError ?? fallbackError
   }
+}
+
+export async function movePathWithFallback(fromAbsolute, toAbsolute, isDirectory) {
+  if (isDirectory) return renameFolderWithRetry(fromAbsolute, toAbsolute)
+
+  try {
+    await fsp.rename(fromAbsolute, toAbsolute)
+    return true
+  } catch (error) {
+    if (error?.code !== 'EXDEV') throw error
+  }
+
+  await fsp.copyFile(fromAbsolute, toAbsolute)
+  await fsp.rm(fromAbsolute, { force: true })
+  return true
 }
 
 /**
@@ -670,9 +765,10 @@ export async function deleteWorkspaceFolder(projectId) {
   assertValidProjectId(projectId)
   const directory = getWorkspacePath(projectId)
   if (!fs.existsSync(directory)) return false
-  // Async recursive remove: deleting a workspace that contains node_modules
-  // synchronously blocked the event loop for the whole deletion.
-  await fsp.rm(directory, { recursive: true, force: true })
+  // Retrying recursive remove: on Windows a folder that something still holds
+  // answers EBUSY/EPERM on the first try, so every attempt gets a bounded
+  // retry ladder before the caller reports a failure.
+  await removePathWithRetry(directory)
   // Drop the registry entry too, so a later re-create gets a clean mapping.
   const registry = loadRegistry()
   if (registry[projectId]) {
@@ -682,13 +778,53 @@ export async function deleteWorkspaceFolder(projectId) {
   return true
 }
 
+const DELETE_RETRY_DELAYS_MS = [80, 160, 320, 640, 1000]
+const DELETE_RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'EMFILE', 'ENFILE'])
+
+/**
+ * Recursive removal that survives Windows' transient lock errors: every attempt
+ * lets fs.rm do its own short retry pass (maxRetries/retryDelay), and the outer
+ * ladder backs off between attempts (80ms -> 1s) before giving up. The last
+ * error is rethrown so the caller can classify it.
+ */
+export async function removePathWithRetry(absolute) {
+  let lastError = null
+  for (let attempt = 0; attempt < DELETE_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await fsp.rm(absolute, { recursive: true, force: true, maxRetries: 3, retryDelay: 60 })
+      return true
+    } catch (error) {
+      lastError = error
+      if (!DELETE_RETRY_CODES.has(error?.code)) throw error
+      if (attempt < DELETE_RETRY_DELAYS_MS.length - 1) {
+        await sleep(DELETE_RETRY_DELAYS_MS[attempt])
+      }
+    }
+  }
+  throw lastError
+}
+
+function writeFileAtomicSync(absolute, content) {
+  const data = typeof content === 'string' ? content : String(content ?? '')
+  const temp = `${absolute}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`
+  try {
+    fs.writeFileSync(temp, data, 'utf8')
+    fs.renameSync(temp, absolute)
+  } catch (error) {
+    try {
+      fs.rmSync(temp, { force: true })
+    } catch {}
+    throw error
+  }
+}
+
 export function writeFileToWorkspace(projectId, relativeFilePath, content = '') {
   assertWorkspaceExists(projectId)
   const { absolute, relative } = resolveInsideWorkspace(projectId, relativeFilePath)
   if (!relative) throw new ApiError(400, 'A file path is required.', 'INVALID_PATH')
 
   fs.mkdirSync(path.dirname(absolute), { recursive: true })
-  fs.writeFileSync(absolute, typeof content === 'string' ? content : String(content ?? ''), 'utf8')
+  writeFileAtomicSync(absolute, content)
   return relative
 }
 
@@ -712,11 +848,14 @@ export function appendFileToWorkspace(projectId, relativeFilePath, content = '')
   if (!relative) throw new ApiError(400, 'A file path is required.', 'INVALID_PATH')
 
   fs.mkdirSync(path.dirname(absolute), { recursive: true })
-  fs.appendFileSync(
-    absolute,
-    typeof content === 'string' ? content : String(content ?? ''),
-    'utf8',
-  )
+  const addition = typeof content === 'string' ? content : String(content ?? '')
+  let existing = ''
+  try {
+    existing = fs.readFileSync(absolute, 'utf8')
+  } catch {
+    existing = ''
+  }
+  writeFileAtomicSync(absolute, existing + addition)
   return relative
 }
 
@@ -756,10 +895,10 @@ export async function deleteFromWorkspace(projectId, relativeFilePath) {
     throw new ApiError(404, `"${relative}" was not found in this workspace.`, 'FILE_MISSING')
   }
 
-  // One async call handles files and folders alike (recursive is harmless for a
-  // file). A synchronous fs.rmSync of a folder containing node_modules used to
-  // freeze the entire server — terminal included — for the whole deletion.
-  await fsp.rm(absolute, { recursive: true, force: true })
+  // Retrying recursive remove (see removePathWithRetry). A synchronous
+  // fs.rmSync of a folder containing node_modules used to freeze the entire
+  // server — terminal included — for the whole deletion.
+  await removePathWithRetry(absolute)
   return relative
 }
 
@@ -843,7 +982,7 @@ export async function renamePathInWorkspace(projectId, oldRelativePath, newRelat
  * large folder (e.g. one containing a node_modules-like tree) froze the entire
  * server — including the terminal — until it finished.
  */
-async function copyDirectoryRecursive(fromAbsolute, toAbsolute, progress) {
+export async function copyDirectoryRecursive(fromAbsolute, toAbsolute, progress) {
   await fsp.mkdir(toAbsolute, { recursive: true })
   const entries = await fsp.readdir(fromAbsolute, { withFileTypes: true })
 
@@ -867,7 +1006,7 @@ async function copyDirectoryRecursive(fromAbsolute, toAbsolute, progress) {
  * overwrites and never fails — duplicating an item into a folder that already
  * has one of that name just produces "a (copy).txt".
  */
-async function uniqueNameInFolder(folderAbsolute, name) {
+export async function uniqueNameInFolder(folderAbsolute, name) {
   const exists = (candidate) =>
     fsp.access(path.join(folderAbsolute, candidate)).then(
       () => true,

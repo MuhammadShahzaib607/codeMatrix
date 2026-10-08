@@ -6,6 +6,7 @@ import {
   appendFileToWorkspace,
   deleteFromWorkspace,
   existsInWorkspace,
+  flattenTree,
   getWorkspacePath,
   getWorkspaceTree,
   listDirectoryInWorkspace,
@@ -17,7 +18,15 @@ import { buildProjectSnapshot } from '../agent/prompts/projectSnapshot.js'
 import { AGENT_MEMORY_FILENAME, readAgentMemory } from './agentMemory.js'
 import { queueAgentFsChange } from './agentFsNotifier.js'
 import { findRuleBlock } from './strictRules.js'
-import { buildScaffoldAppPlan, buildScaffoldPlan, sectionCatalog } from '../templates/vanilla-kit/index.js'
+import {
+  COMPOSABLE_SECTION_TYPES,
+  buildComposePlan,
+  buildScaffoldAppPlan,
+  buildScaffoldPlan,
+  sectionCatalog,
+  sectionSummary,
+  stripTemplateComments,
+} from '../templates/vanilla-kit/index.js'
 import { formatGateReport, vanillaGate } from '../agent/quality/vanillaGate.js'
 import { formatQuickCheck, quickCheck } from '../agent/quality/quickCheck.js'
 import {
@@ -27,7 +36,7 @@ import {
   formatAutofixReport,
   formatConnectionReport,
 } from '../agent/quality/connectionCheck.js'
-import { GATE_MAX_REPAIR_ROUNDS } from '../agent/quality/thresholds.js'
+import { GATE_MAX_REPAIR_ROUNDS, SECONDARY_PAGE } from '../agent/quality/thresholds.js'
 import { formatVisualReport, visualSanityCheck } from '../agent/quality/visualSanity.js'
 import { clearAgentSession, getAgentSession, saveAgentSession } from './agentSessionService.js'
 import {
@@ -61,6 +70,38 @@ import {
   splitJsonPayload,
   trimTrailingNameLeak,
 } from './providerClient.js'
+import {
+  findSectionBlock,
+  scanHtml,
+  sectionLineRange,
+  sectionStructureProblems,
+} from '../utils/htmlStructure.js'
+import { analyzeScreenshots, sanitizeImagePayload } from './visionService.js'
+import {
+  EDIT_SYSTEM_PROMPT,
+  RUNTIME_CLASSES,
+  addNavAnchor,
+  applySectionEdit,
+  buildEditOutline,
+  buildEditUserMessage,
+  countH1,
+  cssClassesIn,
+  cssRuleBlocks,
+  documentIssues,
+  extractCssForClasses,
+  insertSection,
+  navHasAnchor,
+  navLabelFor,
+  normalizeSelector,
+  parseEditReply,
+  renderContactSection,
+  resolveEditTarget,
+  shouldAddNavLink,
+  stampSection,
+  upsertCssRules,
+  validateFragment,
+} from '../agent/editPipeline.js'
+import { runEditModeEdit } from '../agent/editMode.js'
 
 export const MAX_TOOL_CALLS = 60
 // A vanilla site is 4-6 files. Anything above this is a loop, and every extra
@@ -125,6 +166,24 @@ const MAX_TOTAL_WAIT_MS = 180000
 const COOLING_DEFAULT_MS = 60000
 const TRANSIENT_COOLING_MS = 5000
 
+export function agentLog(entry = {}) {
+  const at = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  const scope = entry.scope ? ` [${entry.scope}]` : ''
+  const tool = entry.tool ? ` tool=${entry.tool}` : ''
+  const file = entry.file ? ` file=${entry.file}` : ''
+  const message = String(entry.message ?? '').replace(/\s+/g, ' ').trim()
+  console.log(`[agent]${scope} ${at}${tool}${file} ${message}`)
+}
+
+function editFailure(message, detail) {
+  agentLog({ scope: 'edit', message: detail ?? message })
+  const error = new Error(message)
+  error.code = 'EDIT_FAILED'
+  return error
+}
+
+const MAX_EDIT_RETRIES = 1
+
 const TOOL_CALL_CORRECTION_NOTE =
   'Invalid tool-call JSON. Send the file again as ONE create_file call with the complete file (or one complete block of at least 80 lines if the file is very large), and escape quotes and newlines properly.'
 
@@ -145,6 +204,19 @@ const TOOL_ARG_SPECS = {
     example:
       '{"path":"css/theme.css","old_string":"--color-primary: #4361ee;","new_string":"--color-primary: #e94560;"}',
   },
+  edit_section: {
+    keys: 'path, id, content (optional action: replace|insert, position: before|after)',
+    example: '{"path":"index.html","id":"testimonials","content":"<section id=\"testimonials\">…</section>"}',
+  },
+  edit_css: {
+    keys: 'path, selector, content (declarations only)',
+    example: '{"path":"css/base.css","selector":".pricing .grid","content":"grid-template-columns: repeat(3, minmax(0, 1fr));"}',
+  },
+  compose_page: {
+    keys: 'brand, pages (each page has sections as objects)',
+    example:
+      '{"brand":"Acme","pages":[{"file":"index.html","sections":[{"type":"hero","title":"…","lead":"…","card":{"icon":"code","title":"…","text":"…"}},{"type":"services","title":"…","items":[{"icon":"layers","title":"…","text":"…"}]}]}]}',
+  },
   scaffold_site: {
     keys: 'brand, pages',
     example: '{"brand":"Acme","pages":[{"file":"index.html","sections":["hero","services"]}]}',
@@ -153,7 +225,7 @@ const TOOL_ARG_SPECS = {
     keys: 'title, brand, palette',
     example: '{"title":"Tip Calculator","brand":"Acme","palette":"indigo-modern"}',
   },
-  read_file: { keys: 'path', example: '{"path":"index.html"}' },
+  read_file: { keys: 'path (optional outline, start_line, end_line)', example: '{"path":"index.html","outline":true}' },
   list_directory: { keys: 'path', example: '{"path":"."}' },
   delete_file: { keys: 'path', example: '{"path":"old.html"}' },
   run_command: { keys: 'command', example: '{"command":"npm run build"}' },
@@ -362,6 +434,80 @@ function appendGuidance(messages, text) {
   return false
 }
 
+const NEW_PAGE_REQUEST =
+  /\b(?:add|create|make|build|naya|nayi|new)\b[^.\n]{0,40}\b(?:page|pages|privacy|terms|cookie|legal|sitemap|disclaimer|impressum)\b/i
+const EDIT_VERB =
+  /\b(?:edit|change|update|fix|adjust|tweak|make|set|move|remove|delete|replace|rename|resize|restyle|repair|correct|align|center|theek|thik|karo|kardo|kar\s*do|badal|hata|rakhna|rakho|bada|bara|chota|chhota|banao|ban[ae]o)\b/i
+
+// Which existing files does the task actually name? Used both to scope a
+// follow-up edit and to refuse to create an unrelated file during one.
+export function namedExistingFiles(task, files = []) {
+  const text = String(task ?? '').toLowerCase().replace(/\\/g, '/')
+  const found = []
+  for (const file of files) {
+    const lower = String(file ?? '').toLowerCase().replace(/\\/g, '/')
+    if (!lower) continue
+    const base = lower.split('/').pop()
+    const stem = base.replace(/\.[^.]+$/, '')
+    const stemPattern =
+      stem.length >= 5 ? new RegExp(`(^|[^a-z0-9])${stem.replace(/[^a-z0-9]+/g, '[-_ ]?')}([^a-z0-9]|$)`).test(text) : false
+    const hit = text.includes(lower) || (base.length >= 6 && text.includes(base)) || stemPattern
+    if (hit && !found.includes(file)) found.push(file)
+  }
+  return found
+}
+
+// A follow-up edit on an existing project: the project already has files, the
+// task is not asking for a NEW page, and it either names an existing file or
+// uses an edit verb. These runs must change only what was named — they must
+// never plan or create the rest of the site.
+export function isTargetedEditTask(task, snapshot = null) {
+  if (!snapshot) return false
+  const text = String(task ?? '').trim()
+  if (!text) return false
+  if (NEW_PAGE_REQUEST.test(text)) return false
+  const files = Array.isArray(snapshot.pages) ? snapshot.pages : []
+  if (namedExistingFiles(text, files).length > 0) return true
+  return EDIT_VERB.test(text)
+}
+
+const REQUESTED_FEATURES = [
+  { type: 'contact', types: ['contact', 'contact-form'], label: 'contact form', form: true, match: /\bcontact\s*form\b|\benquiry\s*form\b|\binquiry\s*form\b|\bget\s+in\s+touch\b|\bcontact\s+us\b/i },
+  { type: 'pricing', label: 'pricing', match: /\bpricing\b|\bplans?\b|\bpackages?\b/i },
+  { type: 'faq', label: 'FAQ', match: /\bfaq\b|\bfrequently\s+asked\b/i },
+  { type: 'gallery', label: 'gallery', match: /\bgallery\b|\bportfolio\b/i },
+  { type: 'testimonials', label: 'testimonials', match: /\btestimonials?\b|\breviews?\b/i },
+  { type: 'login', label: 'login', match: /\blogin\b|\bsign[\s-]?in\b|\bsign[\s-]?up\b/i },
+  { type: 'calculator', label: 'calculator', match: /\bcalculator\b/i },
+]
+
+export function requestedFeatureSections(task) {
+  const text = String(task ?? '')
+  const found = []
+  for (const entry of REQUESTED_FEATURES) {
+    if (!entry.match.test(text)) continue
+    found.push({
+      type: entry.type,
+      types: entry.types ?? [entry.type],
+      label: entry.label,
+      form: Boolean(entry.form),
+    })
+  }
+  return found
+}
+
+function sectionsNamedInTask(task, sectionIds = []) {
+  const text = String(task ?? '').toLowerCase()
+  const named = []
+  for (const id of sectionIds) {
+    const clean = String(id ?? '').trim()
+    if (!clean) continue
+    const pattern = new RegExp(`(^|[^a-z0-9-])${clean.replace(/[^a-z0-9-]/gi, '')}([^a-z0-9-]|$)`, 'i')
+    if (pattern.test(text)) named.push(clean)
+  }
+  return named
+}
+
 function plannedSectionsFor(planDoc, file) {
   const target = String(file ?? '')
     .replace(/\\/g, '/')
@@ -558,9 +704,49 @@ const OPENAI_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'compose_page',
+      description:
+        'PREFERRED way to build a vanilla site (site type). Send the full site as STRUCTURED SECTION DATA and the server renders every section into the starter-kit templates, writes complete pages with no slots and no template comments left, and generates the nav and footer from the sections that really exist (in-page anchors for a one-pager, page links for a multi-page site). You never hand-write the page shell. Section objects use: type, id?, title, eyebrow?, lead?, body?, items (array), stats (array), card {icon,title,text,stats}, buttons [{label,href}], form {submit,success}. Supported types: ' +
+        `${COMPOSABLE_SECTION_TYPES.join(', ')}. For an unavailable type use scaffold_site and fill the slot with edit_section instead.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          brand: { type: 'string', description: 'Brand name' },
+          tagline: { type: 'string', description: 'One short line about the business' },
+          palette: {
+            type: 'string',
+            description:
+              'Theme preset id: indigo-modern | emerald-fresh | sunset-warm | midnight-dark | rose-elegant | slate-corporate | gallery-ivory | playful-pop | clinic-calm',
+          },
+          pages: {
+            type: 'array',
+            description: 'One entry per page, in nav order',
+            items: {
+              type: 'object',
+              properties: {
+                file: { type: 'string', description: 'Relative page path, e.g. index.html' },
+                title: { type: 'string', description: 'Unique <title>' },
+                nav_label: { type: 'string', description: 'Text shown in the nav for a multi-page site' },
+                sections: {
+                  type: 'array',
+                  description: 'Structured section objects, in order',
+                  items: { type: 'object', additionalProperties: true },
+                },
+              },
+              required: ['file', 'sections'],
+            },
+          },
+        },
+        required: ['brand', 'pages'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'scaffold_site',
       description:
-        'Create the professional starter-kit shell for a vanilla site in ONE call (no CSS writing needed): copies css/base.css and js/main.js, writes css/theme.css for the chosen palette and one full HTML page per entry with an identical header, nav and footer. Each requested section becomes a <!-- SLOT:name --> marker you later replace with real copy.',
+        'Create the starter-kit shell for a vanilla site in ONE call (no CSS writing needed): copies css/base.css and js/main.js, writes css/theme.css for the chosen palette and one full HTML page per entry with an identical header, nav and footer. Each requested section becomes a <!-- SLOT:name --> marker you later replace with real copy. Use this occasionally — the PREFERRED path is compose_page, which fills the page for you.',
       parameters: {
         type: 'object',
         properties: {
@@ -620,11 +806,58 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read a file before editing it.',
+      description:
+        'Read a file before editing it. Pass outline: true for a compact map (line numbers, section ids, tags, total lines) instead of the whole file, section: "id" to read ONLY that one section, and start_line/end_line to read just one region. Never read the whole file for a targeted follow-up.',
       parameters: {
         type: 'object',
-        properties: { path: { type: 'string' } },
+        properties: {
+          path: { type: 'string' },
+          outline: { type: 'boolean', description: 'Return a section/tag outline with line numbers instead of the file body' },
+          section: { type: 'string', description: 'Read only the section with this id/data-section' },
+          start_line: { type: 'number', description: 'First line to read (1-based)' },
+          end_line: { type: 'number', description: 'Last line to read (inclusive)' },
+        },
         required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_section',
+      description:
+        'Change ONE whole section of an EXISTING HTML file by its id WITHOUT reproducing any old text. Use this for any section-level change, and whenever edit_file reports the old_string was not found. action "replace" (default) swaps the whole balanced <section id="..."> element for content; action "insert" places content before/after it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative path, e.g. index.html' },
+          id: { type: 'string', description: 'The section id or data-section value to change' },
+          content: { type: 'string', description: 'The new markup (a complete <section ...>…</section>)' },
+          action: { type: 'string', enum: ['replace', 'insert'] },
+          position: { type: 'string', enum: ['before', 'after'] },
+        },
+        required: ['path', 'id', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_css',
+      description:
+        'Replace or add ONE CSS rule block by its selector WITHOUT rewriting the file. Pass the declarations only (no braces). If the selector already exists its block is replaced; otherwise the rule is appended. Use this for styling or layout requests such as "make the pricing cards 3 columns" or "make the footer darker" — do not rewrite a stylesheet with create_file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative stylesheet path, e.g. css/base.css' },
+          selector: { type: 'string', description: 'The selectors to target, e.g. ".pricing .grid"' },
+          content: {
+            type: 'string',
+            description: 'The declarations only, e.g. "grid-template-columns: repeat(3, minmax(0, 1fr));"',
+          },
+          mode: { type: 'string', enum: ['replace', 'append'] },
+        },
+        required: ['path', 'selector', 'content'],
       },
     },
   },
@@ -673,6 +906,9 @@ const TOOL_LABELS = {
   create_file: 'create_file',
   append_to_file: 'append_to_file',
   edit_file: 'edit_file',
+  edit_section: 'edit_section',
+  edit_css: 'edit_css',
+  compose_page: 'compose_page',
   scaffold_site: 'scaffold_site',
   scaffold_app: 'scaffold_app',
   read_file: 'read_file',
@@ -681,7 +917,7 @@ const TOOL_LABELS = {
   run_command: 'run_command',
 }
 
-const WRITE_TOOLS = new Set(['create_file', 'append_to_file', 'edit_file'])
+const WRITE_TOOLS = new Set(['create_file', 'append_to_file', 'edit_file', 'edit_section'])
 
 function truncate(text, limit) {
   const value = String(text ?? '')
@@ -724,6 +960,10 @@ function looksComplete(filePath, text) {
 // </html>. Written as a checklist so a partial rewrite can never pass again.
 const SITE_PAGE_MARKER = /class\s*=\s*["'][^"']*\bsite-header\b/i
 
+export function hasSlotMarkers(text) {
+  return /<!--\s*SLOT:[a-z0-9-]+\s*-->/.test(String(text ?? ''))
+}
+
 export function documentIntegrityIssues(text) {
   const problems = []
   const count = (pattern) => (String(text ?? '').match(pattern) || []).length
@@ -732,10 +972,55 @@ export function documentIntegrityIssues(text) {
   const h1s = count(/<h1\b/gi)
   if (headers !== 1) problems.push(`${headers} <header> (a page has exactly one)`)
   if (footers !== 1) problems.push(`${footers} <footer> (a page has exactly one)`)
-  if (h1s !== 1) problems.push(`${h1s} <h1> (a page has exactly one)`)
+  if (!hasSlotMarkers(text) && h1s !== 1) problems.push(`${h1s} <h1> (a page has exactly one)`)
   if (!/<\/html>\s*$/i.test(String(text ?? '').trimEnd())) problems.push('no closing </html>')
   if (problems.length === 0) return ''
   return `the document is incomplete — it has ${problems.join(', ')}`
+}
+
+function finalizeHtmlWrite(content, filePath) {
+  if (!/\.html?$/i.test(String(filePath ?? ''))) return content
+  return stripTemplateComments(content)
+}
+
+function newStructureProblems(before, after) {
+  const beforeProblems = new Set(sectionStructureProblems(before))
+  return sectionStructureProblems(after).filter((problem) => !beforeProblems.has(problem))
+}
+
+function cssRuleRange(css, selector) {
+  const target = String(selector ?? '').trim().replace(/\s+/g, ' ')
+  if (!target) return null
+  let depth = 0
+  for (let index = 0; index < css.length; index += 1) {
+    const character = css[index]
+    if (character === '{') {
+      if (depth === 0) {
+        const previous = css.lastIndexOf('}', index)
+        const rawSelector = css.slice(previous + 1, index).trim()
+        const selectors = rawSelector.split(',').map((value) => value.trim().replace(/\s+/g, ' '))
+        if (selectors.includes(target)) {
+          let braces = 1
+          let cursor = index + 1
+          while (cursor < css.length && braces > 0) {
+            if (css[cursor] === '{') braces += 1
+            else if (css[cursor] === '}') braces -= 1
+            cursor += 1
+          }
+          return { start: previous + 1, end: cursor }
+        }
+      }
+      depth += 1
+    } else if (character === '}') {
+      depth -= 1
+    }
+  }
+  return null
+}
+
+function renderCssRule(selector, declarations) {
+  const body = String(declarations ?? '').trim().replace(/^\{|\}$/g, '').trim()
+  return `${String(selector).trim()} {\n  ${body}\n}`
 }
 
 function validateWriteContent(name, filePath, content) {
@@ -780,6 +1065,26 @@ function workspaceStateText(writtenThisRun) {
   return `Files already written in this run: ${files.join(', ')}.`
 }
 
+async function collectSectionIds(projectId, files) {
+  const index = new Map()
+  for (const file of Array.isArray(files) ? files : []) {
+    if (!/\.html?$/i.test(file)) continue
+    const content = await readWorkspaceFileSafe(projectId, file)
+    if (content === null) continue
+    const ids = []
+    for (const match of content.matchAll(/\bid\s*=\s*["']([A-Za-z][\w-]*)["']/g)) {
+      const id = match[1]
+      if (!ids.includes(id)) ids.push(id)
+    }
+    index.set(file, ids)
+  }
+  return index
+}
+
+function isAppWorkspace(projectId) {
+  return existsInWorkspace(projectId, 'css/app.css') && !existsInWorkspace(projectId, 'css/base.css')
+}
+
 async function readWorkspaceFileSafe(projectId, relativePath) {
   const clean = String(relativePath ?? '')
     .replace(/\\/g, '/')
@@ -808,6 +1113,18 @@ function describeAction(name, args, { phase = 'running', lines = 0 } = {}) {
         return phase === 'running' ? `Filling ${filePath}…` : `Filled ${filePath} · ${lines} lines`
       }
       return phase === 'running' ? `Editing ${filePath}…` : `Edited ${filePath} · ${lines} lines`
+    case 'edit_section':
+      return phase === 'running'
+        ? `Updating section ${args.id ? `#${args.id} ` : ''}in ${filePath}…`
+        : `Updated section ${args.id ? `#${args.id} ` : ''}in ${filePath} · ${lines} lines`
+    case 'edit_css':
+      return phase === 'running'
+        ? `Restyling ${args.selector ? `"${truncate(args.selector, 40)}" ` : ''}in ${filePath}…`
+        : `Restyled ${args.selector ? `"${truncate(args.selector, 40)}" ` : ''}in ${filePath}`
+    case 'compose_page':
+      return phase === 'running'
+        ? `Composing ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) from structured sections…`
+        : `Composed ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) — ${lines} lines`
     case 'scaffold_site':
       return phase === 'running'
         ? `Scaffolding ${Array.isArray(args.pages) ? args.pages.length : 0} page(s) from the starter kit…`
@@ -835,7 +1152,7 @@ function describeFailure(name, args, outcome = null) {
   const filePath = args.path ?? 'file'
   const raw = String(outcome?.text ?? '')
   const reason = raw.startsWith('Error:')
-    ? raw.replace(/^Error:\s*/, '').split('\n')[0].slice(0, 160)
+    ? raw.replace(/^Error:\s*/, '').split('\n')[0].slice(0, 400)
     : ''
   switch (name) {
     case 'create_file':
@@ -844,6 +1161,12 @@ function describeFailure(name, args, outcome = null) {
       return reason ? `Failed to extend ${filePath} — ${reason}` : `Failed to extend ${filePath}`
     case 'edit_file':
       return reason ? `Failed to edit ${filePath} — ${reason}` : `Failed to edit ${filePath}`
+    case 'edit_section':
+      return reason ? `Failed to edit section in ${filePath} — ${reason}` : `Failed to edit section in ${filePath}`
+    case 'edit_css':
+      return reason ? `Failed to restyle ${filePath} — ${reason}` : `Failed to restyle ${filePath}`
+    case 'compose_page':
+      return reason ? `Failed to compose the page(s) — ${reason}` : 'Failed to compose the page(s)'
     case 'scaffold_site':
       return reason ? `Failed to scaffold the site — ${reason}` : 'Failed to scaffold the site'
     case 'scaffold_app':
@@ -1184,6 +1507,213 @@ function missingParentFolders(projectId, filePath) {
   return missing
 }
 
+function normalizeEol(text) {
+  return String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
+
+function uniqueRange(text, needle) {
+  const first = text.indexOf(needle)
+  if (first === -1) return null
+  if (text.indexOf(needle, first + needle.length) !== -1) return { ambiguous: true }
+  return { start: first, end: first + needle.length }
+}
+
+function squeezeWhitespace(text) {
+  const chars = []
+  const starts = []
+  const ends = []
+  const source = String(text ?? '')
+  for (let index = 0; index < source.length; index += 1) {
+    if (/\s/.test(source[index])) continue
+    chars.push(source[index])
+    starts.push(index)
+    ends.push(index + 1)
+  }
+  return { text: chars.join(''), starts, ends }
+}
+
+function whitespaceRange(text, needle) {
+  const squeezed = squeezeWhitespace(text)
+  const pin = squeezeWhitespace(needle).text
+  if (!pin) return null
+  const first = squeezed.text.indexOf(pin)
+  if (first === -1) return null
+  if (squeezed.text.indexOf(pin, first + 1) !== -1) return { ambiguous: true }
+  return { start: squeezed.starts[first], end: squeezed.ends[first + pin.length - 1] }
+}
+
+function closestSnippet(text, needle, context = 2) {
+  const lines = String(text ?? '').split('\n')
+  const probe = normalizeEol(needle).trim().split(/\s+/).filter(Boolean)
+  const wanted = new Set(probe.slice(0, 12))
+  let best = null
+  lines.forEach((line, index) => {
+    const lineTokens = line.split(/\s+/).filter(Boolean)
+    let score = 0
+    for (const token of lineTokens) if (wanted.has(token)) score += token.length
+    if (score > 0 && (!best || score > best.score)) best = { index, score }
+  })
+  if (!best) return { line: null, excerpt: '' }
+  const from = Math.max(0, best.index - context)
+  const to = Math.min(lines.length, best.index + context + 1)
+  const excerpt = lines
+    .slice(from, to)
+    .map((line, offset) => `${String(from + offset + 1).padStart(5)} | ${line}`)
+    .join('\n')
+  return { line: best.index + 1, excerpt }
+}
+
+const SECTION_SYNONYMS = {
+  hero: ['hero', 'banner', 'masthead'],
+  services: ['services', 'service', 'offer', 'offerings', 'what we do'],
+  features: ['features', 'feature', 'benefits', 'why us'],
+  about: ['about', 'story', 'who we are', 'company'],
+  pricing: ['pricing', 'price', 'prices', 'plans', 'plan', 'packages', 'package', 'rates'],
+  testimonials: ['testimonials', 'testimonial', 'reviews', 'review', 'quotes', 'clients'],
+  faq: ['faq', 'faqs', 'questions', 'question', 'accordion', 'q&a'],
+  stats: ['stats', 'statistics', 'numbers', 'metrics'],
+  steps: ['steps', 'step', 'process', 'how it works', 'workflow'],
+  gallery: ['gallery', 'portfolio', 'work', 'projects', 'showcase'],
+  team: ['team', 'staff', 'people'],
+  contact: ['contact', 'contact-form', 'contact form', 'enquiry', 'inquiry', 'get in touch', 'message'],
+  'contact-info': ['contact info', 'details', 'address'],
+  blogs: ['blog', 'blogs', 'articles', 'news', 'journal'],
+  cta: ['cta', 'call to action', 'call-to-action', 'get started', 'banner'],
+}
+
+function sectionSynonyms(type) {
+  const key = String(type ?? '').toLowerCase()
+  return [key, ...(SECTION_SYNONYMS[key] ?? [])].filter(Boolean)
+}
+
+function describeSections(source) {
+  const text = normalizeEol(source)
+  const { tags } = scanHtml(text)
+  const sections = []
+  for (const tag of tags) {
+    if (tag.closing || tag.selfClosing) continue
+    if (tag.name !== 'section' && tag.name !== 'article') continue
+    const id = tag.attrs?.id ?? tag.attrs?.['data-section'] ?? ''
+    if (!id) continue
+    if (sections.some((entry) => entry.id === id)) continue
+    const block = findSectionBlock(text, id)
+    const body = block && !block.ambiguous ? text.slice(block.start, block.end) : ''
+    const heading = /<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i.exec(body)
+    sections.push({
+      id,
+      type: tag.attrs?.['data-section'] ?? '',
+      title: tag.attrs?.['data-title'] ?? '',
+      heading: heading ? heading[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : '',
+      line: block?.line ?? tag.line,
+      endLine: block?.endLine ?? tag.line,
+    })
+  }
+  return sections
+}
+
+function resolveSectionRequest(source, requested) {
+  const request = String(requested ?? '').toLowerCase().trim()
+  if (!request) return null
+  const sections = describeSections(source)
+  if (sections.length === 0) return { sections, none: true }
+  const exact = sections.find(
+    (entry) =>
+      entry.id.toLowerCase() === request ||
+      entry.type.toLowerCase() === request ||
+      entry.title.toLowerCase() === request,
+  )
+  if (exact) return { sections, section: exact, matchedBy: 'id' }
+  const stopwords = new Set([
+    'the', 'a', 'an', 'on', 'of', 'in', 'to', 'and', 'for', 'with', 'it', 'its',
+    'my', 'our', 'this', 'that', 'please', 'page', 'pages', 'home', 'section',
+    'sections', 'ui', 'update', 'change', 'make', 'edit', 'fix', 'redesign',
+    'want', 'like', 'look', 'looks', 'style', 'it\u2019s', 'lets',
+  ])
+  const tokens = request.split(/[^a-z0-9]+/).filter((token) => token.length >= 2 && !stopwords.has(token))
+  if (tokens.length === 0) return { sections, none: true }
+  const scored = sections
+    .map((section) => {
+      const id = section.id.toLowerCase()
+      const type = String(section.type ?? '').toLowerCase()
+      const title = String(section.title ?? '').toLowerCase()
+      const heading = String(section.heading ?? '').toLowerCase()
+      const synonyms = sectionSynonyms(section.type || section.id)
+      let score = 0
+      for (const token of tokens) {
+        if (id === token || type === token) score += 6
+        else if (new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`).test(id) || new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`).test(type)) score += 4
+        for (const synonym of synonyms) {
+          if (synonym === token) score += 5
+          else if (synonym.split(/\s+/).includes(token)) score += 5
+        }
+        if (title && new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`).test(title)) score += 2
+        if (heading && new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`).test(heading)) score += 2
+      }
+      return { section, score }
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+  if (scored.length === 0) return { sections, none: true }
+  return {
+    sections,
+    section: scored[0].section,
+    matchedBy: 'words',
+    alternatives: scored.slice(1, 3).map((entry) => entry.section),
+  }
+}
+
+function fileOutline(text, filePath) {
+  const source = normalizeEol(text)
+  const lines = source.split('\n')
+  const entries = []
+  const pattern = /<([a-z][a-z0-9]*)\b([^>]*)>/i
+  lines.forEach((line, index) => {
+    const match = pattern.exec(line)
+    if (!match) return
+    const tag = String(match[1]).toLowerCase()
+    if (!['section', 'header', 'footer', 'main', 'nav', 'form', 'article', 'div', 'h1', 'h2'].includes(tag)) return
+    const attrs = match[2] ?? ''
+    const id = /\bid\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1] ?? ''
+    const cls = /\bclass\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1]?.split(/\s+/)[0] ?? ''
+    if (!id && !/^(section|header|footer|main|nav|form|h1|h2)$/.test(tag)) return
+    const label = id ? `#${id}` : cls ? `.${cls}` : ''
+    entries.push(`${String(index + 1).padStart(5)} | <${tag}${label ? ' ' + label : ''}>`)
+  })
+  const sectionLines = []
+  if (/\.html?$/i.test(filePath)) {
+    for (const section of describeSections(source)) {
+      const type = section.type || 'section'
+      const title = section.title || section.heading || ''
+      sectionLines.push(
+        `${String(section.line).padStart(5)}-${String(section.endLine).padStart(5)} | <section id="${section.id}" data-section="${type}"${title ? ` title="${truncate(title, 60)}"` : ''}>`,
+      )
+    }
+  }
+  return [
+    `${filePath} — ${lines.length} line(s), ${source.length} char(s)`,
+    sectionLines.length > 0 ? 'Sections (id, data-section, title, line range):' : '',
+    ...sectionLines,
+    ...entries,
+    'Use read_file { path, start_line, end_line } for one region, or edit_section { path, id, content } to replace a whole section by id without reproducing old text.',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function sliceLines(text, startLine, endLine, filePath = '') {
+  const lines = normalizeEol(text).split('\n')
+  const total = lines.length
+  let from = Number.isFinite(startLine) ? Math.max(1, Math.floor(startLine)) : 1
+  let to = Number.isFinite(endLine) ? Math.floor(endLine) : Math.min(total, from + 119)
+  if (from > total) from = Math.max(1, total - 1)
+  to = Math.min(total, Math.max(from, to))
+  const body = lines
+    .slice(from - 1, to)
+    .map((line, offset) => `${String(from + offset).padStart(5)} | ${line}`)
+    .join('\n')
+  return `${filePath} lines ${from}-${to} of ${total}\n${body}`
+}
+
 async function executeTool(name, rawArgs, projectId) {
   const args = normalizeToolArgs(projectId, name, rawArgs)
   switch (name) {
@@ -1192,6 +1722,12 @@ async function executeTool(name, rawArgs, projectId) {
       const filePath = String(args.path ?? '').trim()
       const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
       if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
+      if (name === 'create_file' && SECONDARY_PAGE.test(filePath) && isAppWorkspace(projectId)) {
+        return {
+          text: `Error: "${filePath}" is a legal/secondary page, and this project is a utility APP which must not ship one. Remove or repoint the footer link that points to it — do not create the page.`,
+          rejected: true,
+        }
+      }
       if (name === 'edit_file' && !existsInWorkspace(projectId, filePath)) {
         return { text: `Error: "${filePath}" does not exist (use create_file).` }
       }
@@ -1215,36 +1751,43 @@ async function executeTool(name, rawArgs, projectId) {
             rejected: true,
           }
         }
-        const candidates = [oldString]
-        if (existing.includes('\r\n') && oldString.includes('\n')) {
-          candidates.push(oldString.replace(/\n/g, '\r\n'))
-        }
-        if (oldString.trim() !== oldString) candidates.push(oldString.trim())
-        let needle = null
-        for (const candidate of candidates) {
-          if (candidate && existing.split(candidate).length - 1 === 1) {
-            needle = candidate
-            break
-          }
-        }
-        if (!needle) {
-          const occurrences = existing.split(oldString).length - 1
-          const slots = [...existing.matchAll(/<!--\s*SLOT:([a-z0-9-]+)\s*-->/g)].map(
-            (match) => `<!-- SLOT:${match[1]} -->`,
-          )
-          if (occurrences > 1) {
-            return {
-              text: `Error: old_string appears ${occurrences} times in "${filePath}", so the edit would be ambiguous. Include a few surrounding characters so it occurs exactly once.${slots.length > 0 ? ` Empty slots still in the file: ${slots.join(', ')}.` : ''}`,
-              rejected: true,
-            }
-          }
+        const normalizedExisting = normalizeEol(existing)
+        const normalizedOld = normalizeEol(oldString)
+        const slots = [...normalizedExisting.matchAll(/<!--\s*SLOT:([a-z0-9-]+)\s*-->/g)].map(
+          (match) => `<!-- SLOT:${match[1]} -->`,
+        )
+        let range = uniqueRange(normalizedExisting, normalizedOld)
+        if (range && range.ambiguous) {
           return {
-            text: `Error: old_string was not found in "${filePath}", so nothing was changed.${slots.length > 0 ? ` Replace one of these markers instead: ${slots.join(', ')}.` : ' Read the file with read_file and copy the exact snippet.'}`,
+            text: `Error: old_string appears more than once in "${filePath}", so the edit would be ambiguous. Include a few surrounding characters so it occurs exactly once, or use edit_section { path, id, content }.${slots.length > 0 ? ` Empty slots still in the file: ${slots.join(', ')}.` : ''}`,
             rejected: true,
           }
         }
-        const next = existing.replace(needle, newString)
+        if (!range) range = whitespaceRange(normalizedExisting, normalizedOld)
+        if (range && range.ambiguous) {
+          return {
+            text: `Error: old_string matches more than one place in "${filePath}" (ignoring whitespace), so the edit would be ambiguous. Use edit_section { path, id, content } instead.`,
+            rejected: true,
+          }
+        }
+        if (!range) {
+          const closest = closestSnippet(normalizedExisting, normalizedOld)
+          return {
+            text: `Error: old_string was not found in "${filePath}", so nothing was changed. The closest match is at line ${closest.line ?? '?'}:\n${closest.excerpt}\n${slots.length > 0 ? `Empty slots still in the file: ${slots.join(', ')}. ` : ''}Do NOT send the same text again — use edit_section { path, id, content } to replace the section by its id, or read_file { path, outline: true } first and copy the exact lines.`,
+            rejected: true,
+          }
+        }
+        const next = normalizedExisting.slice(0, range.start) + newString + normalizedExisting.slice(range.end)
         if (/\.html?$/i.test(filePath) && SITE_PAGE_MARKER.test(next)) {
+          const structureProblems = newStructureProblems(normalizedExisting, next)
+          if (structureProblems.length > 0) {
+            return {
+              text: `Error: that edit would unbalance "${filePath}", so nothing was written. What is wrong with the new file:\n- ${structureProblems
+                .slice(0, 6)
+                .join('\n- ')}\nResend the fragment as one complete, balanced section.`,
+              rejected: true,
+            }
+          }
           const integrity = documentIntegrityIssues(next)
           if (integrity) {
             return {
@@ -1256,7 +1799,7 @@ async function executeTool(name, rawArgs, projectId) {
         const existedBefore = existsInWorkspace(projectId, filePath)
         let saved
         try {
-          saved = writeFileToWorkspace(projectId, filePath, next)
+          saved = writeFileToWorkspace(projectId, filePath, finalizeHtmlWrite(next, filePath))
         } catch (error) {
           debugToolCall(name, filePath, next, 'error')
           return { text: toolErrorMessage(name, args, error) }
@@ -1291,7 +1834,7 @@ async function executeTool(name, rawArgs, projectId) {
       const newFolders = existedBefore ? [] : missingParentFolders(projectId, filePath)
       let saved
       try {
-        saved = writeFileToWorkspace(projectId, filePath, content)
+        saved = writeFileToWorkspace(projectId, filePath, finalizeHtmlWrite(content, filePath))
       } catch (error) {
         debugToolCall(name, filePath, content, 'error')
         return { text: toolErrorMessage(name, args, error) }
@@ -1321,7 +1864,7 @@ async function executeTool(name, rawArgs, projectId) {
       const appendedFolders = appendedToExisting ? [] : missingParentFolders(projectId, filePath)
       let saved
       try {
-        saved = appendFileToWorkspace(projectId, filePath, content)
+        saved = appendFileToWorkspace(projectId, filePath, finalizeHtmlWrite(content, filePath))
       } catch (error) {
         debugToolCall(name, filePath, content, 'error')
         return { text: toolErrorMessage(name, args, error) }
@@ -1397,6 +1940,63 @@ async function executeTool(name, rawArgs, projectId) {
         ],
       }
     }
+    case 'compose_page': {
+      let plan
+      try {
+        plan = await buildComposePlan(args)
+      } catch (error) {
+        return { text: `Error: could not compose the page(s): ${error.message}`, rejected: true }
+      }
+      if (plan.files.length === 0 || plan.pages.length === 0) {
+        return {
+          text: `Error: compose_page needs at least one page with structured sections. It received pages=${JSON.stringify(
+            Array.isArray(args.pages) ? args.pages.length : args.pages ?? null,
+          )}. Example: compose_page {"brand":"Acme","palette":"indigo-modern","pages":[{"file":"index.html","title":"Acme","sections":[{"type":"hero","title":"…","lead":"…","card":{"icon":"code","title":"…","text":"…"}},{"type":"services","title":"Our services","items":[{"icon":"layers","title":"…","text":"…"}]}]}]}`,
+          rejected: true,
+        }
+      }
+      const created = []
+      const skipped = []
+      const folders = new Set()
+      let totalLines = 0
+      for (const file of plan.files) {
+        const existing = existsInWorkspace(projectId, file.path)
+          ? await readWorkspaceFileSafe(projectId, file.path)
+          : null
+        if (existing !== null && existing.trim()) {
+          skipped.push(file.path)
+          continue
+        }
+        try {
+          writeFileToWorkspace(projectId, file.path, finalizeHtmlWrite(file.content, file.path))
+        } catch (error) {
+          return { text: `Error: could not write ${file.path}: ${error.message}`, rejected: true }
+        }
+        const segments = file.path.split('/')
+        for (let index = 1; index < segments.length; index += 1) {
+          folders.add(segments.slice(0, index).join('/'))
+        }
+        created.push({ path: file.path, lines: countLines(file.content) })
+        totalLines += countLines(file.content)
+      }
+      const themeNote = `palette ${plan.theme.id} (${plan.theme.headingFont} + ${plan.theme.bodyFont})`
+      const parts = [
+        `Composed ${created.length} file(s) with ${themeNote}${skipped.length > 0 ? ` (left ${skipped.length} existing file(s) untouched: ${skipped.join(', ')})` : ''}.`,
+        created.length > 0 ? `Created: ${created.map((file) => file.path).join(', ')}.` : '',
+        `Sections by page: ${sectionSummary(plan.pages)}.`,
+        'Every page is complete: the server rendered each section into the starter-kit templates and generated the nav and footer from the sections that exist. No slot markers or template comments were written. Do NOT call create_file on these pages; change them with edit_section. Finish with your short summary.',
+      ].filter(Boolean)
+      return {
+        text: parts.join(' '),
+        modelText: parts.join(' '),
+        lines: totalLines,
+        written: created,
+        fsChanges: [
+          ...[...folders].map((folder) => ({ path: folder, type: 'addDir' })),
+          ...created.map((file) => ({ path: file.path, type: 'add' })),
+        ],
+      }
+    }
     case 'scaffold_app': {
       let plan
       try {
@@ -1448,8 +2048,189 @@ async function executeTool(name, rawArgs, projectId) {
     case 'read_file': {
       const filePath = String(args.path ?? '').trim()
       if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
-      const content = readFileFromWorkspace(projectId, filePath)
+      let content
+      try {
+        content = readFileFromWorkspace(projectId, filePath)
+      } catch (error) {
+        return { text: toolErrorMessage(name, args, error) }
+      }
+      const sectionId = String(args.section ?? args.section_id ?? '').trim()
+      if (sectionId) {
+        const range = sectionLineRange(content, sectionId)
+        if (!range) {
+          return {
+            text: `Error: no element with id/data-section "${sectionId}" was found in "${filePath}". Its outline:\n${fileOutline(content, filePath)}`,
+          }
+        }
+        return {
+          text: `Only section "${sectionId}" of "${filePath}" (lines ${range.startLine}-${range.endLine}, no other part of the file):\n${sliceLines(
+            content,
+            range.startLine,
+            range.endLine,
+            filePath,
+          )}`,
+        }
+      }
+      if (args.outline === true || args.outline === 'true' || String(args.mode ?? '').toLowerCase() === 'outline') {
+        return { text: fileOutline(content, filePath) }
+      }
+      const startLine = Number(args.start_line ?? args.startLine)
+      const endLine = Number(args.end_line ?? args.endLine)
+      if (Number.isFinite(startLine)) {
+        return { text: sliceLines(content, startLine, Number.isFinite(endLine) ? endLine : startLine + 119, filePath) }
+      }
       return { text: truncate(content, MAX_READ_CHARS) }
+    }
+    case 'edit_section': {
+      const filePath = String(args.path ?? '').trim()
+      let id = String(args.id ?? args.section ?? args.section_id ?? '').trim()
+      const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
+      if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
+      if (!id) {
+        return { text: 'Error: edit_section needs an "id" — the section id (or data-section) to change, for example "testimonials".', rejected: true }
+      }
+      if (!content.trim()) {
+        return { text: `Error: edit_section needs the new "content" for section "${id}".`, rejected: true }
+      }
+      if (!existsInWorkspace(projectId, filePath)) {
+        return { text: `Error: "${filePath}" does not exist (use create_file).`, rejected: true }
+      }
+      const existingSection = await readWorkspaceFileSafe(projectId, filePath)
+      if (existingSection === null) {
+        return { text: `Error: "${filePath}" does not exist (use create_file).`, rejected: true }
+      }
+      const normalized = normalizeEol(existingSection)
+      const requestedId = id
+      let block = findSectionBlock(normalized, id)
+      let resolutionNote = ''
+      if (!block && requestedId) {
+        const resolution = resolveSectionRequest(normalized, requestedId)
+        if (resolution?.section) {
+          id = resolution.section.id
+          block = findSectionBlock(normalized, id)
+          if (block) {
+            const heading = resolution.section.heading || resolution.section.title
+            resolutionNote = `Requested "${requestedId}" — resolved to section #${id} (${resolution.section.type || 'section'}${heading ? `: ${truncate(heading, 60)}` : ''}).`
+          }
+        }
+        if (!block) {
+          return {
+            text: `Error: no element with id/data-section "${requestedId}" was found in "${filePath}", and no section matched those words. Do NOT invent an id — use one of these real sections (read_file { path: "${filePath}", outline: true } shows the same list):\n${fileOutline(normalized, filePath)}`,
+            rejected: true,
+          }
+        }
+      }
+      if (block && block.ambiguous) {
+        return { text: `Error: "${id}" is used by more than one element in "${filePath}", so the section edit would be ambiguous. Give the target section a unique id first.`, rejected: true }
+      }
+      if (!block) {
+        return {
+          text: `Error: no element with id/data-section "${id}" was found in "${filePath}". Its outline:\n${fileOutline(normalized, filePath)}`,
+          rejected: true,
+        }
+      }
+      if (block.unbalanced) {
+        return {
+          text: `Error: the section "${id}" in "${filePath}" is opened at line ${block.line} but never closed, so its boundary is unknown and the edit was rejected — nothing was written. The file is already unbalanced. Read the outline (read_file { path: "${filePath}", outline: true }), then repair that section by resending a COMPLETE balanced <${block.tagName} ...>…</${block.tagName}> with edit_section, or fix the whole file with a complete create_file.`,
+          rejected: true,
+        }
+      }
+      const action = String(args.action ?? 'replace').toLowerCase()
+      const position = String(args.position ?? 'after').toLowerCase()
+      let next
+      if (action === 'insert') {
+        const at = position === 'before' ? block.start : block.end
+        next = `${normalized.slice(0, at)}\n${content}${normalized.slice(at)}`
+      } else {
+        next = normalized.slice(0, block.start) + content + normalized.slice(block.end)
+      }
+      if (/\.html?$/i.test(filePath)) {
+        const beforeProblems = new Set(sectionStructureProblems(normalized))
+        const newProblems = sectionStructureProblems(next).filter(
+          (problem) => !beforeProblems.has(problem),
+        )
+        if (newProblems.length > 0) {
+          const range = sectionLineRange(next, id)
+          return {
+            text: `Error: that section edit would unbalance "${filePath}", so nothing was written. What is wrong with the new file:\n- ${newProblems
+              .slice(0, 6)
+              .join('\n- ')}\nThe target section is "${id}"${
+              range ? ` (lines ${range.startLine}-${range.endLine} of the new file)` : ''
+            }. Resend the COMPLETE section as one opening <${block.tagName} id="${id}"> and its matching </${block.tagName}>, with every inner element closed and no <${block.tagName}> of another section inside it. Nothing outside that section may change.`,
+            rejected: true,
+          }
+        }
+      }
+      if (/\.html?$/i.test(filePath) && SITE_PAGE_MARKER.test(next)) {
+        const integrity = documentIntegrityIssues(next)
+        if (integrity) {
+          return {
+            text: `Error: that section edit would leave "${filePath}" incomplete (${integrity}), so it was rejected. Keep exactly one <header>, <main> and <footer>, and every section inside <main>.`,
+            rejected: true,
+          }
+        }
+      }
+      const existedBefore = existsInWorkspace(projectId, filePath)
+      let savedSection
+      try {
+        savedSection = writeFileToWorkspace(projectId, filePath, finalizeHtmlWrite(next, filePath))
+      } catch (error) {
+        debugToolCall(name, filePath, next, 'error')
+        return { text: toolErrorMessage(name, args, error) }
+      }
+      debugToolCall(name, savedSection, next, 'section')
+      const slotsLeft = [...next.matchAll(/<!--\s*SLOT:([a-z0-9-]+)\s*-->/g)].map((match) => match[1])
+      return {
+        text: `${resolutionNote ? `${resolutionNote} ` : ''}Updated section #${id} in ${savedSection} (${action}).${slotsLeft.length > 0 ? ` Empty slots left: ${slotsLeft.join(', ')}.` : ''}`,
+        modelText: `ok, section ${id} ${action}, ${countLines(next)} lines`,
+        resolvedSection: resolutionNote ? id : undefined,
+        lines: countLines(next),
+        fsChanges: [{ path: savedSection, type: existedBefore ? 'change' : 'add' }],
+      }
+    }
+    case 'edit_css': {
+      const filePath = String(args.path ?? '').trim()
+      const selector = String(args.selector ?? args.rule ?? '').trim()
+      const content = typeof args.content === 'string' ? args.content : String(args.content ?? '')
+      if (!filePath) return { text: requiredPathMessage(name, args), rejected: true }
+      if (!selector) {
+        return { text: 'Error: edit_css needs a "selector", for example ".pricing .grid".', rejected: true }
+      }
+      if (!content.trim()) {
+        return { text: `Error: edit_css needs the "content" — the CSS declarations for "${selector}" without braces.`, rejected: true }
+      }
+      const braces = (content.match(/{/g) || []).length - (content.match(/}/g) || []).length
+      if (braces !== 0) {
+        return { text: 'Error: the declarations must NOT contain unbalanced braces — pass only the declarations, e.g. "grid-template-columns: repeat(3, minmax(0, 1fr));".', rejected: true }
+      }
+      if (!existsInWorkspace(projectId, filePath)) {
+        return { text: `Error: "${filePath}" does not exist. Target an existing stylesheet, for example css/base.css.`, rejected: true }
+      }
+      const existingCss = await readWorkspaceFileSafe(projectId, filePath)
+      if (existingCss === null) {
+        return { text: `Error: "${filePath}" does not exist.`, rejected: true }
+      }
+      const rule = renderCssRule(selector, content)
+      const range = cssRuleRange(existingCss, selector)
+      const append = String(args.mode ?? 'replace').toLowerCase() === 'append' || !range
+      const next = !append
+        ? existingCss.slice(0, range.start) + rule + existingCss.slice(range.end)
+        : `${existingCss.trimEnd()}\n\n${rule}\n`
+      const existedBefore = existsInWorkspace(projectId, filePath)
+      let savedCss
+      try {
+        savedCss = writeFileToWorkspace(projectId, filePath, next)
+      } catch (error) {
+        return { text: toolErrorMessage(name, args, error) }
+      }
+      debugToolCall(name, savedCss, next, append ? 'css-appended' : 'css-replaced')
+      return {
+        text: `${range && !append ? 'Replaced' : 'Added'} the rule for "${selector}" in ${savedCss}.`,
+        modelText: `ok, ${range && !append ? 'replaced' : 'added'} ${selector}`,
+        lines: countLines(next),
+        written: [{ path: savedCss, lines: countLines(next) }],
+        fsChanges: [{ path: savedCss, type: existedBefore ? 'change' : 'add' }],
+      }
     }
     case 'list_directory': {
       const rawPath = String(args.path ?? '.').trim()
@@ -1730,6 +2511,7 @@ export async function runAgent({
   runStartedAt = null,
   strictRules = [],
   projectHistory = false,
+  images = [],
 }) {
   const startedAt = Number.isFinite(runStartedAt) ? runStartedAt : Date.now()
   let toolCalls = 0
@@ -1768,6 +2550,7 @@ export async function runAgent({
 
   if (keys.length === 0) {
     const error = new Error('No API key is available for this run.')
+    agentLog({ scope: 'agent', tool: 'key', message: error.message })
     event('error', error.message, { status: 'done' })
     throw error
   }
@@ -1776,6 +2559,7 @@ export async function runAgent({
   try {
     candidates = await resolveModelPlan(keys, { userId, requestedProvider, requestedModel })
   } catch (error) {
+    agentLog({ scope: 'agent', tool: 'model', message: `model plan failed: ${error?.message ?? error}` })
     event('error', error.message, { status: 'done' })
     throw error
   }
@@ -1784,6 +2568,56 @@ export async function runAgent({
   const keyLabelOf = (key) => key.label || `${key.provider ?? 'key'} key`
   const cooling = new Map()
   if (taskId) clearTaskTotals(taskId)
+
+  const sanitizedImages = sanitizeImagePayload(images)
+  if (sanitizedImages.problems.length > 0) {
+    event('note', `Image attachment: ${sanitizedImages.problems.join(' ')}`, {
+      status: 'done',
+      tool: 'note',
+    })
+  }
+  let visionReport = null
+  if (sanitizedImages.images.length > 0) {
+    const visionActionId = crypto.randomUUID()
+    event('vision', `Analyzing ${sanitizedImages.images.length} screenshot(s)…`, {
+      status: 'running',
+      tool: 'vision',
+      actionId: visionActionId,
+      imageCount: sanitizedImages.images.length,
+    })
+    try {
+      const vision = await analyzeScreenshots({
+        images: sanitizedImages.images,
+        task,
+        keys,
+        userId,
+        taskId,
+        emitUsage,
+      })
+      visionReport = vision.report
+      event('vision', 'Analysis ready', {
+        status: 'done',
+        tool: 'vision',
+        actionId: visionActionId,
+        model: vision.model,
+        provider: vision.provider,
+        report: vision.report,
+        imageCount: sanitizedImages.images.length,
+      })
+    } catch (error) {
+      event('vision', 'Screenshot analysis unavailable — continuing with text only.', {
+        status: 'error',
+        tool: 'vision',
+        actionId: visionActionId,
+        error: error.message,
+        imageCount: sanitizedImages.images.length,
+      })
+      event('note', `Screenshots: ${error.message}`, {
+        status: 'done',
+        tool: 'note',
+      })
+    }
+  }
 
   const coolCandidate = (candidate, ms) => {
     cooling.set(candidateIdentity(candidate), Date.now() + Math.max(0, ms))
@@ -1813,13 +2647,24 @@ export async function runAgent({
   // header/nav and footer markup of the main page, the nav/footer link lists,
   // the :root tokens and the shared class names.
   let projectSnapshotText = null
+  let projectSnapshotInfo = null
   try {
     const snapshot = await buildProjectSnapshot({ projectId, framework })
     projectSnapshotText = snapshot?.text ?? null
+    projectSnapshotInfo = snapshot ?? null
   } catch (error) {
     console.warn(`[agent] project snapshot failed: ${error?.message ?? error}`)
     projectSnapshotText = null
+    projectSnapshotInfo = null
   }
+
+  // A follow-up edit must change only what the user named. Detected from the
+  // existing project plus the task text, this flag scopes the plan, refuses to
+  // create unrelated files and never forces the rest of the site to be written.
+  const targetedEdit = !resume && isTargetedEditTask(task, projectSnapshotInfo)
+  const targetedFiles = targetedEdit
+    ? namedExistingFiles(task, projectSnapshotInfo?.pages ?? [])
+    : []
 
   let projectMemoryText = null
   if (projectHistory) {
@@ -1908,7 +2753,13 @@ export async function runAgent({
     event_('resume', 'Resuming the previous task…', { status: 'done', model: candidates[0].model, tool: 'resume' })
   } else {
     messages.push(systemMessage)
-    messages.push({ role: 'user', content: task })
+    const baseTaskForModel = visionReport
+      ? `${task}\n\nSCREENSHOT ANALYSIS (from the images the user attached — the images themselves are NOT available to you, work from this report):\n${visionReport}`
+      : task
+    const targetedNote = targetedEdit
+      ? `\n\nTARGETED EDIT — this project already exists. Do NOT plan or rebuild the rest of the site, and do NOT create new files. Change ONLY the section(s) and file(s) this task names${targetedFiles.length > 0 ? ` (${targetedFiles.join(', ')})` : ''}. Your plan JSON's "files" and "pages" must list only those files. If a link points at a page you would have to create, remove or repoint the link instead — creating unrelated pages is not part of this task.`
+      : ''
+    messages.push({ role: 'user', content: `${baseTaskForModel}${targetedNote}` })
   }
 
   const estimateInput = () => estimateTokens(condenseHistory(messages, KEEP_RECENT_MESSAGES), OPENAI_TOOLS)
@@ -1992,6 +2843,9 @@ export async function runAgent({
       ...extra,
     })
 
+  const logNote = (message, extra = {}) =>
+    agentLog({ scope: 'agent', tool: extra.tool ?? 'note', file: extra.file ?? '', message })
+
   if (resume && vanillaMode && !repairIntent) {
     try {
       const connection = await connectionCheck({ projectId })
@@ -2030,7 +2884,7 @@ export async function runAgent({
 
   let streamedAny = false
 
-  async function sendCompletion(wireMessages, maxCompletionTokens, temperature, { allowStream = true } = {}) {
+  async function sendCompletion(wireMessages, maxCompletionTokens, temperature, { allowStream = true, tools = OPENAI_TOOLS } = {}) {
     const usedProvider = active.providerId
     const usedModel = active.model
     const keyId = active.key.id ?? null
@@ -2039,7 +2893,7 @@ export async function runAgent({
       apiKey: active.key.plain,
       model: usedModel,
       messages: normalizeMessagesForProvider(wireMessages, usedProvider),
-      tools: OPENAI_TOOLS,
+      tools,
       temperature,
       maxCompletionTokens,
       onResponse: keyId
@@ -2069,7 +2923,7 @@ export async function runAgent({
         })
       } catch (error) {
         if (!canRetryWithoutStreaming(error)) throw error
-        note('The provider stopped streaming — retrying this turn without streaming…')
+        logNote('The provider stopped streaming — retrying this turn without streaming…', { tool: 'retry' })
         if (streamedAny) {
           // Drop the half-streamed text before the non-streamed answer arrives.
           emitDelta({ text: '', reset: true })
@@ -2138,7 +2992,7 @@ export async function runAgent({
         if (error.status === 413) {
           if (shrinkLevel < 2) {
             shrinkLevel += 1
-            note('Request too large (413) — trimming history and retrying…')
+            logNote('Request too large (413) — trimming history and retrying…', { tool: 'retry' })
             continue
           }
           error.tooLarge = true
@@ -2198,15 +3052,11 @@ export async function runAgent({
     return true
   }
 
-  const switchNote = (previous, reason, extra = {}) =>
-    event_('fallback', `${reason}, switching to ${providerLabel(active.providerId)} (${active.model})`, {
-      status: 'done',
-      model,
-      provider: active.providerId,
+  const switchNote = (previous, reason) =>
+    agentLog({
+      scope: 'agent',
       tool: 'fallback',
-      switchTo: active.providerId,
-      from: previous.providerId,
-      ...extra,
+      message: `${reason}, switching to ${providerLabel(active.providerId)} (${active.model})`,
     })
 
   async function requestCompletion(temperature) {
@@ -2286,7 +3136,7 @@ export async function runAgent({
         if (error.status >= 500 || error.code === 'TIMEOUT' || error.code === 'NETWORK') {
           if (!transientRetried) {
             transientRetried = true
-            note(`${previousLabel} had a transient error — retrying once…`, null, { retrying: true })
+            logNote(`${previousLabel} had a transient error — retrying once…`, { tool: 'retry' })
             continue
           }
           coolCandidate(previous, TRANSIENT_COOLING_MS)
@@ -2303,6 +3153,59 @@ export async function runAgent({
     }
 
     throw lastError ?? new Error('Could not complete the request.')
+  }
+
+  const EDIT_ACTION_WORD =
+    /\b(add|insert|include|new|update|change|edit|fix|remove|delete|replace|make|redesign|restyle|move)\b/i
+  const EDIT_TARGET_WORD =
+    /\b(hero|banner|headline|faq|faqs|questions?|accordion|pricing|plans?|packages?|prices?|reviews?|testimonials?|quotes?|services?|features?|stats?|process|steps|gallery|portfolio|about|team|blogs?|contact|cta|header|footer|nav|navigation|menu|columns?|footer)\b/i
+  const editModeTask =
+    !resume &&
+    vanillaMode &&
+    !repairIntent &&
+    Boolean(projectSnapshotInfo) &&
+    (targetedEdit || (EDIT_ACTION_WORD.test(String(task ?? '')) && EDIT_TARGET_WORD.test(String(task ?? '')) ))
+
+  function editElementRange(text, tag) {
+    const { tags } = scanHtml(String(text ?? ''))
+    const stack = []
+    for (const entry of tags) {
+      if (entry.name !== tag || entry.selfClosing) continue
+      if (!entry.closing) {
+        stack.push({ start: entry.index, id: entry.attrs?.id ?? '' })
+        continue
+      }
+      const top = stack.pop()
+      if (!top) continue
+      return { start: top.start, end: entry.end, id: top.id, text: String(text).slice(top.start, entry.end) }
+    }
+    return null
+  }
+
+  async function runEditMode() {
+    return runEditModeEdit({
+      projectId,
+      task,
+      candidates,
+      getActive: () => active,
+      moveTo,
+      advanceCandidate,
+      isCooling,
+      coolCandidate,
+      markKeyCooling,
+      markKeyInvalid,
+      sendCompletion,
+      event: event_,
+      agentLog,
+      persistSession,
+      stopRequested,
+      getTaskTotals: () => (taskId ? getTaskTotals(taskId) : null),
+      addToolCalls: (count) => {
+        toolCalls += count
+      },
+      requestedModel,
+      startedAt,
+    })
   }
 
   event_('thinking', 'Starting the agent…', {
@@ -2329,6 +3232,25 @@ export async function runAgent({
     }
   }
 
+  // Drop a file from the plan the moment it is proven impossible (a retry
+  // cannot fix a missing file or a forbidden write), so the plan-completeness
+  // check stops demanding work that will never succeed.
+  const removePlannedPath = (target) => {
+    const clean = String(target ?? '')
+      .replace(/\\/g, '/')
+      .replace(/^\.?\//, '')
+      .trim()
+    if (!clean) return
+    if (plan.includes(clean)) plan = plan.filter((file) => file !== clean)
+    if (planDoc) {
+      planDoc = {
+        ...planDoc,
+        files: (Array.isArray(planDoc.files) ? planDoc.files : []).filter((file) => file.path !== clean),
+        pages: (Array.isArray(planDoc.pages) ? planDoc.pages : []).filter((page) => page.file !== clean),
+      }
+    }
+  }
+
   const toolCallCapBase = vanillaMode ? VANILLA_MAX_TOOL_CALLS : MAX_TOOL_CALLS
   let toolCallCap = toolCallCapBase
 
@@ -2347,10 +3269,15 @@ export async function runAgent({
   let forceNonStreamOnce = false
   let lastFailureText = ''
   let lastFailureTool = ''
+  const failedEditsByFile = new Map()
   // A repair round that produces the SAME failure list and changes nothing on
   // disk is not progress; continuing it only burns budget.
   let lastCheckSignature = null
   let stalledContinues = 0
+  // The first reply of a run is the plan JSON alone (no tool calls). Once it
+  // has been parsed the model must be told to implement it, otherwise an edit
+  // whose scoped plan has no files would "finish" without changing anything.
+  let planAckPending = false
 
   const wrapUpHint = async (usedTokens) => {
     const remaining = await missingPlannedFiles(projectId, plan, planDoc)
@@ -2401,24 +3328,46 @@ export async function runAgent({
     writeStreak = 0
     writesWithoutNewFile = 0
     parseRetries = 0
-    note(`Continuing automatically (${autoContinues} of ${MAX_AUTO_CONTINUES}) — ${reason}.`)
+    logNote(`Continuing automatically (${autoContinues} of ${MAX_AUTO_CONTINUES}) — ${reason}.`, { tool: 'retry' })
     return true
   }
 
   const blockFinishing = (label, failures, code) => {
     const list = (Array.isArray(failures) ? failures : []).filter(Boolean)
-    const message = `Stopped: ${label}. ${list.length} problem(s) are still unresolved after every repair round: ${list
-      .slice(0, 4)
-      .join(' ')}`
-    event_('error', message, {
-      status: 'done',
-      model,
-      provider: active.providerId,
-      tool: 'gate',
-      failures: list.slice(0, 12),
+    agentLog({
+      scope: 'agent',
+      tool: 'validate',
+      message: `${label} — ${list.length} unresolved problem(s): ${list.join(' | ')}`,
     })
     persistSession(code)
-    throw new Error(message)
+    const error = new Error(
+      'The task could not be finished to a valid state. The files were saved — review them and try a more specific request.',
+    )
+    error.code = code ?? 'BLOCKED'
+    throw error
+  }
+
+  if (editModeTask) {
+    const explicit = requestedModel
+      ? candidates.find(
+          (candidate) =>
+            candidate.model === requestedModel &&
+            (!requestedProvider || candidate.providerId === requestedProvider),
+        )
+      : null
+    const mistralLarge =
+      !requestedModel && (!requestedProvider || requestedProvider === 'mistral')
+        ? candidates.find(
+            (candidate) =>
+              candidate.providerId === 'mistral' && candidate.model === PREFERRED_AGENT_MODEL.mistral,
+          )
+        : null
+    const preferred = explicit ?? mistralLarge
+    if (preferred && preferred !== active && !isCooling(preferred)) moveTo(preferred)
+  }
+
+  if (editModeTask) {
+    return await runEditMode()
   }
 
   for (;;) {
@@ -2433,24 +3382,26 @@ export async function runAgent({
       if (isToolCallParseError(error)) {
         if (parseRetries < MAX_PARSE_RETRIES) {
           parseRetries += 1
-          note('Tool call was malformed, retrying with smaller chunks…')
+          logNote('Tool call was malformed, retrying with smaller chunks…', { tool: 'retry' })
           appendGuidance(messages, TOOL_CALL_CORRECTION_NOTE)
           continue
         }
         const next = advanceCandidate()
         if (next) {
           parseRetries = 0
-          event_('fallback', `Repeated malformed tool calls — switching to ${model}.`, {
-            status: 'done',
-            model,
-            provider: active.providerId,
-            tool: 'fallback',
-          })
+          logNote(`Repeated malformed tool calls — switching to ${model}.`, { tool: 'fallback' })
           appendGuidance(messages, TOOL_CALL_CORRECTION_NOTE)
           continue
         }
       }
-      event_('error', error.message, { status: 'done', model })
+      agentLog({ scope: 'agent', tool: 'request', message: `request failed: ${error?.message ?? error}` })
+      const plainMessage =
+        error?.status === 401 || error?.status === 403
+          ? 'The provider rejected the API key. Update it in Settings → AI and try again.'
+          : error?.status === 429
+            ? 'The provider is rate limited right now. Wait a moment and try again.'
+            : 'The agent could not reach the model. Check the API key and your connection, then try again.'
+      event_('error', plainMessage, { status: 'done', model })
       persistSession(error.code ?? 'error')
       throw error
     }
@@ -2463,6 +3414,18 @@ export async function runAgent({
     // summary instead of silently burning another 300K like the old loop did.
     const usedTokens = taskId ? (getTaskTotals(taskId)?.totalTokens ?? 0) : 0
     if (usedTokens >= effectiveBudget) {
+      const pendingEdit = [...failedEditsByFile.entries()].find(([, streak]) => streak > 0)
+      if (
+        pendingEdit &&
+        consecutiveFailures < 2 &&
+        tryAutoContinue('an edit was still failing when the budget was reached')
+      ) {
+        appendGuidance(
+          messages,
+          `The token budget ran out while an edit on "${pendingEdit[0]}" was still failing — do NOT summarise yet. Next: read_file { path: "${pendingEdit[0]}", outline: true }, then fix the section with ONE complete and balanced edit_section { path: "${pendingEdit[0]}", id: "<section id>", content: "<the WHOLE section>" }. Only then stop with your summary.`,
+        )
+        continue
+      }
       const issuesNow = await plannedFileIssues(projectId, plan, planDoc)
       if (
         issuesNow.length > 0 &&
@@ -2473,6 +3436,17 @@ export async function runAgent({
           `TOKEN BUDGET reached, but work remains: ${formatIssues(issuesNow).join(
             '; ',
           )}. Continue now — one create_file per file — then stop with your short summary.`,
+        )
+        continue
+      }
+      if (
+        targetedEdit &&
+        writtenThisRun.size > 0 &&
+        tryAutoContinue('the targeted edit was still in progress at the budget')
+      ) {
+        appendGuidance(
+          messages,
+          'The budget was reached during a targeted edit. Finish ONLY the change this task named, then stop with your short summary.',
         )
         continue
       }
@@ -2501,12 +3475,13 @@ export async function runAgent({
         model,
         provider: active.providerId,
       }
-    }
-    if (!wrapUpNotified && usedTokens >= effectiveBudget * TASK_WRAP_UP_RATIO) {
+    }    const midEdit = [...failedEditsByFile.values()].some((streak) => streak > 0)
+    if (!wrapUpNotified && !midEdit && !targetedEdit && usedTokens >= effectiveBudget * TASK_WRAP_UP_RATIO) {
       wrapUpNotified = true
       appendGuidance(messages, await wrapUpHint(usedTokens))
-      note(
+      logNote(
         `Token budget at ${Math.round((usedTokens / effectiveBudget) * 100)}% — telling the agent to wrap up…`,
+        { tool: 'budget' },
       )
     }
 
@@ -2515,11 +3490,12 @@ export async function runAgent({
       if (emptyRetries < MAX_EMPTY_RETRIES && autoContinues < MAX_AUTO_CONTINUES) {
         emptyRetries += 1
         autoContinues += 1
-        note('The provider returned an empty response — retrying automatically…')
+        logNote('The provider returned an empty response — retrying automatically…', { tool: 'retry' })
         appendGuidance(messages, 'Your previous reply was empty. Continue the task now.')
         continue
       }
       const error = new Error('The provider returned an empty response. Try again.')
+      agentLog({ scope: 'agent', tool: 'request', message: 'the provider returned an empty response' })
       event_('error', error.message, { status: 'done' })
       persistSession('empty_response')
       throw error
@@ -2530,6 +3506,45 @@ export async function runAgent({
       const jsonPlan = parsePlanJson(message.content)
       const parsed = jsonPlan ?? extractPlan(message.content)
       if (jsonPlan || parsed.files.length > 0 || parsed.projectName) {
+        if (targetedEdit) {
+          // A follow-up edit: keep only the files the task named. The model's
+          // whole-site plan is discarded here on purpose, so the plan-completeness
+          // check can never force unrelated pages or sections to be written.
+          const sectionIndex = await collectSectionIds(projectId, targetedFiles)
+          plan = targetedFiles.slice()
+          planDoc = {
+            projectName: jsonPlan?.projectName ?? parsed.projectName ?? null,
+            type: jsonPlan?.type ?? null,
+            direction: jsonPlan?.direction ?? null,
+            brand: null,
+            nav: [],
+            files: plan.map((path) => ({ path, purpose: 'targeted edit' })),
+            pages: plan.map((file) => ({
+              file,
+              sections: sectionsNamedInTask(task, sectionIndex.get(file) ?? []),
+            })),
+            requirements: jsonPlan?.requirements ?? [],
+          }
+          condensedSpec = truncate(planSpecText(planDoc), 600)
+          persistSession('plan')
+          event_(
+            'plan',
+            `TARGETED EDIT — scoped to ${
+              plan.length > 0 ? plan.join(', ') : 'the sections named in the task'
+            }; no other file will be created or required.`,
+            {
+              status: 'done',
+              model,
+              provider: active.providerId,
+              tool: 'plan',
+              projectName: planDoc.projectName,
+              projectType: planDoc.type,
+              direction: planDoc.direction,
+              targeted: true,
+            },
+          )
+          planAckPending = true
+        } else {
         plan = jsonPlan ? jsonPlan.files.map((file) => file.path) : parsed.files
         planDoc = jsonPlan
           ? {
@@ -2575,10 +3590,25 @@ export async function runAgent({
             direction: jsonPlan?.direction ?? null,
           },
         )
+        planAckPending = true
+        }
       }
     }
 
     const calls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+    if (calls.length > 0) planAckPending = false
+    if (calls.length === 0 && planAckPending) {
+      planAckPending = false
+      messages.push(message)
+      appendGuidance(
+        messages,
+        targetedEdit
+          ? 'Plan received. Now MAKE the change the task asked for: read_file { path, outline: true } if needed, then edit_section { path, id, content } to replace the target section. Do not create new files.'
+          : 'Plan received. Now implement it, starting with the first file, using the tools.',
+      )
+      note('Plan received — implementing it now…')
+      continue
+    }
     if (calls.length === 0) {
       const issues = await plannedFileIssues(projectId, plan, planDoc)
       const missing = issues.map((issue) => issue.path)
@@ -2591,7 +3621,7 @@ export async function runAgent({
             '; ',
           )}. Finish each one now: fill the remaining <!-- SLOT:name --> markers with edit_file { path, old_string: "<!-- SLOT:hero -->", new_string: "<section …>…</section>" } — several in ONE reply — and create a page with create_file only when it does not exist yet.`,
         )
-        note(`Verifying the plan — ${issues.length} file(s) still incomplete…`)
+        logNote(`Verifying the plan — ${issues.length} file(s) still incomplete…`, { tool: 'validate' })
         continue
       }
       // Cheap, token-free verification FIRST: a lost chunk, a page that does
@@ -2600,25 +3630,22 @@ export async function runAgent({
       // result. It costs no model tokens on the happy path.
       let quick
       try {
-        quick = await quickCheck({ projectId, plan: planDoc, files: plan })
+        quick = await quickCheck({
+          projectId,
+          plan: planDoc,
+          files: plan,
+          requiredSections: targetedEdit ? [] : requestedFeatureSections(task),
+        })
       } catch (error) {
         quick = { ok: false, problems: [`The automatic check could not run: ${error.message}`] }
       }
       if (!quick.ok && quickCheckRounds < MAX_QUICK_CHECK_ROUNDS && toolCalls < toolCallCap) {
         quickCheckRounds += 1
-        event_(
-          'gate',
-          `Automatic check found ${quick.problems.length} problem(s) — repair round ${quickCheckRounds} of ${MAX_QUICK_CHECK_ROUNDS}.`,
-          {
-            status: 'done',
-            tool: 'gate',
-            passed: false,
-            round: quickCheckRounds,
-            failures: quick.problems.slice(0, 12),
-          },
+        logNote(
+          `Automatic check found ${quick.problems.length} problem(s) — repair round ${quickCheckRounds}: ${quick.problems.join(' | ')}`,
+          { tool: 'validate' },
         )
         appendGuidance(messages, formatQuickCheck(quick))
-        note(`Fixing the automatic check failures — round ${quickCheckRounds}…`)
         continue
       }
       if (!quick.ok) {
@@ -2673,19 +3700,11 @@ export async function runAgent({
         if (connection && !connection.ok && connection.checked.length > 0) {
           if (connectionRounds < MAX_CONNECTION_ROUNDS && toolCalls < toolCallCap) {
             connectionRounds += 1
-            event_(
-              'gate',
-              `Link/style check found ${connection.problems.length} problem(s) — repair round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}.`,
-              {
-                status: 'done',
-                tool: 'gate',
-                passed: false,
-                round: connectionRounds,
-                failures: connection.problems.slice(0, 12),
-              },
+            logNote(
+              `Link/style check found ${connection.problems.length} problem(s) — repair round ${connectionRounds}: ${connection.problems.join(' | ')}`,
+              { tool: 'validate' },
             )
             appendGuidance(messages, formatConnectionReport(connection))
-            note(`Repairing the link/style problems — round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}…`)
             continue
           }
           if (tryAutoContinue('the link/style check still found problems')) {
@@ -2707,15 +3726,11 @@ export async function runAgent({
         } else if (visual && !visual.ok) {
           if (connectionRounds < MAX_CONNECTION_ROUNDS && toolCalls < toolCallCap) {
             connectionRounds += 1
-            event_('gate', `Visual check found ${visual.problems.length} problem(s) — repair round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}.`, {
-              status: 'done',
-              tool: 'gate',
-              passed: false,
-              round: connectionRounds,
-              failures: visual.problems.slice(0, 12),
-            })
+            logNote(
+              `Visual check found ${visual.problems.length} problem(s) — repair round ${connectionRounds}: ${visual.problems.join(' | ')}`,
+              { tool: 'validate' },
+            )
             appendGuidance(messages, formatVisualReport(visual))
-            note(`Repairing the rendering problems — round ${connectionRounds} of ${MAX_CONNECTION_ROUNDS}…`)
             continue
           }
           if (tryAutoContinue('the site still does not render like a styled site')) {
@@ -2749,20 +3764,11 @@ export async function runAgent({
           })
         } else if (gateRounds < MAX_GATE_ROUNDS && toolCalls < toolCallCap) {
           gateRounds += 1
-          event_(
-            'gate',
-            `Quality gate found ${gate.failures.length} problem(s) — repair round ${gateRounds} of ${MAX_GATE_ROUNDS}.`,
-            {
-              status: 'done',
-              tool: 'gate',
-              passed: false,
-              round: gateRounds,
-              failures: gate.failures.slice(0, 12),
-              checks: gate.checks.length,
-            },
+          logNote(
+            `Quality gate found ${gate.failures.length} problem(s) — repair round ${gateRounds}: ${gate.failures.join(' | ')}`,
+            { tool: 'validate' },
           )
           appendGuidance(messages, formatGateReport(gate, { maxRounds: MAX_GATE_ROUNDS }))
-          note(`Repair round ${gateRounds} of ${MAX_GATE_ROUNDS} — fixing the gate failures…`)
           continue
         } else {
           if (tryAutoContinue('the quality gate still found problems')) {
@@ -2771,17 +3777,6 @@ export async function runAgent({
             continue
           }
           gateFailure = gate
-          event_(
-            'gate',
-            `Quality gate still failing (${gate.failures.length} problem(s)) after ${gateRounds} repair round(s).`,
-            {
-              status: 'done',
-              tool: 'gate',
-              passed: false,
-              failures: gate.failures.slice(0, 12),
-              checks: gate.checks.length,
-            },
-          )
           // The gate failing after every repair round means the page is still
           // under-sized or unfinished. Never report that as a successful run.
           blockFinishing('the quality gate still fails', gate.failures, 'gate_failed')
@@ -2796,7 +3791,7 @@ export async function runAgent({
           messages,
           'Your last reply was cut off by the token limit. Finish your short summary now — at most two sentences — then stop.',
         )
-        note('The final summary was cut off — asking the model to finish it…')
+        logNote('The final summary was cut off — asking the model to finish it…', { tool: 'retry' })
         continue
       }
 
@@ -2898,6 +3893,23 @@ export async function runAgent({
       })
       if (ruleBlock) rejection = ruleBlock.message
 
+      // A targeted edit must not expand: refuse to CREATE a file the task did
+      // not name (privacy.html and friends), and tell the model what to do
+      // with the link instead of retrying.
+      if (
+        !rejection &&
+        targetedEdit &&
+        name === 'create_file' &&
+        filePath &&
+        !existsInWorkspace(projectId, filePath) &&
+        !targetedFiles.includes(filePath) &&
+        namedExistingFiles(task, [filePath]).length === 0
+      ) {
+        rejection = `Error: this is a targeted edit — do not create new files. "${filePath}" is not part of the task. Change only ${
+          targetedFiles.length > 0 ? targetedFiles.join(', ') : 'the file(s) the task names'
+        }. If a link points at "${filePath}", remove or repoint the link instead of creating the page.`
+      }
+
       // Cap the appends per file. Growing one stylesheet through 31 tiny
       // append calls is exactly the loop that burned ~510K tokens on a 3-page
       // site, and the file was still broken afterwards.
@@ -2947,6 +3959,36 @@ export async function runAgent({
         batchFailures += 1
         lastFailureText = String(outcome.text ?? '').slice(0, 240)
         lastFailureTool = name
+        // A file that does not exist can never be fixed by retrying the SAME
+        // edit. Say so once, drop it from the plan, and let the model either
+        // create it or move on.
+        const failureText = String(outcome.text ?? '')
+        const missingTarget = /does not exist \(use create_file\)/i.test(failureText)
+        const forbiddenTarget = /targeted edit — do not create new files|legal\/secondary page/i.test(failureText)
+        if (missingTarget && filePath) {
+          removePlannedPath(filePath)
+          outcome.noteText = `"${filePath}" does not exist. Do NOT retry an edit on it. Either call create_file { path: "${filePath}", content: "<the complete file>" } ONCE, or drop it from the task and continue with the rest.`
+        } else if (forbiddenTarget && filePath) {
+          removePlannedPath(filePath)
+          outcome.noteText = `The write to "${filePath}" is not allowed in this task and will never succeed. Do not retry it. Remove or repoint the link that points at "${filePath}", then finish the change the user actually asked for.`
+        }
+      }
+
+      if (name === 'edit_file' || name === 'edit_section') {
+        if (failed) {
+          const streak = (failedEditsByFile.get(filePath) ?? 0) + 1
+          failedEditsByFile.set(filePath, streak)
+          if (streak >= 2) {
+            failedEditsByFile.set(filePath, 0)
+            appendGuidance(
+              messages,
+              `You have failed ${streak} edits on "${filePath}" in a row. STOP retrying the same old_string. Do this next: read_file { path: "${filePath}", outline: true }, then change the target section with edit_section { path: "${filePath}", id: "<section id>", content: "<the complete new section>" } — it needs no old text.`,
+            )
+            logNote(`Switching edit strategy on ${filePath} after ${streak} failed edits…`, { tool: 'retry', file: filePath })
+          }
+        } else {
+          failedEditsByFile.delete(filePath)
+        }
       }
 
       // The Explorer must follow the agent in real time, so every successful
@@ -2956,15 +3998,28 @@ export async function runAgent({
         for (const change of outcome.fsChanges) queueAgentFsChange(projectId, change)
       }
       if (ruleBlock) {
+        agentLog({
+          scope: 'tool',
+          tool: name,
+          file: filePath,
+          message: `blocked by your rule: ${ruleBlock.rule} — ${String(outcome.text ?? '').slice(0, 1200)}`,
+        })
         event_('rule_blocked', `Blocked by your rule: ${truncate(ruleBlock.rule, 80)}`, {
           tool: name,
           args: { path: args.path, command: args.command },
           status: 'done',
           actionId,
-          result: truncate(outcome.text, 2000),
           rule: ruleBlock.rule,
         })
       } else {
+        if (failed) {
+          agentLog({
+            scope: 'tool',
+            tool: name,
+            file: filePath,
+            message: `ERROR ${String(outcome.text ?? '').slice(0, 1200)}`,
+          })
+        }
         event_(
           TOOL_LABELS[name] ?? 'thinking',
           failed
@@ -2975,7 +4030,7 @@ export async function runAgent({
             args: { path: args.path, command: args.command },
             status: failed ? 'error' : 'done',
             actionId,
-            result: truncate(outcome.text, 2000),
+            ...(failed ? {} : { result: truncate(outcome.text, 8000) }),
             ...(outcome.details ?? {}),
           },
         )
@@ -2984,6 +4039,7 @@ export async function runAgent({
       const batchWrites = Array.isArray(outcome.written) && outcome.written.length > 0 ? outcome.written : null
       const writeSucceeded = (WRITE_TOOLS.has(name) || Boolean(batchWrites)) && !failed
       let modelResult = outcome.modelText ?? truncate(outcome.text ?? '', MAX_TOOL_RESULT_CHARS)
+      if (outcome.noteText) modelResult = `${modelResult}\n${outcome.noteText}`
 
       if (writeSucceeded) {
         let isNewFile = !alreadyWritten
@@ -3107,26 +4163,21 @@ export async function runAgent({
         failureEscalation = 1
         forceNonStreamOnce = true
         appendGuidance(messages, guidance.nonStream)
-        note('Two tool calls in a row failed — retrying this turn without streaming…')
+        logNote('Two tool calls in a row failed — retrying this turn without streaming…', { tool: 'retry' })
         continue
       }
       if (failureEscalation === 1) {
         failureEscalation = 2
         forceNonStreamOnce = true
         appendGuidance(messages, guidance.corrective)
-        note('Still failing — sending the exact argument names for that tool and retrying…')
+        logNote('Still failing — sending the exact argument names for that tool and retrying…', { tool: 'retry' })
         continue
       }
       if (failureEscalation === 2) {
         failureEscalation = 3
         const previous = active
         if (advanceCandidate()) {
-          event_('fallback', `Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, {
-            status: 'done',
-            model,
-            provider: active.providerId,
-            tool: 'fallback',
-          })
+          logNote(`Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, { tool: 'fallback' })
           appendGuidance(messages, guidance.escalate)
           continue
         }
@@ -3135,27 +4186,27 @@ export async function runAgent({
         failureEscalation = 4
         const previous = active
         if (advanceCandidate()) {
-          event_('fallback', `Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, {
-            status: 'done',
-            model,
-            provider: active.providerId,
-            tool: 'fallback',
-          })
+          logNote(`Tool calls kept failing on ${previous.model} — switching to ${active.model}.`, { tool: 'fallback' })
           appendGuidance(messages, guidance.escalate)
           continue
         }
         appendGuidance(messages, guidance.final)
-        note('One corrective message before giving up…')
+        logNote('One corrective message before giving up…', { tool: 'retry' })
         continue
       }
-      const failureError = new Error(
-        `Stopped: the agent's tool calls failed ${consecutiveFailures} turns in a row${
+      agentLog({
+        scope: 'agent',
+        tool: 'validate',
+        message: `the agent's tool calls failed ${consecutiveFailures} turns in a row${
           writtenThisRun.size > 0
             ? ` (${writtenThisRun.size} file(s) were written earlier in this run)`
             : ' and no files were written'
-        } after every automatic recovery attempt (non-streaming retry, corrective message, model fallback) was exhausted. Last error: ${lastFailureText || 'unknown'}`,
+        } after every recovery attempt. Last error: ${lastFailureText || 'unknown'}`,
+      })
+      const failureError = new Error(
+        'The agent could not make the change after several attempts. The files were left as they were — try a more specific request.',
       )
-      event_('error', failureError.message, { status: 'done', model, toolFailures: consecutiveFailures })
+      failureError.code = 'TOOL_FAILURE'
       persistSession('tool_failure')
       throw failureError
     }
@@ -3163,3 +4214,20 @@ export async function runAgent({
 }
 
 export { isToolCallParseError }
+
+export const __testables = {
+  executeTool,
+  normalizeEol,
+  uniqueRange,
+  whitespaceRange,
+  closestSnippet,
+  fileOutline,
+  sliceLines,
+  findSectionBlock,
+  resolveSectionRequest,
+  describeSections,
+  cssRuleRange,
+  documentIntegrityIssues,
+  hasSlotMarkers,
+  requestedFeatureSections,
+}

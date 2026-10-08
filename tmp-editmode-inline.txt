@@ -1,0 +1,26 @@
+  async function runEditMode() {
+    return runEditModeEdit({
+      projectId,
+      task,
+      candidates,
+      getActive: () => active,
+      moveTo,
+      advanceCandidate,
+      isCooling,
+      coolCandidate,
+      markKeyCooling,
+      markKeyInvalid,
+      sendCompletion,
+      event: event_,
+      agentLog,
+      persistSession,
+      stopRequested,
+      getTaskTotals: () => (taskId ? getTaskTotals(taskId) : null),
+      addToolCalls: (count) => {
+        toolCalls += count
+      },
+      requestedModel,
+      startedAt,
+    })
+  }
+

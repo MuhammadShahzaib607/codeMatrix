@@ -1,8 +1,24 @@
-import { startWatchingProject, stopWatchingProject } from '../utils/fileWatcher.js'
-import { isValidProjectId } from '../utils/workspaceManager.js'
+import jwt from 'jsonwebtoken'
+import { env } from '../config/env.js'
+import {
+  startWatchingContainer,
+  startWatchingProject,
+  stopWatchingContainer,
+  stopWatchingProject,
+} from '../utils/fileWatcher.js'
+import { getOwnerContainerPath, isValidProjectId } from '../utils/workspaceManager.js'
 
 export function roomFor(projectId) {
   return `workspace:${projectId}`
+}
+
+function verifyUser(token) {
+  try {
+    const payload = jwt.verify(String(token ?? ''), env.jwtSecret)
+    return payload?.id ?? null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -67,10 +83,42 @@ export default function registerWorkspaceSocket(io) {
       stopWatchingProject(projectId)
     })
 
+    // The Explorer's tree is the WHOLE container, so a top-level folder created
+    // outside the active project (terminal, another project, a new sibling) is
+    // invisible to the per-project watcher. The container gets its own watcher.
+    const watchedContainers = new Set()
+
+    socket.on('container:watch', (payload, acknowledge) => {
+      const ack = typeof acknowledge === 'function' ? acknowledge : () => {}
+      const userId = verifyUser(payload?.token)
+      if (!userId) {
+        ack({ ok: false, code: 'UNAUTHORIZED' })
+        return
+      }
+      const containerPath = getOwnerContainerPath(userId)
+      socket.join(`container:user:${userId}`)
+      if (watchedContainers.has(containerPath)) {
+        ack({ ok: true })
+        return
+      }
+      const started = startWatchingContainer(containerPath, () =>
+        io.to(`container:user:${userId}`).emit('container:treeChanged', { userId }),
+      )
+      if (started) watchedContainers.add(containerPath)
+      ack({ ok: started })
+    })
+
+    socket.on('container:unwatch', () => {
+      for (const containerPath of watchedContainers) stopWatchingContainer(containerPath)
+      watchedContainers.clear()
+    })
+
     socket.on('disconnect', () => {
       // socket.io has already removed the socket from its rooms.
       for (const projectId of watched) stopWatchingProject(projectId)
       watched.clear()
+      for (const containerPath of watchedContainers) stopWatchingContainer(containerPath)
+      watchedContainers.clear()
     })
   })
 }

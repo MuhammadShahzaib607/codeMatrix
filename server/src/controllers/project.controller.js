@@ -6,12 +6,14 @@ import {
   findProject,
   listProjectsByOwner,
 } from '../models/project.repository.js'
-import { suppressWatcher } from '../utils/fileWatcher.js'
+import { closeWatching, suppressWatcher } from '../utils/fileWatcher.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
+import { runDeletion } from '../utils/safeDelete.js'
 import {
   createWorkspaceFolder,
   deleteWorkspaceFolder,
+  getWorkspacePath,
   isScratchProjectId,
   scratchOwnerIdFromProjectId,
 } from '../utils/workspaceManager.js'
@@ -92,7 +94,12 @@ export const deleteProjectHandler = asyncHandler(async (req, res) => {
       throw new ApiError(403, 'You do not have access to this project.', 'FORBIDDEN')
     }
     suppressWatcher(projectId)
-    await deleteWorkspaceFolder(projectId)
+    await closeWatching(projectId)
+    await runDeletion(
+      () => deleteWorkspaceFolder(projectId),
+      getWorkspacePath(projectId),
+      project.name,
+    )
     await deleteProject(projectId)
     return res.json({ deleted: true, projectId })
   }
@@ -104,7 +111,8 @@ export const deleteProjectHandler = asyncHandler(async (req, res) => {
 
   if (ownsScratch) {
     suppressWatcher(projectId)
-    await deleteWorkspaceFolder(projectId)
+    await closeWatching(projectId)
+    await runDeletion(() => deleteWorkspaceFolder(projectId), getWorkspacePath(projectId), 'Scratch')
     return res.json({ deleted: true, projectId })
   }
 

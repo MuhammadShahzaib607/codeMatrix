@@ -1,0 +1,3 @@
+contact-form-landing: slots=0 comments=0 h1=1 navLinks=4 | quick=true connection=true visual=true
+restaurant: slots=0 comments=0 h1=1 navLinks=4 | quick=true connection=true visual=true
+portfolio: slots=0 comments=0 h1=1 navLinks=5 | quick=true connection=true visual=true

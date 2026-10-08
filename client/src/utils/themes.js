@@ -115,6 +115,17 @@ const SPECS = [
   // ---- High contrast ------------------------------------------------------
   { id: 'high-contrast-dark', name: 'High Contrast Dark', cat: 'high-contrast', dark: true, accent: '#ffff00', bg: '#000000', surface: '#000000', topbar: '#000000', elevated: '#0a0a0a', border: '#ffffff', text: '#ffffff', strong: '#ffffff', dim: '#d0d0d0', muted: '#b0b0b0', folder: '#ffff00', file: '#00ffff', success: '#00ff00', warning: '#ffaa00', info: '#00ffff', danger: '#ff5555' },
   { id: 'high-contrast-light', name: 'High Contrast Light', cat: 'high-contrast', dark: false, accent: '#0000ee', bg: '#ffffff', surface: '#ffffff', topbar: '#ffffff', elevated: '#ffffff', border: '#000000', text: '#000000', strong: '#000000', dim: '#1a1a1a', muted: '#333333', folder: '#8a6d00', file: '#0000ee' },
+
+  { id: 'radioactive-vomit', name: 'Radioactive Vomit', cat: 'terrible', dark: false, accent: '#d1480a', bg: '#dff04a', surface: '#d2e63a', topbar: '#c6dc22', elevated: '#ecf76e', border: '#a8bd12', text: '#8f4200', strong: '#5c2400', dim: '#934b04', muted: '#9e630e', folder: '#b35400', file: '#8f4200', success: '#2f6b00', warning: '#a84400', info: '#005a72', danger: '#8a1a00' },
+  { id: 'highlighter-clash', name: 'Highlighter Clash', cat: 'terrible', dark: false, accent: '#b6ff00', bg: '#ff2d95', surface: '#ff5cab', topbar: '#f04a9c', elevated: '#ff74b8', border: '#c21268', text: '#180014', strong: '#000000', dim: '#24021a', muted: '#4f0b33', folder: '#b6ff00', file: '#00e5ff', success: '#006b3a', warning: '#7a2b00', info: '#003b6b', danger: '#6b0016' },
+  { id: 'sewer-mud', name: 'Sewer Mud', cat: 'terrible', dark: true, accent: '#6b4d8a', bg: '#2e2a1c', surface: '#3a3320', topbar: '#241f14', elevated: '#443c26', border: '#4a4128', text: '#b9a97a', strong: '#d8cba0', dim: '#afa073', muted: '#988b63', folder: '#7d8f4a', file: '#8a6f4a', success: '#5f7a3a', warning: '#a8842f', info: '#5a7a8a', danger: '#a0524a' },
+  { id: 'circus-nightmare', name: 'Circus Nightmare', cat: 'terrible', dark: true, accent: '#d81a00', bg: '#4a0f1a', surface: '#12245e', topbar: '#6b1020', elevated: '#1a3070', border: '#7a2030', text: '#ffee00', strong: '#ffffff', dim: '#b7950a', muted: '#a57f0d', folder: '#00e0ff', file: '#ffe000', success: '#00c853', warning: '#ffab00', info: '#40c4ff', danger: '#ff1744' },
+  { id: 'bruise', name: 'Bruise', cat: 'terrible', dark: true, accent: '#2ee6c8', bg: '#3b2a52', surface: '#47356b', topbar: '#2a1c3d', elevated: '#513d79', border: '#5c4a80', text: '#ffdd55', strong: '#ffffff', dim: '#ccae54', muted: '#b39754', folder: '#ffdd55', file: '#2ee6c8', success: '#7fd18a', warning: '#ffc14d', info: '#7ec8e3', danger: '#ff6b8a' },
+  { id: 'expired-mustard', name: 'Expired Mustard', cat: 'terrible', dark: false, accent: '#9c4a00', bg: '#d9c66a', surface: '#e3d49a', topbar: '#c9a94a', elevated: '#efe3b8', border: '#8f7a2e', text: '#4a3208', strong: '#2e1d00', dim: '#5c4a12', muted: '#6b5716', folder: '#8a5a00', file: '#7a3b00', success: '#3f6b1a', warning: '#a85f00', info: '#1a6b7a', danger: '#8a1a00' },
+  { id: 'neon-hospital', name: 'Neon Hospital', cat: 'terrible', dark: false, accent: '#e85d00', bg: '#b9f2d5', surface: '#a5e6c6', topbar: '#8fd6b4', elevated: '#d4f7e6', border: '#4a9e78', text: '#06392a', strong: '#011f16', dim: '#0c4a35', muted: '#155c44', folder: '#2f6fd0', file: '#e85d00', success: '#1a7f5a', warning: '#b26a00', info: '#0b62c4', danger: '#c62828' },
+  { id: 'toxic-grape-soda', name: 'Toxic Grape Soda', cat: 'terrible', dark: true, accent: '#b026ff', bg: '#3d0a52', surface: '#4d0f68', topbar: '#2e0640', elevated: '#5a1379', border: '#7a1fa0', text: '#c9ff5a', strong: '#e6ff9c', dim: '#a6d94a', muted: '#8fbf3f', folder: '#7fff00', file: '#ff4d4d', success: '#7fff00', warning: '#ff9d00', info: '#00e5ff', danger: '#c02020' },
+  { id: 'disco-sunburn', name: 'Disco Sunburn', cat: 'terrible', dark: true, accent: '#1e90ff', bg: '#3a1200', surface: '#5a1a00', topbar: '#2a0c00', elevated: '#6b2000', border: '#8a2e00', text: '#ff7ad9', strong: '#ff9ee6', dim: '#ef80c2', muted: '#e06ab8', folder: '#ff3300', file: '#00e0ff', success: '#00c853', warning: '#ff9d00', info: '#1e90ff', danger: '#ff1744' },
+  { id: 'cartoon-overdose', name: 'Cartoon Overdose', cat: 'terrible', dark: false, accent: '#ff0066', bg: '#fff45e', surface: '#ff59c7', topbar: '#3aa0ff', elevated: '#ffd24a', border: '#ff0000', text: '#001a4d', strong: '#000000', dim: '#003380', muted: '#004090', folder: '#00c853', file: '#ff1744', success: '#00c853', warning: '#ffab00', info: '#2979ff', danger: '#d50000' },
 ]
 
 const CATEGORY_LABELS = {
@@ -122,6 +133,7 @@ const CATEGORY_LABELS = {
   light: 'Light',
   colorful: 'Colorful',
   'high-contrast': 'High Contrast',
+  terrible: 'Deliberately Bad',
 }
 
 /** Expands a compact spec into a full CSS-variable palette. */

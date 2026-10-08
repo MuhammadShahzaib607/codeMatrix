@@ -1,14 +1,16 @@
 import { Router } from 'express'
 import * as apiKeyController from '../controllers/apiKey.controller.js'
 import protect from '../middlewares/authMiddleware.js'
+import requireAdmin from '../middlewares/requireAdmin.js'
 
 const router = Router()
 
-router.get('/providers', apiKeyController.listProviders)
+// Every key route is part of the AI agent's settings surface, so all of them
+// are admin-only. Ownership is still enforced in the service layer (every
+// query is filtered by req.user.id).
+router.use(protect, requireAdmin)
 
-// Everything below is per-user and JWT-protected; ownership is enforced in the
-// service layer (every query is filtered by req.user.id).
-router.use(protect)
+router.get('/providers', apiKeyController.listProviders)
 router.get('/', apiKeyController.listKeys)
 // Latest captured rate-limit usage for every saved key (no fresh Groq call).
 router.get('/usage', apiKeyController.listKeyUsage)

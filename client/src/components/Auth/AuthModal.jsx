@@ -1,4 +1,4 @@
-import { Loader2, X } from 'lucide-react'
+import { Eye, EyeOff, Loader2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { clearAuthError, loginUser, registerUser } from '../../features/authSlice'
@@ -192,18 +192,36 @@ function AuthForm({ mode }) {
 }
 
 function Field({ label, placeholder, value, onChange, error, type = 'text', autoComplete }) {
+  const isPassword = type === 'password'
+  const [isVisible, setIsVisible] = useState(false)
+  const inputType = isPassword && isVisible ? 'text' : type
+
   return (
     <label className="auth-field">
       <span className="auth-field-label">{label}</span>
-      <input
-        className={`auth-input ${error ? 'is-invalid' : ''}`}
-        type={type}
-        placeholder={placeholder}
-        value={value}
-        autoComplete={autoComplete}
-        spellCheck={false}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      <span className={`auth-input-wrap ${isPassword ? 'has-toggle' : ''}`}>
+        <input
+          className={`auth-input ${error ? 'is-invalid' : ''}`}
+          type={inputType}
+          placeholder={placeholder}
+          value={value}
+          autoComplete={autoComplete}
+          spellCheck={false}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        {isPassword && (
+          <button
+            type="button"
+            className="auth-password-toggle"
+            aria-label={isVisible ? 'Hide password' : 'Show password'}
+            aria-pressed={isVisible}
+            title={isVisible ? 'Hide password' : 'Show password'}
+            onClick={() => setIsVisible((current) => !current)}
+          >
+            {isVisible ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+        )}
+      </span>
       {error && <span className="auth-field-error">{error}</span>}
     </label>
   )

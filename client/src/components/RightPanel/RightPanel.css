@@ -1,0 +1,79 @@
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  background: var(--bg-sidebar);
+}
+
+/* Two-button segmented switch. Both buttons stay visible in either view so the
+   user can always switch back. */
+.right-panel-switch {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 36px;
+  height: 36px;
+  padding: 0 8px;
+  background: var(--bg-tab-bar);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.right-panel-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.right-panel-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.right-panel-tab.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-strong);
+}
+
+.right-panel-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Both views are absolutely stacked so neither is unmounted when the other is
+   shown. The inactive view stays laid out (visibility, not display) so the
+   terminal keeps its exact size and scrollback and needs no refit on return. */
+.right-panel-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.right-panel-view {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.right-panel-view.is-active {
+  visibility: visible;
+  pointer-events: auto;
+}

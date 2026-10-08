@@ -4,6 +4,7 @@ import { showToast } from '../features/uiSlice'
 import { workspaceApi } from '../services/api'
 import { getRootHandle, writeFilesToDirectory } from '../services/fileSystemAccess'
 import { collectFilePaths } from '../utils/cloudTree'
+import { isBinaryPath } from '../utils/fileTypes'
 
 export default function useSyncToLaptop() {
   const dispatch = useDispatch()
@@ -34,8 +35,13 @@ export default function useSyncToLaptop() {
       const paths = collectFilePaths(data.tree)
       const files = []
       for (const path of paths) {
-        const file = await workspaceApi.getFile(workspace.projectId, path)
-        files.push({ relativePath: path, content: file.content })
+        if (isBinaryPath(path)) {
+          const raw = await workspaceApi.getProjectFileBytes(workspace.projectId, path)
+          files.push({ relativePath: path, content: raw.blob })
+        } else {
+          const file = await workspaceApi.getFile(workspace.projectId, path)
+          files.push({ relativePath: path, content: file.content })
+        }
       }
 
       await writeFilesToDirectory(handle, files)

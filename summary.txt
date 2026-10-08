@@ -7089,3 +7089,2025 @@ COULD NOT VERIFY
     and the before/after comparisons drive the real loop with a scripted mock
     model. The loop, validation and prompt behaviour are real; the model's own
     wording is not.
+
+
+================================================================================
+AI Code Editor — Unified Multi-Folder Explorer + Live Tree + Auth DB Recovery +
+        Auth Modal Field Alignment
+        (2026-10-04)
+================================================================================
+
+STATUS: complete. The unified multi-folder Explorer, its real-time tree updates
+        and the show/hide password toggle are implemented and lint/build clean;
+        the server container API + socket watcher are verified live; the auth
+        database path is verified 15/15 against the real MongoDB, and the Auth
+        modal field alignment is verified by measured geometry in real headless
+        Chrome. NOT verified: the full multi-folder Explorer end-to-end in a
+        signed-in browser session (see below).
+
+--------------------------------------------------------------------------------
+TASK 1 — AUTH "NO DATABASE CONFIGURED": ROOT CAUSE + FIX
+--------------------------------------------------------------------------------
+
+The message is thrown by assertDatabase() in
+server/src/controllers/auth.controller.js when isDatabaseConnected() is false.
+
+CODE SIDE WAS CHECKED FIRST AND IS CORRECT
+  - config/env.js loads dotenv from server/.env via an ABSOLUTE path resolved
+    from the module file (path.resolve(here, '..', '..', '.env')), so the process
+    working directory does not matter.
+  - The variable names match: MONGODB_URI / JWT_SECRET / PORT / CLIENT_ORIGIN are
+    exactly what env.js reads.
+  - server/server.js start() awaits connectDatabase() BEFORE listening, and
+    config/db.js already logged either the connection or the failure reason.
+  - The live server on http://localhost:4000 reports database:"connected" and its
+    startup log shows "[db] connected to MongoDB".
+
+REAL CAUSE IN THIS ENVIRONMENT: a leftover test override. client/.env.local
+(created during the previous debugging session) set
+VITE_API_BASE_URL=http://localhost:4100, and :4100 was a throwaway server started
+with no MONGODB_URI (its health showed database:"not-configured"). Vite gives
+.env.local priority over .env, so a dev client on that instance talked to the
+DB-less server and got exactly this 503. Sign-in had "worked earlier" because the
+original server on :4000 uses the committed client/.env
+(VITE_API_BASE_URL=http://localhost:4000) and has a working database.
+
+FIX (targeted, no secrets touched)
+  - Removed the throwaway client/.env.local and stopped the DB-less server on
+    :4100. No .env file was overwritten or deleted; client/.env is unchanged.
+  - config/db.js now emits ONE clear, greppable line per outcome:
+      "[db] connected to MongoDB"
+      "[db] NOT connected: MONGODB_URI is not set in server/.env — auth and
+       projects are unavailable."
+      "[db] NOT connected: <driver error message>"
+    Only the message text is logged — never a connection string or secret.
+
+OUTSIDE-THE-CODE CASE: when the provider cannot reach MongoDB Atlas (a transient
+querySrv ECONNREFUSED on the SRV lookup), the server still runs but with
+database:"not-configured" and prints the NOT-connected line. The fix is then
+network/DNS or a reachable URI — nothing to change in the code. app.js already
+pins public DNS servers (8.8.8.8 / 1.1.1.1) in development.
+
+VERIFIED (live, against the real MongoDB on :4000)
+  - A spare-port start printed "[db] connected to MongoDB".
+  - 15/15 HTTP checks: register 201 + token/user; /me 200; /me with no token 401;
+    /me with a bad token 401; login 200; wrong password 401; duplicate register
+    409; create project 201; owner sees it in /projects; a second user does NOT;
+    second user DELETE -> 403; owner DELETE -> 200.
+  - The healthy DB no longer returns the error; a server started with
+    MONGODB_URI empty returns the same clear AUTH_UNAVAILABLE message and logs
+    the NOT-connected line.
+  - JWT, bcrypt (User.comparePassword) and the ownership guards
+    (authorizeProject / deleteProjectHandler) are untouched.
+
+--------------------------------------------------------------------------------
+TASK 2 — SIGN IN / SIGN UP MODAL FIELD ALIGNMENT
+--------------------------------------------------------------------------------
+
+ROOT CAUSE: only the password inputs carried width:100% (via
+.auth-input-wrap.has-toggle .auth-input), so Email/Name fell back to the
+browser's intrinsic input width. Height was already equal.
+
+FIX (client/src/components/Auth/AuthModal.css only)
+  - .auth-input now sets width:100% for EVERY field (box-sizing:border-box comes
+    from the global * reset), so every input is exactly the card content width.
+  - .auth-input-wrap gets width:100%; .has-toggle keeps only padding-right:38px.
+  - Removed the now-redundant duplicate .has-toggle rule. No markup or theme
+    token changes; the password eye toggle logic is untouched.
+
+VERIFIED by measured geometry in real headless Chrome (Vite on a spare port)
+  - Sign In: Email and Password both 330px wide, 34px tall, both starting at the
+    same x (card border 1 + padding 24 = 25px from the card edge).
+  - Sign Up: Name, Email, Password and Confirm password all 330x34 and equal.
+  - With the error box visible: widths unchanged (330px); layout stable.
+  - At a 360px viewport: all four fields 262px, no horizontal overflow.
+  - The password toggle switches the input type password -> text -> password;
+    two toggles are present on Sign Up. (The "332" card width in the probe was
+    the card's own 1px border, already accounted for by border-box.)
+
+--------------------------------------------------------------------------------
+UNIFIED MULTI-FOLDER EXPLORER + REAL-TIME TREE (implemented this round)
+--------------------------------------------------------------------------------
+
+The Explorer root is now the per-user container folder; every top-level folder is
+an ordinary expandable branch, and file identity is the container-relative path
+(e.g. frontend/index.html), so same-named files in different folders coexist. The
+"active project" concept is gone from file ops / editor / search / Quick Open; a
+"focused project" remains for terminal / preview / export / agent.
+
+  Server: workspaceManager gains getContainerTree, resolveContainerOwnerPath,
+  findContainerProjectId (+ exported copyDirectoryRecursive / uniqueNameInFolder);
+  workspace.controller gains /container/tree and /container/file (GET/PUT) plus
+  create/delete/rename/duplicate handlers; fileWatcher gains a container-level
+  watcher; workspaceSocket gains container:watch / container:unwatch with JWT
+  verification.
+  Client: new containerPaths.js; container API methods; reworked
+  workspaceThunks, fileSystemSlice (focusContainerProject), projectsSlice and
+  fileContentCache; rewritten Sidebar, FileTree, SearchInFiles, TopbarSearch and
+  useWorkspaceWatcher.
+
+VERIFIED: the container HTTP API and the container socket watcher were driven
+live on a spare no-DB server — create frontend/backend, tree with project ids,
+save/read files in both, rename a nested file, duplicate across projects, delete,
+rename a top-level project folder, create nested folder/file, ".." traversal
+refused (400), delete top-level project, and no-token -> 401 (17/19; the two
+"fails" were test-assertion mistakes expecting `name` where the route returns
+`path`). container:watch acked {ok:true} and delivered container:treeChanged.
+
+NOT VERIFIED: the full Explorer end-to-end in a signed-in BROWSER session (drag
+in the tree, instant create/rename/delete/paste with no duplicate rows, terminal
+cd into a sibling folder, preview/export on the focused project). The earlier
+browser test was a throwaway artifact and was removed without a completed run.
+
+Also in the client: AuthModal password eye toggle (Eye/EyeOff, aria-pressed,
+keyboard-focusable, positioned inside the input) — verified in the same
+headless-Chrome pass.
+
+OPEN ITEMS
+  - Run the multi-folder Explorer through a real signed-in browser session
+    (socket updates, optimistic rows, terminal cwd, preview) to close the loop.
+    The preview PATH RESOLUTION itself is now FIXED and route/socket-verified —
+    see the "Live Preview Path Resolution After the Unified Container" entry
+    below.
+  - Restart the dev server after removing client/.env.local so Vite drops the
+    stale override; the already-running :5173 instance serves
+    VITE_API_BASE_URL=http://localhost:4000 and is already correct.
+  - If MongoDB Atlas is unreachable at startup, the server now says so in one
+    line; a reachable URI/DNS is all that is required to restore auth.
+
+STATUS SUMMARY
+  - Auth database path: VERIFIED against the real DB (15/15) + startup logs.
+  - Auth modal alignment: VERIFIED by measured geometry (both tabs, error box,
+    narrow width).
+  - Unified multi-folder Explorer: server API + socket VERIFIED; browser E2E
+    outstanding.
+  - Live preview after the container change: path resolution FIXED and verified
+    (7/7 unit, 12 live-route checks, 1 live socket reload); the browser
+    click-through is still outstanding.
+================================================================================
+AI Code Editor — Live Preview Path Resolution After the Unified Container
+        (2026-10-05)
+================================================================================
+
+STATUS: complete. Client-only fix, verified by a pure-module test (7/7), a live
+        preview-route run against the real Express app (12 checks) and a live
+        socket reload run (1/1). oxlint 0/0 and vite build pass. The full
+        signed-in browser click-through was not run (see below).
+
+--------------------------------------------------------------------------------
+ROOT CAUSE
+--------------------------------------------------------------------------------
+The unified container made every tree node's id/path CONTAINER-relative
+("todo-app/index.html") while the preview route serves ONE project at
+/preview/:projectId/<project-relative-path>. The resolver for that mapping
+already existed (utils/containerPaths.projectIdForPath), and the Sidebar preview
+handler already stripped the top segment. But GET /api/workspace/container/tree
+tags each top-level project folder with `projectId`, and toReduxTree did NOT
+copy that field, so projectIdForPath returned null for every path. Preview then
+fell back to the FOCUSED project's id while keeping the full container path:
+
+    /preview/<focusedId>/todo-app/index.html
+
+The server resolved that against the focused project's folder and answered
+"\"todo-app/index.html\" was not found in this workspace." (FILE_MISSING). The
+same null projectId also silently broke the focus-follow used by the terminal,
+export and the agent, plus the two searches' project scoping.
+
+--------------------------------------------------------------------------------
+FIX (client only; the server preview route was already correct)
+--------------------------------------------------------------------------------
+  client/src/utils/cloudTree.js   toReduxTree now carries a folder node's
+     projectId, and areSameNode compares it so structural sharing cannot keep a
+     stale untagged node.
+  client/src/utils/containerPaths.js   NEW previewTargetForPath(path, nodes)
+     returns { projectId, innerPath } — the top segment's project id plus the
+     path INSIDE that project ('' for the folder itself, which serves its
+     index.html); null when the path belongs to no project.
+  client/src/components/Sidebar/Sidebar.jsx   "Open with Live Server" uses
+     previewTargetForPath (no more focused-project fallback).
+  client/src/components/Topbar/LivePreviewButton.jsx   resolves each HTML file's
+     own project id + inner path; the picker lists only resolvable pages, and the
+     "focused project root index.html" step is now project-relative.
+
+The preview URL format is UNCHANGED (/preview/:projectId/<project-relative-path>
+?token=): only the values put into it are corrected. Relative assets still
+resolve under /preview/<projectId>/ and protectPreview still sets the
+path-scoped cm_preview_<projectId> cookie; the injected live-reload script still
+embeds the project id we now pass.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  client/src/utils/cloudTree.js
+  client/src/utils/containerPaths.js
+  client/src/components/Sidebar/Sidebar.jsx
+  client/src/components/Topbar/LivePreviewButton.jsx
+  summary.txt   this entry + the STATUS SUMMARY/OPEN ITEMS update in the
+                unified-container entry above.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output)
+--------------------------------------------------------------------------------
+  - Pure-module test (real cloudTree + containerPaths, deleted after): 7/7 —
+    projectId preserved on project folders; container paths resolve to the right
+    project id; previewTargetForPath strips the top segment (nested
+    frontend/pages/about.html -> pages/about.html); a folder maps to innerPath
+    ''; a path outside any project returns null; siblings resolve to different
+    project ids.
+  - Live preview route (node server.js on a spare port, isolated
+    WORKSPACES_ROOT, MONGODB_URI empty, a container with sibling frontend/ and
+    backend/ projects):
+      * GET /preview/pid-frontend/index.html -> 200 text/html, injected reload
+        script with PROJECT_ID="pid-frontend", Set-Cookie
+        cm_preview_pid-frontend; Path=/preview/pid-frontend; HttpOnly
+      * css/style.css and js/main.js with the COOKIE ONLY -> 200 text/css and
+        text/javascript
+      * nested pages/about.html -> 200 ; /preview/pid-frontend/ -> 200 index.html
+      * sibling /preview/pid-backend/index.html -> 200
+      * missing file -> 404 FILE_MISSING ; ".." traversal -> 400 INVALID_PATH ;
+        no token -> 401 ; garbage token -> 401 ; another project's cookie -> 401
+      * the OLD URL shape /preview/pid-backend/frontend/index.html -> 404
+        "\"frontend/index.html\" was not found in this workspace." (the reported
+        bug, reproduced)
+  - Live reload (socket.io-client): after preview:watch {projectId:pid-frontend}
+    an on-disk edit emitted preview:reload {projectId:pid-frontend}.
+  - oxlint: 0 warnings, 0 errors (80 files). vite build: OK (2030 modules).
+  - All temporary test files and the isolated workspace root were removed.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED
+--------------------------------------------------------------------------------
+  - A full signed-in browser session (MongoDB + Vite + a real click on Preview):
+    the unit, route and socket layers were verified with a real server, but the
+    click-through in the running UI was not executed here.
+  - Ownership enforcement: the test server ran without MongoDB, so
+    authorizeProject skipped its check. That middleware is unchanged from the
+    phase that verified it 15/15.
+  - Root-absolute asset URLs (/css/style.css) still do NOT load from a previewed
+    page because the preview is mounted only at /preview/<projectId>/; this is
+    the pre-existing connection-check rule ("never a leading slash") and was not
+    changed.
+  - Live reload was verified at the socket-event level, not by watching a real
+    browser tab reload.
+================================================================================
+AI Code Editor — Professional Vanilla Output: Deep-Path Scaffolding, Design
+Rules, and Strengthened Quality Checks (2026-10-05)
+================================================================================
+
+STATUS: complete and verified. Depth-correct scaffold links, an always-themed
+        app body, the full shared component set, a concise design-system block
+        in the vanilla prompt, and additive connection/visual check rules all
+        land. Verified with a 25/25 harness against the real scaffold module and
+        the real checks (including real headless Chrome). oxlint 0/0, vite build
+        OK, node --check OK. NOT verified: a full live/mock agent-pipeline run —
+        no provider key is available (see the entry below).
+
+--------------------------------------------------------------------------------
+ROOT CAUSES FOUND (before any change)
+--------------------------------------------------------------------------------
+  1. privacy.html / terms.html linked css/theme.css + css/app.css correctly but
+     used classes (app-header, app-title, page-hero*, breadcrumbs,
+     section-header*, content-block) defined in NEITHER stylesheet, so they
+     rendered default serif/white/unstyled. connectionCheck DID detect the 14
+     missing classes and visualSanity DID detect the serif body, but the pipeline
+     only walked the planned/written file subset and the app gate used lenient
+     missing-class thresholds, so the failures escaped.
+  2. scaffold_app itself writes NO nav, hero, footer or legal pages; the model
+     hand-appended a marketing footer/nav/legal pages. quickCheck forced every
+     page to have a <header> AND a <footer> unconditionally, which pushed apps
+     into adding a footer, and vanillaGate only banned those for apps when the
+     plan type or app.css/base.css told it to.
+  3. The generator put whole sections on a single long line, so any edit_file
+     old_string reproduced with reformatting/indentation could not match.
+
+--------------------------------------------------------------------------------
+WHAT CHANGED
+--------------------------------------------------------------------------------
+PART 2 — scaffolding
+  server/src/templates/vanilla-kit/scaffold.js   NEW relativeHref(fromFile,
+     target); buildPageShell now emits depth-correct hrefs for base.css,
+     theme.css, js/main.js, nav/brand/cta, footer and legal links, so a page in
+     pages/ links ../css/base.css, ../js/main.js, ../index.html.
+  server/src/templates/vanilla-kit/app-kit.js    body.app -> body, body.app, so
+     the app kit always themes <body>.
+  server/src/templates/vanilla-kit/css/base.css  appended .content-block and
+     .table (+ their children), and later the icon/testimonial rules.
+
+PART 3 — prompt
+  server/src/agent/prompts/stacks/vanilla.js   NEW vanillaDesignRules (tokens,
+     typography, colour/contrast, layout, components, accessibility, working
+     behaviour, APP vs WEBSITE, per-type blueprints, self-review checklist) plus
+     vanillaCompactDesignSystem / vanillaFullDesignSystem exports.
+  server/src/agent/prompts/index.js   designSystem -> vanillaFullDesignSystem,
+     compactDesignSystem -> vanillaCompactDesignSystem.
+
+PART 4 — checks
+  server/src/agent/quality/quickCheck.js   app-aware footer requirement (no
+     footer demanded for css/app.css projects).
+  server/src/agent/quality/connectionCheck.js   checks ALL existing HTML pages
+     (not just planned ones), head tags (lang/charset/viewport/title), app bans
+     (footer, hero, header nav, legal pages), allows legitimate ../ paths and
+     resolves depth-aware nav hrefs.
+  server/src/agent/quality/visualSanity.js   new probe metrics (theme bg, body/
+     heading contrast, nav/breadcrumb list-style, unequal control rows grouped
+     by REAL parent row, icon-only buttons without a label, footer alignment/gap,
+     empty boxes, squeezed quotes), all pages collected recursively, ../ assets
+     resolved, widths 1280/768/375.
+
+PART 5 — repaired the broken todo-app workspace through the kit (that workspace
+     is no longer present in the tree).
+
+================================================================================
+AI Code Editor — Aura Glow Repair + Icon System + Reliable, Cheap Edits
+        (2026-10-05)
+================================================================================
+
+STATUS: complete for TASK 1 and TASK 3 and the core of TASK 2; verified by
+        connectionCheck + quickCheck + real headless-Chrome visualSanity on the
+        real aura-glow project (all pass), 10/10 helper unit tests, 9/9 tool
+        functional tests, 7/7 negative-detection tests, oxlint 0/0 and vite
+        build OK. NOT verified: a live provider run; the committed mock harness
+        is stale against the current token-budget guard.
+
+--------------------------------------------------------------------------------
+TASK 2 DIAGNOSIS — why the "fix the testimonials" run failed
+--------------------------------------------------------------------------------
+  * The kit writes each section on ONE long line. The model reproduced the
+    snippet with newlines/indentation, so edit_file's exact match failed; its
+    only fallbacks were CRLF-conversion and whole-string trim, neither of which
+    handled reformatted whitespace.
+  * On failure edit_file answered "Read the file with read_file and copy the
+    exact snippet" and nothing else, so the model re-read (read_file truncates
+    at 8000 chars, with no outline and no line numbers) and retried the same
+    text.
+  * There was no section-addressed edit and no cheap outline/line-range read, so
+    a targeted follow-up still needed the whole file each turn — the 21-request,
+    365K-token run.
+  * Writes were not atomic (fs.writeFileSync/appendFileSync), so a budget stop
+    mid-write could truncate a page.
+
+--------------------------------------------------------------------------------
+WHAT CHANGED
+--------------------------------------------------------------------------------
+TASK 1 — aura-glow repaired (server/workspaces/u-6ac206d781c7e207307dab35/aura-glow)
+  * index.html: filled the empty hero__card with a real product-highlight card,
+    fixed the hero stat values, rebuilt the testimonials (quote mark + 5-star
+    rating + icons), and added the three missing sections (stats, faq, cta) so
+    hero/services/features/testimonials/stats/faq/cta are all present.
+  * css/base.css: reset the blockquote margin/padding, made .testimonial a flex
+    column with .testimonial__meta pinned (margin-top:auto), plus the icon rules.
+  * all five pages: added icons to the feature/service/value/team/info cards and
+    the blog meta; completed the truncated contact-info section; linked
+    js/icons.js.
+  * Added the kit asset js/icons.js to the project.
+
+TASK 3 — icon system
+  server/src/templates/vanilla-kit/icons.js   NEW shared registry (79 inline
+    Lucide-style SVG icons) + the client hydration script (swaps <i data-icon>
+    for an inline SVG on load, re-hydrates on DOM mutations, unknown names fall
+    back to 'circle'); exports hasIcon/iconNames/ICON_FALLBACK.
+  scaffold.js / app-kit.js    write js/icons.js and link it on every page.
+  snippets.js    SECTION_ICONS now emit <i class="icon" data-icon="...">.
+  css/base.css   .icon (1em) + .icon--sm/--md/--lg, .icon-badge(+--circle/--lg),
+    and the testimonial/quote rules.
+  prompts/stacks/vanilla.js   a compact ICONS rule and an EDITING rule (prefer
+    edit_section; never retry a failed old_string).
+  connectionCheck.js   unknown data-icon names, data-icon without js/icons.js,
+    and empty icon slots are problems.
+  visualSanity.js   a visible card/box with no text/icon/media fails, and a
+    blockquote narrower than its card's content width (squeezed quote) fails.
+
+TASK 2 — reliable, cheap edits
+  agentService.js   NEW helpers: normalizeEol, uniqueRange, a whitespace-
+    insensitive matcher (squeezes all whitespace, with uniqueness detection),
+    closestSnippet (failure now returns the nearest line with line numbers),
+    fileOutline, sliceLines, findSectionBlock (balanced-tag scan by
+    id/data-section).
+    edit_file now normalizes line endings, matches exact then whitespace-
+    insensitive, and on failure returns the closest snippet plus a pointer to
+    edit_section instead of a bare error.
+    NEW tool edit_section { path, id, content, action, position } replaces or
+    inserts a whole balanced section by id with NO old text; keeps the same
+    document-integrity guard.
+    read_file gains outline:true (line numbers + section ids) and
+    start_line/end_line.
+    Loop breaker: two consecutive failed edits on one file inject guidance to
+    switch to outline + edit_section.
+  workspaceManager.js   writeFileToWorkspace and appendFileToWorkspace are now
+    ATOMIC (write to a temp file, then rename).
+  client/src/components/AIPanel/AIPanel.jsx and features/aiSlice.js   register
+    edit_section (icon + write-line collapse).
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/templates/vanilla-kit/icons.js                NEW
+  server/src/templates/vanilla-kit/scaffold.js
+  server/src/templates/vanilla-kit/app-kit.js
+  server/src/templates/vanilla-kit/snippets.js
+  server/src/templates/vanilla-kit/index.js
+  server/src/templates/vanilla-kit/css/base.css
+  server/src/agent/prompts/stacks/vanilla.js
+  server/src/agent/prompts/index.js
+  server/src/agent/quality/connectionCheck.js
+  server/src/agent/quality/visualSanity.js
+  server/src/agent/quality/quickCheck.js
+  server/src/services/agentService.js
+  server/src/utils/workspaceManager.js
+  client/src/components/AIPanel/AIPanel.jsx
+  client/src/features/aiSlice.js
+  server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/*   (the repaired site)
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output)
+--------------------------------------------------------------------------------
+  - aura-glow: connectionCheck ok=true, quickCheck ok=true, visualSanity ok=true
+    with no problems; all five pages rendered in real headless Chrome at
+    1280/768/375. index.html has hero+services+features+testimonials+stats+faq+
+    cta, exactly one <h1>, no empty hero card, 32 data-icon uses.
+  - Kit scaffolds: js/icons.js written and linked from root and subfolder pages
+    (js/icons.js / ../js/icons.js) and the app shell; 79 icons; an unknown name
+    falls back.
+  - Helper unit tests (real helpers, files deleted after): 10/10.
+  - Tool functional tests (real executeTool against a temp workspace, deleted
+    after): 9/9 — edit_section replace by id, missing-id outline, exact and
+    whitespace-tolerant edit_file, closest-snippet failure, read_file outline,
+    line range, integrity rejection and acceptance.
+  - Negative detection (real checks, deleted after): 7/7 — undefined class,
+    unknown data-icon, data-icon without icons.js, empty icon slot, missing
+    stylesheet, empty visible card, squeezed quote.
+  - oxlint: 0 warnings / 0 errors (80 files). vite build: OK. node --check on
+    every changed server file.
+  - All temporary test files were removed.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED
+--------------------------------------------------------------------------------
+  - A live provider run, and a mock-pipeline run to completion: no API key is
+    present, and the committed mock harness (server/tmp-vanilla-agent-test.mjs)
+    is stale against the current per-minute token-budget guard — it aborts with
+    "Groq has no per-minute token budget left" because its 8K-tpm model is below
+    the now-larger prompt. The loop wiring was instead read directly in
+    agentService.js (quickCheck -> autofixConnections -> connectionCheck ->
+    visualSanity -> vanillaGate, with repair rounds and blockFinishing), and each
+    gate was exercised on real artifacts.
+  - The "fresh landing page = ~4 requests / 44K tokens, no pauses" claim after
+    these prompt additions: MEASURED_LANDING_PAGE_TOKENS is unchanged and the new
+    design rules add ~936 prompt tokens, but the request/token count was not
+    re-measured (it needs a provider).
+  - Live visual taste of a real model's output (mock runs cannot judge this).
+  - The wide "cards in feature/service/value/step/contact sections without an
+    icon" warning: implemented as a precise EMPTY-icon-slot check plus the
+    rendered empty-box check rather than a broad card scan, to avoid
+    false-positive gate failures.
+
+OPEN ITEMS
+  - Run the aura-glow repair and a follow-up edit request through a real (or a
+    refreshed mock) provider and confirm the request/token counts.
+  - Optionally refresh server/tmp-vanilla-agent-test.mjs against the current
+    budget guard so the committed mock harness runs again.
+
+STATUS SUMMARY
+  - Aura Glow repair: VERIFIED in real headless Chrome (connectionCheck,
+    quickCheck, visualSanity all pass at 1280/768/375).
+  - Icon system (js/icons.js + .icon/.icon-badge + scaffold + prompt + checks):
+    VERIFIED by kit output tests and 7/7 negative checks.
+  - edit_file/edit_section/read_file reliability + atomic writes: VERIFIED by
+    10/10 helper + 9/9 tool tests; the live token/request improvement is
+    outstanding.
+================================================================================
+AI Code Editor — Screenshot Attachments via a Background Vision Step, and
+        Robust HTML Section Editing (2026-10-05)
+================================================================================
+
+STATUS: complete and verified for every part that can be exercised locally
+        (oxlint 0/0, vite build OK, node --check OK, 12/12 section-tool tests,
+        8/8 vision mock-provider tests, 6/6 image-validation tests, aura-glow
+        connectionCheck + quickCheck + visualSanity all pass with real headless
+        Chrome). NOT verified: a live Mistral vision call (no provider key in
+        this environment) and a live end-to-end agent run for the 2x2 request
+        (no provider key). See the bottom for the honest list.
+
+--------------------------------------------------------------------------------
+TASK 1 — IMAGE ATTACHMENTS IN THE AI AGENT PANEL
+--------------------------------------------------------------------------------
+
+CLIENT — files created
+  client/src/utils/imageAttachments.js
+    MAX_IMAGES = 5, ACCEPTED_IMAGE_TYPES = png/jpeg/webp, MAX_SOURCE_BYTES =
+    12MB, MAX_DIMENSION = 1600, OUTPUT_QUALITY = 0.85.
+    processImageFile(file) validates the type and size, decodes via
+    createImageBitmap (Image fallback), downscales the longest side to 1600px on
+    a canvas, re-encodes to JPEG and returns { id, name, dataUrl, mime, width,
+    height, bytes }. pickImageFiles(list) filters a FileList to accepted images.
+
+CLIENT — modified
+  components/AIPanel/AIPanel.jsx
+    - Paperclip button next to the input opens a hidden <input type=file
+      multiple accept="image/png,image/jpeg,image/webp"> (aria-labels on every
+      control).
+    - Ctrl+V with an image in the clipboard attaches it (onPaste keeps text
+      paste working; only image items are intercepted).
+    - Drag and drop: dragenter/over/leave/drop on the panel, with a dashed
+      "Drop images to attach" overlay while dragging; text drags are ignored.
+    - Thumbnails above the input: click to enlarge (modal lightbox, Escape
+      closes), an x to remove each, and a spinner slot per image still
+      processing. Sent messages keep their thumbnails in the chat bubble.
+    - Max 5 per message: extras are ignored with a toast. Oversized/invalid
+      files are rejected with a clear toast.
+    - Send is enabled with images only, text only, or both; images-only sends a
+      default "Review the attached screenshot(s)…" task.
+    - Send/Stop, Continue/reconnect and the usage meters are unchanged.
+    - Failed tool actions, and a failed vision step, now expose their COMPLETE
+      message under a collapsible "View full error" (the old line truncated the
+      reason at 160 chars).
+    - The vision step lands in the action stream as "Analyzing … screenshot(s)…"
+      then "Analysis ready", with the report in a collapsible block.
+
+  features/aiSlice.js
+    startAgentTask accepts `images`, dispatches agentStarted({ task, images }),
+    stores the thumbnails on the user timeline entry, and sends the data URLs in
+    the agent:run payload.
+
+  components/AIPanel/AIPanel.css
+    additive rules for the attachment strip, thumbnails, remove button, attach
+    button, message thumbnails, lightbox, drop overlay and the two collapsible
+    blocks. .ai-panel gained position: relative.
+
+SERVER — files created
+  server/src/services/visionService.js
+    sanitizeImagePayload(rawImages) validates count (<=5), data-URL shape, mime
+    (png/jpeg/webp) and decoded size (<=6MB) server-side and returns valid
+    images plus human-readable problems.
+    analyzeScreenshots({ images, task, keys, userId, taskId, emitUsage }) picks
+    the user's Mistral key(s), lists each key's models and walks a
+    vision-capable chain — mistral-large-latest, mistral-medium-latest,
+    mistral-small-latest, pixtral-large-latest, pixtral-12b-2409 — sending the
+    images as base64 data URLs in a chat-completions content array
+    ({ type: "image_url", image_url: <data URL> }). It records usage per call
+    (recordUsageEvent), emits the usage snapshot, marks a key invalid/cooling on
+    401/429 and returns a compact structured text report (SCREENS / PROBLEMS /
+    LOCATION / EXPECTED), capped at 1600 chars. No vision-capable key (or a
+    total failure) throws a clear coded error instead of silently dropping the
+    images.
+
+SERVER — modified
+  services/agentService.js
+    runAgent takes `images`, sanitizes them, emits the vision action pair and,
+    when a report comes back, injects it into the user message as
+    "SCREENSHOT ANALYSIS (…) — the images themselves are NOT available to you".
+    The coding model never receives image data. Vision usage is recorded against
+    the run's taskId, so it lands in "This task" and the per-key budget.
+  socket/agentSocket.js   forwards payload.images into runAgent.
+  server.js               Socket.IO maxHttpBufferSize raised to 25MB so base64
+                          screenshots fit in one agent:run frame.
+
+--------------------------------------------------------------------------------
+TASK 2 — RELIABLE HTML SECTION EDITING (diagnosis + repair + hardening)
+--------------------------------------------------------------------------------
+
+DIAGNOSIS OF THE aura-glow FAILURE (evidence: the file on disk)
+  - server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/index.html had an
+    UNCLOSED <section id="testimonials">: the third testimonial's SVG <path>
+    was cut mid-attribute (d="M12 2l3.09 6.) and the following
+    <section id="stats"> started immediately, with no </section>, </figure> or
+    </div> in between. The browser therefore parsed the stats <section> as a
+    child of the testimonials .grid → the "By the numbers / Trusted by beauty
+    lovers" heading block appeared as a third grid column. That is exactly the
+    reported symptom.
+  - findSectionBlock() matched <section id="testimonials"> and, finding no
+    closing tag, returned end = end-of-file. A replace therefore deleted the
+    stats, faq and cta sections, </main> and the footer, so the document
+    integrity check (exactly one <header>/<footer>/<h1> and a closing </html>)
+    rejected the write. The message was the raw integrity error.
+  - describeFailure() then sliced the reason to 160 chars and to the FIRST line,
+    which is why the UI showed "that section edit would leave index.html i…".
+    The full text existed in details.result but the panel had no way to open it.
+  - The 8-request / 155.6K-token loop: every rejected edit answered with a
+    generic "read the file and copy the exact snippet", the model re-read the
+    whole file (truncated at 8000 chars, no outline), retried, failed again, and
+    the loop kept going until the budget cap.
+
+WHAT CHANGED
+  server/src/utils/htmlStructure.js (NEW)
+    A real HTML scanner that ignores tags inside comments, <!doctype>/<?…>,
+    <script>/<style>/<textarea>/<title> raw text and attribute values (it is
+    quote-aware, so `title="a > b"` cannot confuse it). On top of it:
+      - findSectionBlock(): id/data-section match by the balanced element of the
+        SAME tag name; returns { start, end, tagName, line, endLine } or
+        { unbalanced: true } when no closing tag exists.
+      - sectionLineRange(): the line range of one section.
+      - sectionStructureProblems(): structural (container-tag) balance PLUS a
+        nested-section check — a <section id="x"> inside another section fails
+        with "sits inside".
+  server/src/services/agentService.js
+    - findSectionBlock now comes from htmlStructure (comment/script/attribute
+      aware) instead of the old regex scan.
+    - edit_section refuses an unbalanced target with a precise message (id,
+      opening line, "never closed") instead of eating the rest of the file.
+    - A replacement that would introduce NEW structural problems is rejected
+      with the exact problems (what is unbalanced, expected tag, line numbers)
+      and the instruction to resend the complete section; the file is not
+      written. Document integrity is still enforced too.
+    - read_file gained section: "<id>" — it returns ONLY that section with line
+      numbers, so a targeted follow-up never re-reads the whole file.
+    - describeFailure's reason cap raised 160 → 400 chars.
+    - The budget hard-stop no longer interrupts a failing edit: while an edit
+      streak is pending it auto-continues once with a focused instruction, and
+      the 70% "wrap up" guidance is skipped mid-edit.
+  server/src/agent/prompts/stacks/vanilla.js
+    - The EDITING rule now spells out read_file { path, section: "<id>" }.
+    - NEW LAYOUT-ONLY rule: for "2 rows and 2 columns" / "equal-height cards",
+      change the CSS (grid-template-columns: repeat(2, minmax(0,1fr)),
+      align-items: stretch, card display:flex; flex-direction:column;
+      height:100%, meta margin-top:auto) with append_to_file and touch the
+      markup only to get the right card count (exactly 4) — never rewrite the
+      whole section.
+  server/src/agent/quality/visualSanity.js (additive)
+    New probe metric unequalCardRows: cards in the same rendered grid row whose
+    heights differ by more than 12px now fail with the equal-height / no-empty-
+    space fix.
+  server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/index.html (REPAIRED)
+    The truncated testimonials section was rebuilt into a well-formed
+    <section id="testimonials"> with its own heading and FOUR testimonial cards
+    (2x2 grid class), each with a 5-star rating, quote and author. The stats
+    section is untouched and now sits after it as a sibling. The document is
+    balanced and valid again. No other project or file was touched.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  client/src/utils/imageAttachments.js                    NEW
+  client/src/components/AIPanel/AIPanel.jsx
+  client/src/components/AIPanel/AIPanel.css
+  client/src/features/aiSlice.js
+  server/src/services/visionService.js                    NEW
+  server/src/utils/htmlStructure.js                       NEW
+  server/src/services/agentService.js
+  server/src/socket/agentSocket.js
+  server/server.js
+  server/src/agent/prompts/stacks/vanilla.js
+  server/src/agent/quality/visualSanity.js
+  server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/index.html (repair)
+  summary.txt
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output)
+--------------------------------------------------------------------------------
+  - oxlint: 0 warnings / 0 errors (client, 81 files). vite build: OK (2031
+    modules). node --check on every changed server file: OK.
+  - Section tools (real executeTool against a temp file in the aura-glow
+    workspace, file deleted after): 12/12 — outline lists the section ids;
+    read_file { section } returns ONLY that section (and its line range) and
+    excludes the next one; a balanced edit_section replace succeeds; a
+    deliberately unbalanced replace is rejected with a message naming the
+    section and the problem and a line number; the file is byte-for-byte
+    unchanged after the rejection; a replacement that nests another section is
+    rejected with the "sits inside" message; a missing id is rejected with the
+    outline.
+  - htmlStructure: the real broken aura-glow file reported the unclosed
+    <main>/<section>/<div>/<figure> chain; the repaired file reports NO problems
+    and findSectionBlock resolves testimonials (lines 48-110), stats (111), faq
+    (112) and cta (113) as separate siblings. A tricky document with tags inside
+    comments, a script and a title attribute scans clean.
+  - aura-glow after repair, REAL headless Chrome: connectionCheck ok=true,
+    quickCheck ok=true, visualSanity ok=true (the new unequal-card-row check
+    included) with no problems.
+  - Vision step (real runAgent + real providerClient against a local mock
+    Mistral server): 8/8 — the vision request runs FIRST and carries the base64
+    data URL in a content array; the model used is mistral-large-latest; the
+    vision tokens are counted in the task totals (1320 for the mock response);
+    the report text reaches the coding model inside the user message; NO coding
+    request body contains "data:image"; the coding model still runs.
+  - Image validation + no-vision fallback: 6/6 — extras above 5 are ignored with
+    a message, a non-allowed mime and a malformed data URL are rejected, a jpeg
+    is accepted, and with only non-Mistral keys analyzeScreenshots throws a clear
+    NO_VISION_MODEL error instead of dropping the images.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - A LIVE Mistral vision call and its real report quality: no API key and no
+    reachable provider in this environment. The mock proves the transport,
+    ordering, token counting and isolation; it cannot judge the model's wording.
+  - A LIVE end-to-end agent run of "make testimonials 2 rows and 2 columns" and
+    its request/token count, plus a live deliberately-unbalanced edit through the
+    model: same reason. The tool-level rejection and the file-unchanged guarantee
+    ARE verified.
+  - The client attachment UI was not driven in a real browser here (no running
+    client/session in this environment): button / Ctrl+V / drag-and-drop, the
+    6th-image toast and the lightbox are code-reviewed and lint/build clean but
+    not click-tested.
+  - The 12MB client size cap and the 1600px downscale are pure client logic and
+    were not exercised in a browser.
+  - Unauthenticated agent:run rejection is unchanged from the phase that verified
+    it; it was not re-run here.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Run the vision pipeline and the "testimonials 2x2" request through a real
+    Mistral key and confirm the live report quality, request count and token
+    cost with images attached.
+  - Drive the attachment UI in a signed-in browser (button, Ctrl+V, drag-drop,
+    6th-image rejection, remove, enlarge) to close the loop.
+  - Optional: refresh server/tmp-vanilla-agent-test.mjs against the current
+    budget guard (still stale from the previous phase).
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY
+--------------------------------------------------------------------------------
+  - Screenshot attachments UI (button / paste / drag-drop / thumbnails /
+    lightbox / limits): IMPLEMENTED, oxlint + build clean; NOT browser-verified.
+  - Server vision step (Mistral chain, structured report, usage + budget,
+    text-only fallback, no image data to the coding model): VERIFIED by 8/8
+    mock-provider tests and 6/6 validation tests; live model output outstanding.
+  - Section addressing + precise errors + validate-before-write + atomic writes:
+    VERIFIED by 12/12 tool tests and the real broken→repaired aura-glow file.
+  - aura-glow repair (testimonials and stats separated, document balanced):
+    VERIFIED by connectionCheck + quickCheck + visualSanity in real headless
+    Chrome; preview click-through at 375/768/1280 not run here (the checks
+    render those widths).
+================================================================================
+AI Code Editor — Targeted Edits That Cannot Expand, Forbidden-Write Instructions,
+        a Cheap Resilient Vision Step, and aura-glow Green Checks (2026-10-05)
+================================================================================
+
+STATUS: complete and verified. A follow-up edit is now scoped to the files the
+        task names, cannot create an unrelated page, and gets a precise
+        instruction (not a retry) when a write is impossible. The "token budget
+        at 76% wrap up" message no longer appears for a small edit. aura-glow
+        passes connectionCheck + quickCheck + visualSanity + vanillaGate in real
+        headless Chrome with real privacy/terms pages. The vision step honours
+        Retry-After, falls back across models, and reports a readable message.
+        Verified by a 16/16 mock-provider harness (deleted after the run) plus
+        oxlint 0/0, vite build OK and node --check OK. NOT verified: live
+        Mistral limits and live model vision output (no provider key here).
+
+--------------------------------------------------------------------------------
+TASK 1 — WHY privacy.html ENTERED A TESTIMONIALS RUN (root cause)
+--------------------------------------------------------------------------------
+  * The stack prompt's FIRST rule is "your first reply is the plan JSON only"
+    and the follow-up block says "READ FIRST, THEN PLAN, THEN WRITE". So on
+    EVERY run, including a one-line edit, the model emits a whole-site plan
+    (index/about/shop/privacy/terms + missing sections). The loop adopted that
+    plan verbatim and plannedFileIssues() then demanded those unrelated files
+    and sections. That is what expanded a testimonials edit into about.html,
+    shop.html and privacy.html.
+  * AGENT.md (project history) preserved the earlier failed "add privacy/terms"
+    run, including "Last error: privacy.html does not exist (use create_file)",
+    so the model read it as unfinished work.
+  * The failed write itself was NOT the app-vs-website legal-page ban: aura-glow
+    is a website (css/base.css, no css/app.css) and legal pages are allowed. The
+    create_file for privacy.html was rejected by the document-integrity check in
+    validateWriteContent ("... was NOT written, because the document is
+    incomplete") because the model sent a partial page. describeFailure() then
+    sliced the reason to 400 chars/first line, so the UI showed a cut-off text
+    even though details.result held the full error.
+  * The rule conflict to fix: connectionCheck forbids legal pages for an APP,
+    while the vanilla prompt told the model to "create the real page" for a
+    privacy/terms link. Two rules could demand opposite things.
+
+--------------------------------------------------------------------------------
+TASK 2 — TARGETED EDITS, NON-RETRYABLE FAILURES, BUDGET (what changed)
+--------------------------------------------------------------------------------
+server/src/services/agentService.js
+  * NEW isTargetedEditTask(task, snapshot) / namedExistingFiles(task, files):
+    an existing project + a task that is not asking for a NEW page and either
+    names an existing file or uses an edit verb is a TARGETED EDIT.
+  * Plan scoping: when targeted, the model's whole-site plan is DISCARDED and
+    plan/planDoc are limited to the named files (sections only when the task
+    names an existing section id). No unrelated file or section can be required.
+  * The user message for a targeted edit says so explicitly (change only the
+    named files/sections; never create a page a link points at).
+  * Write guard: during a targeted edit, create_file for a path the task did not
+    name is REFUSED with a "remove or repoint the link instead" instruction.
+  * removePlannedPath(): a file proven impossible (missing for edit_file, or a
+    forbidden write) is dropped from plan/planDoc immediately.
+  * Non-retryable failures now append a specific instruction to the tool result:
+    a missing file gets "call create_file ONCE, or drop it from the task"; a
+    forbidden write gets "do not retry it; remove or repoint the link".
+  * planAckPending: after the plan JSON is parsed the model is told to implement
+    it. Without this a scoped (empty-file) plan finished the run with no change.
+  * Budget: the 70% "wrap up" guidance is skipped for a targeted edit, and the
+    100% hard stop auto-continues once for a targeted edit instead of cutting it
+    off mid-change.
+  * Full error in the UI: the tool event's result cap was raised 2000 -> 8000
+    chars, so the panel's "View full error" shows the complete failure text.
+
+server/src/agent/quality/connectionCheck.js
+  * A link to a legal/secondary page in an APP now reports "Remove or repoint
+    that link; do not create the page." instead of a generic missing-file error,
+    so the two rules can no longer demand opposite things.
+
+server/src/agent/prompts/stacks/vanilla.js
+  * The privacy/terms rules are now CONDITIONAL on project type: WEBSITE -> a
+    requested legal page is created and linked from the footer legal row; APP ->
+    never create it, remove or repoint any existing legal link. Applied to both
+    the main rule block and the follow-up block.
+
+--------------------------------------------------------------------------------
+TASK 2 — aura-glow REPAIRED THE RIGHT WAY
+--------------------------------------------------------------------------------
+  * privacy.html and terms.html were ADDED as real pages (page-hero + honest
+    policy text, shared header/footer, one h1, linked css/base.css + theme.css +
+    js/icons.js + js/main.js), and the footer legal row on all EIGHT pages now
+    links Privacy Policy + Terms & Conditions. Creating a legal page on a
+    WEBSITE succeeds, which is the corrected rule.
+  * shop.html had three dead in-page anchors (#face-makeup/#eye-makeup/
+    #lip-makeup) that made vanillaGate fail with 3 problems and sent the agent
+    into repeated repair rounds. Added a real "Our Product Range" section with
+    three id-carrying cards, so the anchors resolve.
+  * css/base.css: .team-grid used repeat(3, 1fr) and overflowed at 375px (its
+    responsive override sat BEFORE the base rule, so it never applied). Changed
+    to repeat(auto-fit, minmax(240px, 1fr)) — the same rule the kit ships.
+  * Result (real headless Chrome): connectionCheck ok, quickCheck ok,
+    visualSanity ok (1280/768/375, 7 pages), vanillaGate ok.
+
+--------------------------------------------------------------------------------
+TASK 3 — VISION: CHEAP, RESILIENT, VISIBLE
+--------------------------------------------------------------------------------
+server/src/services/visionService.js
+  * MAX_REPORT_CHARS 1600 -> 1200; maxCompletionTokens 700 -> 500.
+  * On 429 it now HONOURS Retry-After once (bounded: 20s per wait, 30s total)
+    and retries the same model, then moves to the next vision-capable model on
+    the key, then throws VISION_FAILED with a readable message that names the
+    limit, the wait and the fallback: "The Mistral per-minute token limit was
+    reached during analysis (waited 1s) ... Your images were not dropped ...".
+  * The vision call already runs only when images exist and is never gated by
+    the coding task's token budget.
+server/src/services/agentService.js
+  * A failed vision step now also emits a plain note with the full message, so
+    the limit is visible in the stream, not only under "View full error".
+client/src/utils/imageAttachments.js
+  * Downscale 1600 -> 1280px, JPEG quality 0.85 -> 0.8 (cheaper images, same
+    readability).
+  * A new message already starts with a fresh task budget (taskId is minted per
+    run in the socket and clearTaskTotals() runs before the vision step); no
+    stale budget from a failed run is reused.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/services/agentService.js
+  server/src/services/visionService.js
+  server/src/agent/quality/connectionCheck.js
+  server/src/agent/prompts/stacks/vanilla.js
+  client/src/utils/imageAttachments.js
+  server/workspaces/u-6ac206d781c7e207307dab35/aura-glow/  (privacy.html,
+    terms.html NEW; shop.html, index.html, about.html, blog.html, contact.html,
+    css/base.css)
+  summary.txt
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output)
+--------------------------------------------------------------------------------
+  - Mock-provider harness (real runAgent + real providerClient against a local
+    OpenAI-compatible mock; deleted after the run): 16/16.
+      * Targeted edit: the plan event is "TARGETED EDIT — scoped to ..." and
+        never lists privacy.html/terms.html; 0 unrelated files planned.
+      * A create_file for an unplanned file was refused with the targeted-edit
+        instruction and the file was NOT created.
+      * An edit_file on a missing file returned the exact failure; the run did
+        not retry it and went on to make the real change.
+      * 2x2 run: "make testimonials 2 rows and 2 columns" -> 3 coding requests,
+        3960 tokens, four testimonial cards in a grid--2, no wrap-up message,
+        completed cleanly.
+      * Vision 1 image: 429 -> waited -> retried -> fell back to
+        mistral-medium-latest and returned a report.
+      * Vision 5 images: every vision model 429 -> clear visible error + note,
+        images not dropped, fresh task budget (no stale state).
+  - aura-glow, real headless Chrome: connectionCheck ok, quickCheck ok,
+    visualSanity ok, vanillaGate ok (0 problems).
+  - oxlint: 0 warnings / 0 errors (81 files). vite build: OK. node --check on
+    every changed server file: OK.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - A live Mistral vision call and the real Mistral per-minute limits: no
+    provider key and no reachable provider here. The mock proves transport,
+    Retry-After handling, model fallback and token counting, not real model
+    limits or report wording.
+  - A live end-to-end agent run on a real provider (the request/token numbers
+    above are mock-measured).
+  - The client attachment UI (button / paste / drag-drop / lightbox) was not
+    click-tested in a browser this round; oxlint + build are clean.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Run the vision pipeline and the "testimonials 2x2" request through a real
+    Mistral key to confirm live limits, report quality and real token cost.
+  - server/tmp-vanilla-agent-test.mjs is still stale against the current budget
+    guard; refresh or delete it.
+  - Drive the attachment UI in a signed-in browser to close the loop.
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY
+--------------------------------------------------------------------------------
+  - Root cause of privacy.html planning/writing: FOUND and FIXED (whole-site
+    plan on a follow-up + no scoping + retry-instead-of-instruction), verified by
+    the mock harness.
+  - Targeted edits cannot expand, and impossible writes get an instruction:
+    VERIFIED 16/16.
+  - Small edits no longer hit wrap-up / budget interruption: VERIFIED (3
+    requests, 3960 tokens, no wrap-up).
+  - aura-glow checks pass cleanly with real privacy/terms pages: VERIFIED in
+    real headless Chrome (all four checks).
+  - Vision Retry-After + model fallback + visible limit message: VERIFIED with a
+    mock provider; live output outstanding.
+================================================================================
+AI Code Editor — Deterministic Vanilla Builds: Final-State Validation,
+        Server-Side Section Composition, Request Resolver, Contrast Checks,
+        Cleaner Sidebar, and a Repaired contact-form-landing   (2026-10-06)
+================================================================================
+
+STATUS: complete for the parts that can be exercised locally; VERIFIED by a
+        mock provider driving the REAL runAgent, and by the REAL quality checks
+        (including headless Chrome). oxlint 0/0, vite build OK, node --check OK
+        on every changed server file. NOT verified: a live Mistral run, live
+        visual taste, and the client reducer/UI in a real browser session.
+
+--------------------------------------------------------------------------------
+PART 1 — DIAGNOSIS (no code changed for this part)
+--------------------------------------------------------------------------------
+
+The workspace server/workspaces/u-6ac206d781c7e207307dab35/contact-form-landing
+held a skeleton index.html with the header, the hero slot already filled and ONE
+remaining `<!-- SLOT:contact-form -->` marker, plus the internal
+"ONE DOCUMENT PER FILE" template comment. Root causes found:
+
+  1. DEADLOCK. documentIntegrityIssues() required exactly one <h1> on EVERY
+     write. A scaffold page whose hero slot is still a marker has 0 <h1>, so a
+     perfectly valid edit that filled any OTHER slot was rejected with
+     "that edit would leave index.html incomplete (0 <h1>)". The per-edit
+     validator (whole-document rule) and the slot workflow (fill one slot per
+     call) deadlocked.
+  2. NO SECTION IDS. scaffold_site writes `<!-- SLOT:name -->` markers, not
+     real elements, so edit_section found no id/data-section for a section the
+     agent could see in the outline. The agent invented "contact-form".
+  3. EMPTY HERO CARD + FOOTER CONTRAST. The hero card held only an icon. The
+     footer used dark bg + light text tokens, but css/theme.css had been
+     corrupted: it contained a full copy of base.css including
+     `.site-footer { background-color: var(--surface-2) }` (light) loaded AFTER
+     base.css, so `.footer-col__title` / `.footer-link` stayed light on light.
+  4. NAV = HOME ONLY. Nav items come from the plan's page list; a single-page
+     site has one page, so only "Home" exists. Footer "Services" links were
+     hardcoded to `#services` even when no such section exists.
+  5. RAW SIDEBAR ERRORS. describeFailure() already produced a short reason, and
+     the full tool result was kept in details.result, but retry/budget/strategy
+     note events were pushed as one row each and recovered failures stayed red.
+
+--------------------------------------------------------------------------------
+PART 2 — DETERMINISTIC BUILD WORKFLOW
+--------------------------------------------------------------------------------
+
+FINAL-STATE VALIDATION (server/src/services/agentService.js)
+  - documentIntegrityIssues() now enforces exactly-one-<h1> ONLY when the page
+    has no `<!-- SLOT: -->` marker left (new hasSlotMarkers()). Header/footer
+    presence and the closing </html> are still required always; the h1 rule and
+    the leftover-slot rule are final-state rules enforced by quickCheck.
+  - edit_file's surgical path now ALSO rejects an inserted fragment that
+    unbalances the document (newStructureProblems before/after), so a slot edit
+    is valid only when the fragment is well formed and balanced.
+  - New finalizeHtmlWrite() strips the internal "ONE DOCUMENT PER FILE" template
+    comment on every HTML write, so nothing internal reaches the user's file.
+
+SERVER-SIDE COMPOSITION (new)
+  - server/src/templates/vanilla-kit/compose.js (NEW): normalizeComposeInput,
+    renderSection, buildComposedFiles, sectionSummary. Renders structured
+    section objects into the kit templates for hero, page-hero, services,
+    features, stats, testimonials, pricing, steps (process), faq, gallery,
+    about (story), team, contact (working form), contact-info, values, mission,
+    blogs and cta, and falls back gracefully for other types. Every section
+    carries id + data-section + data-title.
+  - New tool compose_page (agentService.js): the PREFERRED path for new pages.
+    The model sends structured section data; the server renders the pages, fills
+    them completely, writes NO slot markers and NO template comments, and
+    derives the nav and footer from the sections/pages that really exist
+    (in-page anchors for a one-pager, page links for a multi-page site; footer
+    Services/Contact columns come from the real sections).
+  - scaffold_site + edit_file/edit_section stay fully working (additive).
+
+OUTLINE
+  - fileOutline() now lists every section as
+    `<section id="…" data-section="…" title="…">` with its line range, so the
+    agent and the resolver always see real ids.
+
+COMPLETENESS
+  - requestedFeatureSections(task) maps a named contact form / pricing / FAQ /
+    gallery / testimonials / login / calculator to a required section; quickCheck
+    fails the run when a named feature is missing, and requires a real
+    `<form data-validate>` with labelled name/email/message fields for a
+    contact form.
+
+--------------------------------------------------------------------------------
+PART 3 — NATURAL EDIT REQUESTS
+--------------------------------------------------------------------------------
+
+  - resolveSectionRequest() (agentService.js): maps the user's words onto a real
+    section using id, data-section, data-title, heading text and a synonym
+    table (FAQs/questions/accordion → faq; plans/packages → pricing;
+    reviews/quotes → testimonials; banner → hero; …), with instruction-word
+    stopwords so "the FAQs on the home page" resolves to faq, not to the hero.
+    edit_section now uses it when the given id does not exist; an invented id
+    always gets a message listing the real ids from the outline.
+  - New tool edit_css { path, selector, content }: replaces or appends ONE rule
+    block by selector (cssRuleRange), so "make pricing 3 columns" / "make the
+    footer darker" never need a whole-file rewrite.
+  - The vanilla prompt now prefers compose_page, says read_file{outline:true} is
+    the source of real section ids, points styling requests at edit_css, and
+    makes named features mandatory.
+
+--------------------------------------------------------------------------------
+PART 4 — VISUAL QUALITY AND CHECKS
+--------------------------------------------------------------------------------
+
+  - visualSanity.js gains a full WCAG AA contrast scan over every visible text
+    element (headings, paragraphs, links, list items, footer titles/links/notes,
+    social links, buttons, labels) using a gradient-aware background resolver
+    (an element/ancestor with a gradient that has no solid backgroundColor is
+    skipped, so gradient buttons are not false positives). The failure names the
+    element and the ratio.
+  - The existing empty-box check (a visible card/box with no text, icon or
+    media fails) already covers the empty hero card; the composed hero renders a
+    real icon + title + text + stat list.
+  - connectionCheck's zero-tolerance class rule and the hero-card content rule
+    stay in force; the composed kit output passes them.
+
+--------------------------------------------------------------------------------
+PART 5 — CLEANER SIDEBAR MESSAGES
+--------------------------------------------------------------------------------
+
+  - client/src/features/aiSlice.js: retry / fallback / budget / strategy note
+    events now collapse into ONE updating status line (kind 'status') instead of
+    one row per event; a failed tool row on a file that a later success on the
+    same file recovered is relabelled 'recovered' and no longer renders red.
+  - client/src/components/AIPanel/AIPanel.jsx + AIPanel.css: recovered rows get
+    a dimmed 'recovered' meta and a non-danger icon colour; the existing
+    "View full error" collapsible still exposes the complete raw result.
+  - The server already skips the 70% "wrap up" guidance for a targeted edit
+    (unchanged this round).
+
+--------------------------------------------------------------------------------
+PART 6 — REPAIRED contact-form-landing
+--------------------------------------------------------------------------------
+
+  server/workspaces/u-6ac206d781c7e207307dab35/contact-form-landing was rebuilt
+  through the compose pipeline (css/base.css, css/theme.css, js/main.js,
+  js/icons.js, index.html): hero with a real content card and stat row, a
+  services section, a contact section with the working form, and a readable
+  dark footer. No SLOT markers, no template comments. connectionCheck,
+  quickCheck and visualSanity all pass on the repaired project.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/templates/vanilla-kit/compose.js              NEW
+  server/src/templates/vanilla-kit/scaffold.js             optional shell body/nav/footer
+  server/src/templates/vanilla-kit/index.js                buildComposePlan + exports
+  server/src/services/agentService.js                      deadlock fix, compose_page,
+                                                           edit_css, resolver, outline,
+                                                           feature completeness, finalize
+  server/src/agent/quality/quickCheck.js                   requiredSections (named features)
+  server/src/agent/quality/visualSanity.js                 WCAG AA contrast scan
+  server/src/agent/prompts/stacks/vanilla.js               compose_page + edit_css + named features
+  client/src/features/aiSlice.js                           status line + recovered rows
+  client/src/components/AIPanel/AIPanel.jsx                recovered rendering
+  client/src/components/AIPanel/AIPanel.css                .ai-line.is-recovered
+  server/workspaces/u-6ac206d781c7e207307dab35/contact-form-landing/*  repaired
+  summary.txt                                               this entry
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output in tmp-acceptance/vanilla-reliability/)
+--------------------------------------------------------------------------------
+  - DEADLOCK FIXED (mock provider, real runAgent): a scaffold page whose slots
+    are filled NON-hero-first (contact-form, services, then hero) ran with 0
+    rejected edits and 0 failed edits; the finished index.html had
+    slotsLeft=0, templateCommentsLeft=0, h1=1, header=1, footer=1
+    (deadlock-fixed.txt).
+  - FINAL-STATE STILL REJECTS (keep-slots.txt): a run that scaffolds and never
+    fills the slots is stopped with "still has 3 empty scaffold slot(s)",
+    "must contain exactly one <h1> (found 0)" and the missing planned sections.
+  - NEGATIVE CHECKS (negative-checks.txt): a page with no h1, a page missing its
+    <footer>, a page with a leftover slot and a request whose named feature
+    (pricing) is absent are ALL rejected; a deliberately unreadable footer
+    (title/link colour = footer bg) and an emptied hero card are BOTH caught by
+    the headless-Chrome check (contrast 1.07:1 reported with the element).
+  - THREE SITES composed and checked (compose-three-sites.txt):
+    "contact form landing page", "restaurant website" and "portfolio website
+    with FAQ and pricing" all report slots=0, comments=0, h1=1, real nav links,
+    quickCheck=true, connectionCheck=true, visualSanity=true at 1280/768/375px
+    (no horizontal overflow, readable footer, no empty cards, working form).
+  - FAQ EDIT REQUEST (faq-edit-request.txt, mock provider, real runAgent,
+    "update the UI of the FAQ on the home page" on a generated site with an FAQ
+    section): resolved to the FAQ section, 3 requests / 42,562 tokens
+    (42,341 prompt + 221 completion), ONE edit_css call, index.html byte-for-
+    byte unchanged, only css/base.css changed, run completed with no error.
+  - contact-form-landing repair (repair-contact-form.txt + the checks run above):
+    slots 0, comments 0, h1 1, real hero card, footer tokens present;
+    connectionCheck + quickCheck + visualSanity all pass.
+  - oxlint: 0 warnings / 0 errors (81 files). vite build: OK. node --check: OK on
+    every changed server file; module import smoke test passes.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - A LIVE Mistral run: there is no provider key in server/.env, so every run
+    above used a scripted mock that drives the REAL runAgent, the REAL tools,
+    the REAL files and the REAL checks. Request/token counts are real for the
+    loop but the model's own wording is not.
+  - LIVE visual taste of a real model's copy (mock runs cannot judge it).
+  - The full agent build of a fresh site to completion under the quality gate:
+    the mock's canned sections are shorter than the kit gate demands (220 lines,
+    5 FAQ items), so the mock deadlock run stopped at the gate rather than
+    finishing; the composed pipeline output itself passes every check.
+  - The client sidebar changes were lint/build-verified and code-reviewed; the
+    reducer was not exercised in a browser (Node ESM cannot resolve the
+    extensionless imports outside Vite).
+  - Live edit-request token cost on a real provider.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Run a fresh "contact form landing page" and the FAQ/pricing edit requests
+    through a REAL Mistral key and confirm live copies, request counts and
+    tokens under the new compose_page path.
+  - server/tmp-vanilla-agent-test.mjs is still stale against the current budget
+    guard; refresh or delete it.
+  - Drive the AIPanel status-line / recovered-row behaviour in a signed-in
+    browser session to close the loop.
+  - Optional: extend compose_page with a login/calculator section type (it
+    currently falls back to a generic section for those).
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY
+--------------------------------------------------------------------------------
+  - Slot-edit deadlock: FOUND and FIXED; VERIFIED with a mock provider that the
+    non-hero-first fill no longer gets rejected, and that leftover slots / no h1
+    / a missing footer are still rejected at final state.
+  - Server-side composition + ids/data-section/data-title + derived nav/footer:
+    VERIFIED on three real composed sites against connectionCheck + quickCheck +
+    visualSanity at 1280/768/375.
+  - Request resolver (words → real section), edit_css, outline, feature
+    completeness: VERIFIED at the tool level and by the mock FAQ-edit run.
+  - Contrast + empty-card checks: VERIFIED to catch a deliberately unreadable
+    footer and an empty card, with no false positive on gradient buttons.
+  - contact-form-landing repair: VERIFIED (all checks pass, no markers/comments).
+  - Live provider quality and the sidebar UI in a real browser: outstanding.
+================================================================================
+================================================================================
+AI Code Editor — Reliable Edits: A Separate Edit Pipeline, a Word-to-Target
+        Resolver, Fragment-Only Validation, and Errors Routed to the Terminal
+        (2026-10-06)
+================================================================================
+
+STATUS: complete for the parts that can be exercised locally; VERIFIED by a
+        mock provider driving the REAL runAgent and by the REAL quality checks
+        (quickCheck + connectionCheck) on every edited fixture. oxlint 0/0
+        (81 files), vite build OK, node --check OK on every changed server file.
+        NOT verified: a live Mistral run (no provider key), and the sidebar in a
+        real browser session.
+
+--------------------------------------------------------------------------------
+PART 1 — DIAGNOSIS (reproduced before any pipeline code changed)
+--------------------------------------------------------------------------------
+
+A scripted mock provider (tmp-harness/edit-cases.mjs) drove the REAL runAgent
+through the five failing edit requests on a composed site (hero, services,
+testimonials, faq, pricing), logging every request and the server's full
+decision trail to the terminal.
+
+What the old pipeline did, exactly:
+  1. "add a contact form section" was NOT even an edit. isTargetedEditTask()
+     only knew edit verbs without "add", so the request left the edit path and
+     the whole build loop (plan -> slots -> plan-completeness gate) ran instead.
+  2. "update the UI of the FAQ" / "change the hero heading" / "make pricing 3
+     columns" / "make the footer darker" all entered the build loop too, where
+     the model had to invent section ids and an exact old_string, whole-document
+     validation ran between edits, and repair/budget rounds piled up.
+  3. The sidebar received raw tool results (details.result), retry/fallback
+     notes, wrap-up notices and a red error row per failure; agent:done also
+     carried the raw thrown message.
+
+The new pipeline resolves each request with one server-side decision plus at
+most one model reply.
+
+--------------------------------------------------------------------------------
+PART 2 — EDIT MODE IS SEPARATE FROM BUILD MODE (agentService.js)
+--------------------------------------------------------------------------------
+
+  - runAgent now branches into runEditMode() when the workspace already has
+    files, the request names both an action and a target word, and it is not a
+    new-page request. Edit mode never touches the plan, the SLOT workflow, the
+    plan-completeness gate, the repair rounds or the budget wrap-up.
+  - Edit mode sends NO tools. It asks for one JSON object and parses it.
+  - Model: mistral-large-latest is chosen EXPLICITLY for the edit whenever the
+    user did not pin a model or provider (otherwise auto mode could hand the
+    edit to another provider); on a 429 that candidate is cooled and the next is
+    tried, so Codestral is only reached as a rate-limit fallback.
+  - Targeted edits take 1 request on the happy path, 2 when the fragment is
+    rejected once.
+
+--------------------------------------------------------------------------------
+PART 3 — THE RESOLVER AND THE SERVER-OWNED FRAGMENT
+--------------------------------------------------------------------------------
+
+  - server/src/agent/editPipeline.js (NEW): resolveEditTarget() maps the user's
+    words to a page + target using the page outline and a synonym table
+    (FAQs/questions/accordion -> faq, plans/packages -> pricing,
+    reviews/quotes -> testimonials, banner/headline -> hero, ...). header, nav
+    and footer are separate area targets. A named section that does not exist
+    resolves to "new-section", never an error. Style-only requests
+    (columns, darker, spacing, colours...) resolve to css-only.
+  - The server extracts ONLY the target section's HTML and the CSS rules whose
+    selectors use its classes and sends them with the request. The model returns
+    the complete replacement element (and optional CSS) as
+    {"html":..., "css":..., "summary":...}.
+  - The server owns ids: stampSection() strips any id/data-section/data-title the
+    model returned and writes back the real id + data-section + data-title.
+  - Fragment validation only: one balanced element of the expected tag, no
+    unbalanced structure, no leftover SLOT marker or template comment, no extra
+    <h1> on the page, no <script>/<style>, and every class either already in the
+    stylesheets or declared in the returned CSS.
+  - Document rules (one <h1>, header and footer present, ends with </html>) run
+    ONCE on the candidate document, never between edits.
+  - On rejection the file is untouched and the server retries ONCE, appending a
+    precise problem list to the prompt (never to the sidebar).
+  - Atomic write via writeFileToWorkspace + a direct fs-change event for the
+    Explorer.
+
+--------------------------------------------------------------------------------
+PART 4 — NEW SECTIONS, NAV LINKS AND CSS UPSERTS
+--------------------------------------------------------------------------------
+
+  - A new section is inserted inside <main>, immediately before </main>/the
+    footer, with a server-chosen id, and a matching nav anchor is added to the
+    existing <ul class="nav-list"> when the nav already uses in-page anchors and
+    the type is a navigable one (services, pricing, faq, contact, gallery...).
+  - "add a contact form section" is rendered SERVER-SIDE from the vanilla kit
+    (renderContactSection): <form data-validate novalidate> with labelled name,
+    email, subject and message fields, validation and the .form-success state,
+    all already wired by js/main.js.
+  - CSS-only requests return rules only; upsertCssRules() MERGES the returned
+    declarations into the existing rule for that selector (keeping every
+    declaration that was already there) or appends the rule when the selector is
+    new. :root/html/body/* are never rewritten in place — they are appended, so
+    a token block cannot be wiped.
+
+--------------------------------------------------------------------------------
+PART 5 — ERRORS GO TO THE TERMINAL, NOT THE SIDEBAR
+--------------------------------------------------------------------------------
+
+  - New agentLog() writes one line per event to the server terminal:
+    "[agent] [scope] <timestamp> tool=<tool> file=<file> <full message>".
+  - Tool errors, retries, fallback notices, validator rejections, repair rounds
+    and the budget/wrap-up notices now go through agentLog instead of the
+    sidebar. A failed tool row no longer carries details.result, so no raw error
+    text (and no tooltip payload) reaches the client.
+  - blockFinishing() and the tool-failure stop log the full failure list and
+    throw ONE short plain sentence; the 70% wrap-up note and the repeated
+    retry/gate rows are logged only.
+  - client AIPanel: the "View full error" collapsible was removed.
+  - The sidebar now receives only progress lines (thinking + note) and the final
+    one-sentence completion/failure message. Stop and Continue are untouched;
+    a failed edit persists a session so Continue is accepted.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+  server/src/agent/editPipeline.js            NEW — resolver, extraction, fragment
+                                              validation, swap/insert, nav, CSS upsert
+  server/src/services/agentService.js         edit-mode branch + runEditMode,
+                                              agentLog, errors routed to the terminal
+  client/src/components/AIPanel/AIPanel.jsx   "View full error" removed
+  summary.txt                                 this entry
+
+  (NOT touched: auth, explorer, terminal, preview, settings, themes, the
+   new-project scaffolds, compose.js, scaffold.js, the quality-check modules.)
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (real output in tmp-acceptance/vanilla-reliability/)
+--------------------------------------------------------------------------------
+  - Mock provider driving the REAL runAgent over 8 cases on a composed site
+    (edit-pipeline-cases.json, edit-pipeline-terminal.log, edit-pipeline-mock.log):
+      1. add a contact form section   -> 1 request, index.html only, form with
+         data-validate + labelled name/email/message + .form-success, the rest of
+         the document byte-identical.
+      2. update the UI of the FAQ     -> 1 request, only the faq section replaced,
+         prefix and suffix of index.html byte-identical.
+      3. make pricing 3 columns       -> 1 request, ONLY css/base.css changed,
+         index.html byte-identical, the rule appended.
+      4. change the hero heading      -> 1 request, only the hero section replaced,
+         prefix and suffix byte-identical.
+      5. make the footer darker       -> 1 request, ONLY css/base.css changed,
+         index.html byte-identical; the existing .site-footer rule was MERGED
+         (every original declaration kept) and only ~280 characters of the
+         stylesheet changed.
+      6. add a gallery section (a section that did not exist) -> 1 request, the
+         section inserted before </main> with id/data-section, a nav anchor
+         automatically added, the rest byte-identical.
+      7. an unbalanced replacement fragment -> 2 requests, REJECTED, index.html
+         unchanged, and the rejection reason is in the terminal log.
+      8. change the hero heading with NO pinned model/provider (auto) -> 1 request,
+         still resolved to mistral-large-latest.
+  - Every edited fixture passes the REAL quickCheck (one h1, header, footer,
+    </html>) and the REAL connectionCheck (all 6 successful cases).
+  - Sidebar safety: across all 8 runs the only emitted event types were
+    thinking, note and complete — no error event, no raw result, no "wrap up" or
+    "View full error" text; the same detail is in the terminal log.
+  - Build mode still runs: tmp-harness/run.mjs made a plan, scaffolded 5 pages
+    and filled every slot (0 slots left, 1 h1 per page); it still stops at the
+    gate because its task names "portfolio" (gallery) which the canned mock
+    sections do not contain — a mock limitation, unchanged by this work.
+  - oxlint: 0 warnings / 0 errors (81 files). vite build: OK. node --check: OK
+    on every server source file.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - A LIVE Mistral run: there is no provider key in server/.env, so every run
+    used a scripted mock that drives the REAL runAgent, the REAL resolver, the
+    REAL files and the REAL checks. Request counts and token totals are real for
+    the loop; the model's own wording and the live 1-2 request target are not.
+  - The client sidebar (progress-only) was lint/build verified and code-reviewed,
+    not exercised in a signed-in browser; Node ESM cannot import the client
+    reducer outside Vite.
+  - A live visual taste check of a real model's replacement section.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Run the five edit requests plus "add a gallery section" through a REAL
+    Mistral key and confirm live request counts, tokens and copy quality.
+  - Decide whether Continue after a FAILED edit should re-enter edit mode
+    instead of resuming the general loop.
+  - Drive the progress-only sidebar in a signed-in browser session to close the
+    loop on the TASK 1 display change.
+  - server/tmp-vanilla-agent-test.mjs is still stale against the current budget
+    guard; refresh or delete it.
+  - tmp-harness/run.mjs still stops at the gate for the portfolio->gallery
+    feature check; give the mock a gallery section so the build harness can
+    finish end to end.
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY
+--------------------------------------------------------------------------------
+  - Edit mode separate from build mode (no slots, no plan gate, no repair
+    rounds, no wrap-up in edit mode): VERIFIED by 8 real runAgent runs, each on
+    mistral-large-latest in 1 request.
+  - Word-to-target resolver incl. "a section that does not exist -> add one":
+    VERIFIED (cases 1 and 6).
+  - Fragment-only validation, document rules once, atomic write, one retry with
+    a precise instruction: VERIFIED (case 7 rejected, file unchanged; 1 request
+    for every valid case).
+  - New section inserted before the footer with an auto nav anchor; a contact
+    form that works: VERIFIED (cases 1 and 6) and confirmed by quickCheck.
+  - CSS-only requests upsert by selector without touching HTML: VERIFIED
+    (cases 3 and 5; footer rule merged, not replaced).
+  - Errors/retries/budget notices to the server terminal, sidebar progress-only:
+    VERIFIED at the event level; live browser rendering outstanding.
+================================================================================
+
+================================================================================
+AI Code Editor — Right-Sidebar Agent/Terminal Switch + Freebuff-Ready Terminal
+        (ConPTY, key passthrough, mouse, scrollback, reconnect)
+        (2026-10-06)
+
+STATUS: the right-sidebar Agent/Terminal switch and the sidebar-terminal
+        changes are COMPLETE and VERIFIED in a real headless Chrome session
+        (36/36 checks, tmp-harness/sidebar-verify.mjs). NOT DONE: the two-stage
+        edit pipeline, brand-aware content and the aura-glow repair (Parts 1-4
+        of the same request) — see OPEN ITEMS. A live freebuff run could not be
+        tested (freebuff needs its own login); a raw-mode Node key probe stood
+        in for its TUI.
+
+--------------------------------------------------------------------------------
+PART A — RIGHT SIDEBAR: AGENT / TERMINAL SWITCH
+--------------------------------------------------------------------------------
+The right sidebar (the AI-panel slot) now has a two-button "Agent | Terminal"
+segmented switch. Agent is the default and shows the existing AIPanel unchanged.
+Selecting Terminal replaces the slot with a terminal that fills the sidebar.
+
+NEW CLIENT FILES
+  components/RightPanel/RightPanel.jsx + .css
+    role="tablist" switch; BOTH views stay mounted and are stacked
+    (position:absolute + visibility, never display:none) so switching never
+    unmounts the agent run or the terminal pty. The terminal view is only
+    mounted once it exists (or while its tab is selected), so a plain load on
+    the Agent tab does not spawn a shell.
+  components/RightPanel/SidebarTerminal.jsx + .css
+    ONE terminal backed by the existing TerminalView, with the same shell
+    selector and a "new terminal" button. Uses the SAME cwd logic as the docked
+    panel (workspace.projectId || scratch-<userId>, one level above the
+    project), so cd <folder> works identically.
+  features/sidebarTerminalSlice.js
+    Owns the sidebar terminal's terminalId + shell. Deliberately SEPARATE from
+    the docked/floating panel's `terminal` slice, so the two are independent
+    ptys that can never attach to the same session or duplicate input/output.
+
+MODIFIED CLIENT FILES
+  features/uiSlice.js       rightPanelTab ('agent' | 'terminal') persisted to
+                            localStorage under 'code-matrix:rightPanelTab';
+                            AI_PANEL_MAX_WIDTH 600 -> 1000 so a TUI fits.
+  app/store.js              registers the sidebarTerminal reducer.
+  App.jsx                   renders <RightPanel /> in the AI slot, persists the
+                            tab, resets the sidebar terminal on sign-out.
+  hooks/useGlobalShortcuts.js  returns early while a terminal has focus, so
+                            Ctrl+B / Ctrl+P / Ctrl+S (and Ctrl+J) reach the pty
+                            instead of firing editor shortcuts.
+  components/Terminal/TerminalView.jsx  blurs the xterm when its pane becomes
+                            inactive, so a hidden terminal cannot keep focus.
+
+AUTH GATE: unchanged. The terminal has never been auth-gated (Phase 7: the
+Topbar toggle is always enabled, scratch-guest before sign-in); the sidebar
+terminal matches that exactly, so the gate is neither added nor weakened.
+
+--------------------------------------------------------------------------------
+PART B — TERMINAL MADE FREEBBUFF-READY (Part 5 of the request)
+--------------------------------------------------------------------------------
+ROOT CAUSES FOUND
+  - The interactive terminal forced node-pty's legacy winpty backend on Windows
+    (useConpty:false). winpty does not faithfully pass through the escape
+    sequences, arrow/Tab/Esc keys and mouse reporting a full-screen TUI needs,
+    so freebuff's model-picker keys and scrolling could not work.
+  - A socket drop killed every pty of that socket, so a reconnect could never
+    reattach a session.
+  - scrollback was 2000, and the animated sidebar width could refit the pty at
+    tiny intermediate sizes, reflowing and garbling the screen.
+
+FIXES
+  server/src/utils/terminalManager.js
+    - interactive sessions now use ConPTY on Windows (useConpty:true); TERM,
+      COLORTERM, LANG and LC_ALL are set for UTF-8 / 256-colour output.
+    - sessions carry their socket, so output follows a reattach without touching
+      the running pty.
+    - attachTerminalSession(terminalId, socket) re-binds a live pty to a new
+      socket; detachTerminalsForSocket(socketId, graceMs=120s) keeps ptys alive
+      across a drop and kills only the ones never reclaimed.
+  server/src/socket/terminalSocket.js
+    - terminal:create reattaches an existing terminalId instead of erroring;
+      disconnect detaches (with grace) instead of killing.
+  server/server.js
+    - process-wide unhandledRejection guard for node-pty's known ConPTY
+      kill-path rejection, so it can no longer take the server down.
+  client/src/components/Terminal/TerminalView.jsx
+    - scrollback 2000 -> 10000.
+    - re-emits terminal:create on a genuine socket reconnect (same terminalId)
+      so the server reattaches the same pty with its scrollback.
+    - refit is debounced and skips an undersized pane, so an animated panel
+      width never refits the pty at tiny sizes (no garbled screen).
+  No timeout is imposed on user commands; output/commands are never filtered or
+  rewritten. node_modules/.git skipping is unchanged.
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED (tmp-harness/sidebar-verify.mjs — 36/36, real headless
+Chrome + CDP driving the running app on http://localhost:5173, server on :4000)
+--------------------------------------------------------------------------------
+  - Switch renders with Agent default; Terminal click swaps the view; the Agent
+    view stays mounted (aria-hidden) while hidden.
+  - Typing, paste and a node REPL (50-8 -> 42) all work in the sidebar terminal;
+    Ctrl+C interrupts a running ping and returns to the shell.
+  - ArrowUp, ArrowDown, Tab, Shift+Tab and Escape all reach the pty unchanged
+    (raw-mode Node probe) — the full-screen-TUI key requirement.
+  - Ctrl+B and Ctrl+S do NOT fire editor shortcuts while the terminal is
+    focused; the keys reach the terminal instead.
+  - Agent <-> Terminal round trips keep the pty alive and the scrollback intact.
+  - The docked/floating terminal opens its own separate session; closing it does
+    not kill the sidebar terminal.
+  - Dragging the panel wider refits the pty (45 -> 100 cols); collapsing and
+    reopening keeps the shell and refits (100 -> 100 cols); a window resize
+    leaves it healthy.
+  - The shell selector lists the server shells and picking one restarts the
+    session with that shell.
+  - The chosen tab persists across a full page reload.
+  - scrollback keeps 500 lines of output and the mouse wheel scrolls the
+    viewport (viewportY 532 -> 529).
+  - Signed in, `mkdir SIDEBAR_E2E_FOLDER` in the sidebar terminal appeared live
+    in the Explorer with no reload (chokidar + container watcher).
+  - oxlint 0/0 (84 files), vite build OK, node --check OK on the changed server
+    files.
+
+WHAT COULD NOT BE VERIFIED (honest list)
+  - freebuff itself: it needs its own login, so a Node raw-mode key probe was
+    used as the interactive-TUI substitute. The keys freebuff relies on
+    (arrows/Tab/Shift+Tab/Esc) and wheel scrolling were verified through it.
+  - The reconnect reattach path is implemented but was not exercised by forcing
+    a real socket drop.
+  - Copy-to-clipboard via Ctrl+C-with-a-selection was code-reviewed, not driven.
+  - Parts 1-4 of this request were NOT implemented (see OPEN ITEMS).
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Parts 1-2: make edit mode a two-stage pipeline (Mistral Large locator ->
+    Codestral writer) with only read_file / write_file / replace_text, a
+    balanced-tag safety check, one final document check, and errors logged to
+    the server terminal only (progress-only sidebar). No slots, plan gate,
+    document-per-edit validation, repair rounds or wrap-up notices in edit mode.
+  - Part 3: brand-profile step stored in AGENT.md; strip generic scaffold
+    content (agency footer services, "Start a project") and drive footer/nav
+    CTA/copy from the business; add a build check for off-brand footer/nav text.
+  - Part 4: repair the aura-glow makeup workspace footer/nav through the new
+    edit mode and report requests + tokens.
+  - Run the sidebar terminal against real freebuff and confirm its model-picker
+    keys and scrolling (needs a freebuff login).
+  - Force a Socket.IO reconnect and confirm the same pty reattaches with its
+    scrollback.
+================================================================================
+================================================================================
+AI Code Editor — File & Image Upload in the Explorer, User Roles, Strict Rules
+               Hidden From Non-Admins
+        (2026-10-08)
+================================================================================
+
+STATUS: COMPLETE and VERIFIED. Uploading images/binary assets into the Explorer
+        works end to end (route + toolbar + context menu + drag and drop), the
+        editor previews them, and Strict Rules is now hidden from non-admins.
+
+        Verification: 17/17 live API checks (server/tmp-audit-upload.mjs),
+        16/16 live preview + ZIP checks (server/tmp-audit-preview.mjs) and
+        33/33 real headless-Chrome UI checks (server/tmp-ui-verify.mjs) against
+        the running app on http://localhost:5173 with the API on :4000.
+        oxlint 0 warnings / 0 errors (88 files), vite build OK,
+        node --check OK on every changed server file.
+
+        HONEST NOTE: the whole Explorer Upload feature was already committed in
+        "agent temp off for users" but was NEVER written up in this file, and it
+        was BROKEN at runtime (every upload answered HTTP 500). This entry
+        documents both the pre-existing design and the fixes made here.
+
+--------------------------------------------------------------------------------
+WHY NOTHING UPLOADED BEFORE (the actual blocker)
+--------------------------------------------------------------------------------
+server/src/controllers/upload.controller.js did:
+
+    const receiver = multer({ storage, limits: {...} })
+    receiver(req, res, cb)
+
+multer 2.4.0 changed its API: multer(options) returns a Multer INSTANCE, not
+Express middleware. The middleware is the instance's .array() / .single() /
+.any() method. Calling the instance threw
+    TypeError: receiver is not a function
+which the error handler turned into 500 for EVERY request to
+POST /api/workspace/container/upload — so no upload could ever appear in the
+Explorer, whatever the client did. Found by minting a JWT and hitting the live
+route, not by reading code.
+
+FIXES (server)
+  src/controllers/upload.controller.js
+    - keeps the instance in `uploader` and builds the middleware once:
+      `const receiver = uploader.array('files', MAX_UPLOAD_FILES)`.
+    - added `preservePath: true` to the multer options. Without it multer
+      silently basenames the client-supplied filename, so the traversal check in
+      sanitizeUploadFileName never saw "../../evil.png" and a traversal attempt
+      was accepted (stored safely, but accepted). With it, a traversal filename
+      is rejected with 400 INVALID_NAME, as required.
+  src/controllers/preview.controller.js
+    - a bare /preview/<segment> request used to force target='index.html', so a
+      loose top-level file beside the project folders (e.g. an image dropped on
+      the Explorer root) 404'd. It now resolves the segment itself first and only
+      falls back to index.html when the segment is not a file. Nested-folder and
+      sibling-project assets already worked.
+
+FIXES (client)
+  src/components/Sidebar/Sidebar.jsx
+    - handlePickerChange read the live event.target.files and THEN set
+      event.target.value = ''; clearing the value empties that same FileList, so
+      the upload was silently skipped. It now snapshots the list with
+      Array.from() before clearing.
+
+--------------------------------------------------------------------------------
+PART 1 — THE UPLOAD FEATURE (end-to-end)
+--------------------------------------------------------------------------------
+ALREADY IN PLACE (committed earlier, validated here — nothing rebuilt)
+  Server: POST /api/workspace/container/upload behind protect + ownership, a
+  per-request temp dir under workspaces/.uploads (outside every container),
+  sanitized + length-capped names, conflict-free "name (copy).png" naming via
+  uniqueNameInFolder, atomic rename into place (EXDEV fallback), and
+  GET /container/file/raw + /:projectId/file/raw for byte-exact reads with the
+  right Content-Type. Guarded by resolveContainerOwnerPath, so a traversal in
+  the TARGET path is refused.
+  Client: utils/fileTypes.js (allowed extensions, 10 MB cap, binary detection,
+  formatBytes), hooks/useUploadFiles.js, a hidden multi-file input in Sidebar,
+  the folder context-menu "Upload files...", "Copy relative path" and
+  "Copy path relative to open file", folder-row drag highlight
+  (.tree-row.is-drop-target), the editor asset preview (checkerboard frame,
+  dimensions, size, SVG preview/text toggle, "binary file" card) and
+  EditorAsset.css.
+  Preview: a generic cm_preview_all cookie plus the per-project cookie, the
+  validatePreviewSegment guard, and resolvePreviewTarget() delegating
+  non-project segments to the requester's own container (this is what makes
+  "../sibling/logo.png" and a loose top-level asset load).
+  Limits: uploads are 10 MB per file, 40 files, 100 MB per request. Import
+  Folder's own 2 MB per-file limit (MAX_IMPORT_FILE_BYTES) is UNCHANGED.
+
+ADDED IN THIS ENTRY
+  Explorer toolbar upload button (src/components/Sidebar/Sidebar.jsx)
+    An Upload icon button in the Explorer header. It targets the selected folder,
+    else the selected file's parent folder, else the container root — the same
+    rule the New File / New Folder buttons use (resolveCreateTargetId).
+  Drag and drop
+    src/components/Sidebar/FileTree.jsx
+      - rows now accept dragover/drop on EVERY row, not only folders.
+      - the root-level drag state/handlers were REMOVED from FileTree.
+    src/components/Sidebar/Sidebar.jsx
+      - the root drop zone moved up to the <aside class="sidebar">, so the empty
+        area below the tree AND the Explorer header area both count as "root"
+        (the requirement asked for the header too, which the old FileTree-only
+        zone missed). The whole Explorer gets .is-root-drop-target while dragging.
+      - handleDropFiles(node, files, { hasDirectory }): a folder row uploads into
+        that folder; a FILE row uploads into that file's parent folder; the root
+        uploads into the per-user container root, so the files appear as
+        top-level items next to the project folders.
+      - a dropped FOLDER (detected with DataTransferItem.webkitGetAsEntry in the
+        drop event) shows "Folders cannot be dropped here — use Import Folder to
+        add a folder from your computer." and the directory entries are filtered
+        out instead of producing a confusing "not an allowed file type".
+    src/utils/dropFiles.js (NEW) — shared isFileDrag / hasDroppedFolder helpers.
+    REMOVED: src/components/Sidebar/UploadFolderDialog.jsx + .css. The previous
+    build answered a root drop with an "upload to which folder?" picker, which
+    contradicts the requirement (root drop = container root). Dropping the dead
+    dialog keeps the flow single-purpose.
+  Upload progress
+    src/services/api.js — uploadFiles() now uses XMLHttpRequest (fetch cannot
+    report upload progress) and accepts an onProgress callback; it still returns
+    the parsed JSON and still throws ApiError with the server's message/code.
+    src/hooks/useUploadFiles.js — exposes { uploadFiles, isUploading, progress }.
+    src/components/Sidebar/Sidebar.jsx — a slim progress bar + percentage strip
+    under the Explorer header while a transfer runs.
+    src/components/Sidebar/UploadDrop.css — root highlight, row highlight and the
+    progress strip styles (the old .file-tree.is-root-drop-target rule moved to
+    .sidebar.is-root-drop-target).
+  Toast — an upload success toast already carried a "Copy path" action button
+  (Toast.jsx runAction -> copyTextToClipboard); unchanged, verified working.
+
+--------------------------------------------------------------------------------
+PART 2 — BINARY CORRECTNESS
+--------------------------------------------------------------------------------
+  src/hooks/useExportToFolder.js and src/hooks/useSyncToLaptop.js fetched every
+  file with workspaceApi.getFile(...), which returns UTF-8 TEXT — so any uploaded
+  image/font/video was corrupted on export and sync. Both now branch on
+  isBinaryPath(path) and read bytes through the new
+  workspaceApi.getProjectFileBytes(projectId, path) (the /:projectId/file/raw
+  route) and write the Blob unchanged.
+  src/components/Sidebar/SearchInFiles.jsx filters isBinaryPath(node.id) out of
+  the searched file list, so binary content is never fetched or searched.
+  Quick Open (TopbarSearch.jsx) only ever matches file NAMES, and the agent
+  snapshot (agent/prompts/projectSnapshot.js) only reads .html/.css/.js — both
+  already ignored binary content. ZIP export streams the on-disk directory with
+  archiver, so it is byte-for-byte by construction (verified by inflating an
+  entry out of the downloaded zip and comparing bytes).
+
+--------------------------------------------------------------------------------
+PART 3 — STRICT RULES HIDDEN FROM NON-ADMINS
+--------------------------------------------------------------------------------
+  The role system already existed (committed earlier): User.model.js has
+  role: 'admin' | 'user' (default 'user', missing -> 'user', no API/UI to change
+  it), auth.controller.js publicUser() returns it, GET /api/auth/me exposes it,
+  server/src/middlewares/requireAdmin.js has isAdminUser(userId) (reads the role
+  from the DB for the CURRENT request — the JWT is never trusted for
+  authorization) and every agent socket event (agent:attach / agent:stop /
+  agent:run) answers 403 FORBIDDEN for a non-admin. strictRules are consumed only
+  inside the admin-gated agent:run, so a non-admin's saved rules can never be
+  applied or sent to the agent.
+  src/components/Settings/SettingsModal.jsx
+    - the nav list now filters out BOTH 'ai' and 'strict' for non-admins.
+    - NEW shownSection: if state.settings.activeSection is a section the caller
+      may not see (a deep link such as openSettings('strict')), rendering and the
+      nav highlight fall back to Appearance. No effect and no state write is
+      needed, so the hidden section can never render for a non-admin.
+  Admin behaviour is unchanged: for an admin the list and the Strict Rules
+  section are exactly as before (verified in the browser).
+  NOTE ON THE "403 ENDPOINTS" PART: there are NO HTTP endpoints that read or
+  write strict rules — a grep of server/src/routes and server/src/controllers
+  finds none. Strict rules live in the client (localStorage /
+  settingsStorage.js) and travel over Socket.IO with the agent run, which is
+  already admin-gated. Nothing was invented to add such endpoints; the existing
+  gate is what enforces it. (The same requireAdmin middleware is verified live on
+  the admin-only keys API.)
+
+--------------------------------------------------------------------------------
+FILES TOUCHED IN THIS ENTRY
+--------------------------------------------------------------------------------
+SERVER
+  src/controllers/upload.controller.js   multer .array() + preservePath
+  src/controllers/preview.controller.js  bare /preview/<file> resolves as a file
+CLIENT
+  src/services/api.js                    XHR upload + onProgress; getProjectFileBytes
+  src/hooks/useUploadFiles.js            progress state
+  src/hooks/useExportToFolder.js         binary-safe export
+  src/hooks/useSyncToLaptop.js           binary-safe sync
+  src/components/Sidebar/Sidebar.jsx     toolbar button, root drop zone, file-row
+                                         drop, folder-drop message, progress strip,
+                                         picker FileList fix, dialog removed
+  src/components/Sidebar/FileTree.jsx    drag/drop on every row; root handlers removed
+  src/components/Sidebar/UploadDrop.css  root highlight + progress styles
+  src/utils/dropFiles.js                 NEW
+  src/components/Sidebar/SearchInFiles.jsx  skip binaries
+  src/components/Settings/SettingsModal.jsx strict (and ai) hidden for non-admins
+  DELETED src/components/Sidebar/UploadFolderDialog.jsx + .css (unused)
+
+--------------------------------------------------------------------------------
+VERIFICATION PERFORMED
+--------------------------------------------------------------------------------
+LIVE API (server/tmp-audit-upload.mjs — 17/17, real server + real MongoDB)
+  - upload to the container root -> 201 and the file lands at the top level;
+  - the same name again becomes "audit-logo (copy).png";
+  - upload into an existing project folder -> 201 with the folder prefix;
+  - the new file appears EXACTLY ONCE in the container tree (no duplicate rows);
+  - a .txt is refused 400 FILE_TYPE_NOT_ALLOWED;
+  - a 12 MB file is refused 413 "Each file must be 10 MB or smaller.";
+  - a "../" filename is refused 400 INVALID_NAME;
+  - an unauthenticated upload is refused 401;
+  - a "../other-user" target path is refused 400 INVALID_PATH;
+  - GET /container/file/raw returns the bytes unchanged with image/png;
+  - rename and delete both work on an uploaded binary.
+LIVE PREVIEW + ZIP (server/tmp-audit-preview.mjs — 16/16)
+  - an image inside the project, inside a nested folder, a loose top-level
+    container file and an asset in a SIBLING top-level project folder all serve
+    200 with image/png and byte-identical bodies;
+  - preview traversal is refused; preview without a token is 401;
+  - GET /:projectId/export is a real zip that contains the entries and whose
+    image entry inflates byte-for-byte.
+REAL BROWSER UI (server/tmp-ui-verify.mjs — 33/33, headless Chrome + CDP)
+  - the Explorer toolbar Upload button exists;
+  - the folder context menu shows "Upload files..." and "Copy relative path",
+    and "Copy path relative to open file" appears only once a text file is open;
+  - the hidden picker delivered exactly one file and the image appeared live in
+    the selected folder EXACTLY ONCE (no reload, no duplicate row);
+  - the success toast carries a "Copy path" action;
+  - an upload progress indicator appears while a 3.9 MB file uploads (measured
+    with the upload throttled to 1.2 MB/s so the transfer is observable);
+  - a simulated drop on a NESTED folder row, on the Explorer ROOT and on a FILE
+    row each landed in the correct folder (that file's parent);
+  - an image opens as a rendered preview (9x7), with the meta bar showing name,
+    dimensions and size, over a checkerboard background;
+  - a non-image binary opens as a "Binary file" card;
+  - "Copy relative path" and "Copy path relative to open file" copied
+    "readme.md" for a project file;
+  - NON-ADMIN: Settings shows only Appearance/Editor/Terminal/General (no Strict
+    Rules, no AI Assistant); the same user is refused 403 FORBIDDEN by the
+    real admin-only keys API (server-side role check, live);
+  - ADMIN (/me answered with role admin): Strict Rules is back in the nav and the
+    section opens and renders as before;
+  - no uncaught page exceptions, no unexpected console errors and no unexpected
+    failing requests during the whole run.
+
+--------------------------------------------------------------------------------
+WHAT COULD NOT BE VERIFIED (honest list)
+--------------------------------------------------------------------------------
+  - The ADMIN half of the client was verified by answering /api/auth/me with
+    role "admin" (a fetch override injected before app boot). A real admin row
+    could not be created: this sandbox's MongoDB DNS refuses new connections
+    (querySrv ECONNREFUSED) even though the running server holds a live
+    connection, and there is deliberately no API to change a role.
+  - Drag and drop was driven by dispatching real DragEvent + DataTransfer from
+    the page, not by an OS-level drag from the desktop.
+  - The Socket.IO agent gate (403 for non-admins) was read in agentSocket.js, not
+    driven, because the agent needs provider keys.
+  - The earlier "freebuff flickers into a thinking state every second" item was
+    NOT investigated in this entry.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Investigate the freebuff 1-second "thinking" flicker (needs server-side
+    instrumentation of socket connect/disconnect/reattach, pty resize and output
+    chunk rate, then measurement).
+  - server/tmp-ebusy-diagnose.mjs is committed and is a leftover diagnostic; it
+    can be deleted.
+  - A loose top-level HTML file (not inside a project) is served by /preview but
+    has no project scope, so the injected live-reload watcher is not attached to
+    it. Images and other assets are unaffected.
+  - The Explorer-toolbar Upload button targets the selected file's PARENT folder
+    when a file is selected (consistent with New File / New Folder); the literal
+    spec only mentioned "the container root, or the selected folder".
+================================================================================
+================================================================================
+AI Code Editor — Port-4000 Shutdown Fix, Explorer Drag/Drop Move/Copy, 5 More
+               Terrible Themes
+        (2026-10-08)
+================================================================================
+
+STATUS: complete. Client oxlint 0 warnings / 0 errors (89 files), vite build OK,
+        node --check OK on every changed server file. Verified live against the
+        real server on :4000 and headless Chrome on :5173.
+
+--------------------------------------------------------------------------------
+TASK 1 — PORT 4000 CRASH LOOP
+--------------------------------------------------------------------------------
+DIAGNOSIS (measured, not guessed)
+  Port 4000 was held by PID 25428, an ORPHANED `node server.js` (parent: a
+  bash.exe one-liner from an earlier audit harness that ran
+  `(node server.js > ../tmp-audit-server.log 2>&1 &)` — a detached background
+  launch). The real dev runner is `npm run dev` = `node --watch server.js`
+  (started by npm, child of cmd.exe). Because the orphan never exited, the
+  watcher's child hit EADDRINUSE on every start and printed
+  "Failed running 'server.js'. Waiting for file changes before restarting...".
+  `predev` ran `kill-port 4000 || true` only at the START of `npm run dev`,
+  never on a watcher restart, and kill-port terminates ANY holder — including
+  unrelated programs — which the request forbids.
+
+FIX
+  server/src/utils/portOwner.js (NEW) — findListeningPid(port) (netstat -ano on
+    Windows, lsof on POSIX), describeProcess(pid), killProcess(pid),
+    isCodeMatrixServer(port) (probes GET /api/health and requires the app's
+    { status:'ok', database, terminal } shape).
+  server/scripts/freePort.js (NEW) — the predev script. Frees port 4000 ONLY
+    when the holder answers the CodeMatrix health probe; when there is no
+    listener it reports the port free; otherwise it prints ONE clear line naming
+    the PID and the process and exits non-zero WITHOUT killing anything.
+  server/package.json — predev is now `node scripts/freePort.js` (kill-port left
+    as a dependency, unused, so the lockfile stays in sync).
+  server/server.js —
+    * graceful shutdown on SIGINT, SIGTERM and SIGBREAK: killAllTerminals(),
+      await closeAllWatchers(), server.closeAllConnections(), io.close(),
+      server.close(exitNow), plus a 3s force-exit fallback and a synchronous
+      killAllTerminals() on the 'exit' event. A re-entry guard stops a second
+      signal from running it twice.
+    * EADDRINUSE is now ONE clear line naming the holder PID and the suggestion
+      ("Run \"npm run predev\" in server/ ...") followed by process.exit(1).
+      An in-process retry was tried first and DROPPED after a measured failure:
+      on Windows, re-listen() after a failed bind never sets server.listening, so
+      the retry became a ~3s log storm (captured live).
+
+NOTE ON PTY CHILDREN: terminal ptys are spawned by node-pty; Node marks its
+listening socket non-inheritable, and shutdown kills every pty (killAllTerminals)
+before closing the HTTP server, so a spawned shell cannot keep holding the
+listening handle.
+
+VERIFICATION (live, Windows)
+  - Orphan case: `node scripts/freePort.js` identified PID 25428 via the health
+    probe, stopped it, and the watcher's next start reclaimed the port.
+  - Unrelated case: an unrelated HTTP server on 4001 -> predev printed
+    "[predev] Port 4001 is held by PID ... (node), which is not a CodeMatrix
+    server. Leaving it alone." and did NOT kill it (still answered after).
+  - Start while a CodeMatrix server is running: `npm run dev` printed
+    "[predev] Stopping stale CodeMatrix server on port 4000 (PID ...)." then
+    "[predev] Port 4000 is now free." then listened ONCE with no EADDRINUSE.
+  - Second server while one holds the port: one EADDRINUSE line naming the
+    holder, then a clean exit(1) — no crash loop.
+  - File-change restart: `node --watch` restarted cleanly ("Restarting
+    'server.js'") and bound once, no EADDRINUSE. Stopping the dev tree freed
+    port 4000.
+
+--------------------------------------------------------------------------------
+TASK 2 — DRAG-AND-DROP MOVE / COPY IN THE EXPLORER
+--------------------------------------------------------------------------------
+SERVER
+  workspaceManager.js  movePathWithFallback(from, to, isDirectory) — atomic
+    fs.rename when possible; for folders it reuses renameFolderWithRetry (retry
+    ladder + copy fallback); across devices (EXDEV) it copies then removes.
+    renameFolderWithRetry now sends EXDEV straight to the copy fallback instead
+    of throwing.
+  safeDelete.js  transferFailureError(error, absolutePath, displayName) — the
+    SAME short readable messages the delete path uses, including
+    "A terminal is running inside this folder. Close it or run cd .. and try
+    again." for EBUSY/EPERM when a terminal cwd sits inside the moved folder.
+  workspace.controller.js  moveContainerEntryAt — authenticated, derives the
+    owner from the JWT, uses resolveContainerOwnerPath for path-traversal
+    protection, rejects moving a folder into itself/its own descendant, treats a
+    drop onto the current parent as a no-op, forbids moving a top-level project
+    folder into another folder, resolves name conflicts with uniqueNameInFolder
+    ("name (copy).ext", nothing overwritten), suppresses both the source and
+    target watchers to avoid an event flood, and uses async fs throughout.
+  workspace.routes.js  POST /api/workspace/container/move (inside protect).
+
+CLIENT
+  utils/dropFiles.js      EXPLORER_DRAG_TYPE, isExplorerDrag (distinguishes an
+    internal Explorer drag from an external OS file drag) and isCopyModifier
+    (Ctrl / Cmd / Alt).
+  utils/explorerTransfer.js (NEW)  transferTargetFolderPath, isTopLevelFolder,
+    isInvalidTransferTarget (self / descendant / top-level-folder rules) and
+    uniqueChildName (client-side conflict naming matching the server).
+  features/fileSystemSlice.js  moveNode and copyNode reducers (optimistic tree
+    relocation / clone).
+  features/workspaceThunks.js  transferWorkspaceEntry — optimistic UI first,
+    server call second, rollback (refreshWorkspaceTree + remapPaths) on failure;
+    a move remaps tabs/buffers only after success so unsaved edits survive.
+  components/Sidebar/FileTree.jsx  rows are draggable; row and root-area
+    dragover/drop handle internal drags; the dragged row is dimmed
+    (.is-dragging), the target folder highlights (.is-drop-target), the empty
+    area below the tree highlights (.file-tree.is-root-drop-target), a collapsed
+    folder auto-expands after ~700ms of hover, and invalid targets set
+    dropEffect 'none' (not-allowed cursor). External file drags take the
+    unchanged upload path.
+  components/Sidebar/Sidebar.jsx  handleTransferEntry — records undo/redo
+    ('move' / 'duplicate'), shows a toast, and skips a drop onto the current
+    parent.
+  services/api.js  moveContainerPath.
+  components/Sidebar/UploadDrop.css  dragged-row dim + root highlight styles.
+  Multi-selection note: the Explorer has a SINGLE selected row, so per the
+  request this is single-item drag only; no selection features were added.
+
+VERIFICATION (headless Chrome + real server; 21/21 checks)
+  - drag a file into a nested folder; from the nested folder to the root; a
+    folder into a sibling project folder; a folder into its own child is
+    rejected; each result appears exactly once, live, with no page reload;
+  - Ctrl+drop copies and a name conflict becomes "readme (copy).md" without
+    overwriting the original;
+  - an EXTERNAL file drop still uploads;
+  - an open editor tab follows a moved file without duplicating;
+  - Ctrl+Z (Explorer undo) restores a drag move;
+  - no uncaught page exceptions.
+  Server move suite (12/12): 401 without a token; file into a nested folder; to
+  the container root; into a sibling project; folder into a sibling; folder into
+  its own child rejected 400; current-parent no-op; top-level project folder move
+  rejected 400; conflict -> "(copy)"; traversal rejected 400; moved entries
+  appear exactly once.
+
+--------------------------------------------------------------------------------
+TASK 3 — FIVE MORE DELIBERATELY BAD THEMES
+--------------------------------------------------------------------------------
+client/src/utils/themes.js  five specs appended AFTER the existing 5 terrible
+  ones, same data-driven buildTheme path (full CSS palette, Monaco base +
+  monacoColors, 5 preview swatches, xterm via terminalThemes.js):
+    Expired Mustard (mustard / vomit-beige / rust),
+    Neon Hospital (sickly mint / surgical blue / hot orange),
+    Toxic Grape Soda (acid purple / slime green / rust red),
+    Disco Sunburn (burnt orange / magenta / electric blue),
+    Cartoon Overdose (childish primaries, candy/bubblegum).
+  Layout, spacing, fonts and component structure are untouched; only colours
+  differ. THEMES.length is now 58; index 47 is still high-contrast-light and the
+  previous 5 terrible themes keep their exact positions/order.
+
+VERIFICATION
+  - contrast checks mirroring server/tmp-theme-verify.mjs: every one of the 10
+    terrible themes keeps primary text >= 4.5:1, secondary text >= 3:1, accent
+    button text >= 3:1, Monaco selection visible, cursor != background, folder/
+    file icons differ from the sidebar background (all pass);
+  - headless Chrome: Settings renders 58 swatches, the last five are the new
+    names in order, clicking Cartoon Overdose sets <html data-theme> and
+    --accent (#ff0066) and the choice survives a reload.
+
+--------------------------------------------------------------------------------
+FILES TOUCHED
+--------------------------------------------------------------------------------
+SERVER  server.js
+        src/utils/portOwner.js (NEW)
+        scripts/freePort.js (NEW)
+        package.json (predev)
+        src/utils/workspaceManager.js (movePathWithFallback, EXDEV fallback)
+        src/utils/safeDelete.js (transferFailureError)
+        src/controllers/workspace.controller.js (moveContainerEntryAt)
+        src/routes/workspace.routes.js (POST /container/move)
+CLIENT  src/utils/themes.js
+        src/utils/dropFiles.js
+        src/utils/explorerTransfer.js (NEW)
+        src/features/fileSystemSlice.js
+        src/features/workspaceThunks.js
+        src/services/api.js
+        src/components/Sidebar/FileTree.jsx
+        src/components/Sidebar/Sidebar.jsx
+        src/components/Sidebar/UploadDrop.css
+
+--------------------------------------------------------------------------------
+LEFTOVER TEMPORARY SCRIPTS / FOLDERS (NOT deleted)
+--------------------------------------------------------------------------------
+server/  tmp-audit-preview.mjs, tmp-audit-upload.mjs, tmp-ebusy-diagnose.mjs,
+         tmp-theme-tune.mjs, tmp-theme-verify.mjs, tmp-ui-verify.mjs,
+         tmp-vanilla-agent-test.mjs
+Also at the project root (unchanged): tmp-acceptance/, tmp-harness/,
+tmp-agent-server.log, tmp-editmode-inline.txt, tmp-mock-groq.log,
+tmp-sidebar-client.log, tmp-sidebar-server.log.
+Two temporary audit scripts created for THIS change (server/tmp-move-verify.mjs
+and server/tmp-dnd-verify.mjs) were removed after the runs.
+
+--------------------------------------------------------------------------------
+OPEN ITEMS
+--------------------------------------------------------------------------------
+  - Move/copy of a TOP-LEVEL project folder into another folder is still
+    rejected (it would nest a project). Dragging such a row shows the
+    not-allowed cursor; the existing "A project folder can only be renamed, not
+    moved inside another folder." message is returned if called directly.
+  - Moving a folder to the container root makes it a new project only when the
+    tree is next read (listContainerEntries auto-registers it); no MongoDB
+    Project row is created for it on that path.
+  - Multi-item drag is not supported (the Explorer has no multi-selection).
+  - The EBUSY "terminal running inside this folder" message path was shared with
+    the delete helper and code-reviewed, but was not forced by an actual locked
+    folder in this run.
+  - Existing items still open: the freebuff 1-second thinking flicker;
+    server/tmp-ebusy-diagnose.mjs can be deleted; a loose top-level HTML file has
+    no preview watcher.
+
+--------------------------------------------------------------------------------
+STATUS SUMMARY (WHERE THINGS STAND)
+--------------------------------------------------------------------------------
+  - TASK 1 (port 4000): complete and VERIFIED live — predev frees only a stale
+    CodeMatrix server, leaves unrelated holders alone with a clear one-line
+    message, the server reports EADDRINUSE once and exits, and a watcher restart
+    rebinds cleanly with the port free after stopping.
+  - TASK 2 (drag/drop move+copy): complete and VERIFIED — 12/12 server move
+    checks and 21/21 headless-Chrome UI checks (move, root, sibling project,
+    self-child rejection, conflict naming, Ctrl copy, external upload, tab
+    follow, undo, live tree with no reload).
+  - TASK 3 (5 more terrible themes): complete and VERIFIED — 58 themes, the new
+    five last, all readable, applied to the UI and persisted across reload.
+  - NOT verified: a real OS-level drag from the desktop (drags were synthesized
+    with DragEvent + DataTransfer in the page); a forced EBUSY from a real
+    terminal cwd inside the moved folder; and MongoDB-backed project metadata for
+    a folder moved to the container root.
+================================================================================

@@ -43,7 +43,7 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       fontSize: initialAppearanceRef.current.fontSize,
       lineHeight: 1.2,
       cursorBlink: true,
-      scrollback: 2000,
+      scrollback: 10000,
     })
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
@@ -153,6 +153,27 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     socket.on('terminal:exit', handleExit)
     socket.on('terminal:error', handleError)
 
+    // A dropped-and-restored socket re-uses the SAME terminalId so the server
+    // reattaches the running pty (and its scrollback) instead of replacing it.
+    let seenConnected = socket.connected
+    function handleReconnect() {
+      if (seenConnected) return
+      seenConnected = true
+      if (!created) return
+      socket.emit('terminal:create', {
+        terminalId,
+        projectId,
+        shell,
+        cols: term.cols,
+        rows: term.rows,
+      })
+    }
+    function handleDisconnect() {
+      seenConnected = false
+    }
+    socket.on('connect', handleReconnect)
+    socket.on('disconnect', handleDisconnect)
+
     const dataSubscription = term.onData((data) => {
       socket.emit('terminal:input', { terminalId, data })
     })
@@ -172,15 +193,26 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       term.focus()
     })
 
-    const observer = new ResizeObserver(() => {
-      if (container.clientWidth < 20 || container.clientHeight < 20) return
-      try {
-        fitAddon.fit()
-        if (created) {
-          socket.emit('terminal:resize', { terminalId, cols: term.cols, rows: term.rows })
-        }
-      } catch {}
-    })
+    // Debounced so an animated panel width (see .panel-slot's width transition)
+    // cannot refit the pty at tiny intermediate sizes, which reflows and garbles
+    // the shell's output. The fit runs once the size has settled, and an
+    // undersized container (collapsed panel) is skipped entirely.
+    let fitTimer = null
+    function scheduleFit() {
+      if (fitTimer) clearTimeout(fitTimer)
+      fitTimer = setTimeout(() => {
+        fitTimer = null
+        if (container.clientWidth < 20 || container.clientHeight < 20) return
+        try {
+          fitAddon.fit()
+          if (created) {
+            socket.emit('terminal:resize', { terminalId, cols: term.cols, rows: term.rows })
+          }
+        } catch {}
+      }, 70)
+    }
+
+    const observer = new ResizeObserver(scheduleFit)
     observer.observe(container)
 
     termRef.current = term
@@ -195,6 +227,7 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
 
     return () => {
       cancelAnimationFrame(raf)
+      if (fitTimer) clearTimeout(fitTimer)
       observer.disconnect()
       container.removeEventListener('contextmenu', handleContextMenu)
       dataSubscription.dispose()
@@ -202,6 +235,8 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       socket.off('terminal:ready', handleReady)
       socket.off('terminal:exit', handleExit)
       socket.off('terminal:error', handleError)
+      socket.off('connect', handleReconnect)
+      socket.off('disconnect', handleDisconnect)
       if (created) socket.emit('terminal:close', { terminalId })
       window.__TERMINAL_VIEWS__?.delete(terminalId)
       term.dispose()
@@ -223,15 +258,25 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
   }, [appTheme, terminalFontSize])
 
   useEffect(() => {
-    if (!isActive) return undefined
+    // When this pane is not the visible one, drop keyboard focus so keystrokes
+    // cannot keep reaching a hidden terminal while the other view is in use.
+    if (!isActive) {
+      termRef.current?.blur()
+      return undefined
+    }
     const raf = requestAnimationFrame(() => {
       const fit = fitRef.current
       const term = termRef.current
+      const container = containerRef.current
       if (!fit || !term) return
-      try {
-        fit.fit()
-      } catch {}
-      getSocket().emit('terminal:resize', { terminalId, cols: term.cols, rows: term.rows })
+      // Only fit once the pane has a usable size; a panel that is still
+      // animating open is left to the debounced ResizeObserver instead.
+      if (container && container.clientWidth >= 20 && container.clientHeight >= 20) {
+        try {
+          fit.fit()
+        } catch {}
+        getSocket().emit('terminal:resize', { terminalId, cols: term.cols, rows: term.rows })
+      }
       // In a split every visible pane must fit, but only the active pane takes
       // keyboard focus — otherwise the last-rendered pane would steal it.
       if (autoFocus) term.focus()

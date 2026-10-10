@@ -130,6 +130,7 @@ const projectsSlice = createSlice({
       state.items = state.items.filter((item) => item.id !== action.payload)
       delete state.trees[action.payload]
       delete state.treeStates[action.payload]
+      if (state.pendingDelete?.id === action.payload) state.pendingDelete = null
     },
     /** Drops every cached sibling tree (sign-out, project deleted). */
     clearProjectTrees(state, action = {}) {

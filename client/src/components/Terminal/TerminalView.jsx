@@ -1,15 +1,20 @@
+import { ClipboardAddon } from '@xterm/addon-clipboard'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { setTerminalShell } from '../../features/terminalSlice'
 import { getSocket } from '../../services/socket'
+import { copyTextToClipboard } from '../../utils/clipboard'
 import { TERMINAL_FONT_FAMILY, terminalThemeFor } from '../../utils/terminalThemes'
 import { getTheme } from '../../utils/themes'
 
 const CLIPBOARD_DENIED_MESSAGE = 'Clipboard access denied — check browser permissions'
+const COPIED_MESSAGE = 'Copied'
 const NOTICE_TIMEOUT_MS = 4000
+const MENU_EDGE_MARGIN = 150
 
 export default function TerminalView({ terminalId, projectId, shell, isActive, autoFocus = true }) {
   const dispatch = useDispatch()
@@ -22,10 +27,12 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
   const containerRef = useRef(null)
   const termRef = useRef(null)
   const fitRef = useRef(null)
+  const actionsRef = useRef(null)
   // Small transient overlay for clipboard errors / confirmations, scoped to
   // THIS terminal instance.
   const [notice, setNotice] = useState(null)
   const noticeTimerRef = useRef(null)
+  const [contextMenu, setContextMenu] = useState(null)
 
   useEffect(
     () => () => {
@@ -49,6 +56,18 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     })
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
+    term.loadAddon(new WebLinksAddon((_event, uri) => window.open(uri, '_blank', 'noopener,noreferrer')))
+    term.loadAddon(
+      new ClipboardAddon(undefined, {
+        readText: () => '',
+        writeText: (selection, data) => {
+          if (selection !== 'c') return Promise.resolve()
+          return copyTextToClipboard(data).then((copied) => {
+            showNotice(copied ? COPIED_MESSAGE : CLIPBOARD_DENIED_MESSAGE)
+          })
+        },
+      }),
+    )
     term.open(container)
 
     const socket = getSocket()
@@ -60,18 +79,19 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       noticeTimerRef.current = setTimeout(() => setNotice(null), NOTICE_TIMEOUT_MS)
     }
 
+    async function copyText(text) {
+      if (!text) return false
+      const copied = await copyTextToClipboard(text)
+      showNotice(copied ? COPIED_MESSAGE : CLIPBOARD_DENIED_MESSAGE)
+      return copied
+    }
+
     // Copy the xterm selection to the system clipboard. Used by Ctrl/Cmd+C
     // (when something is selected) and by right-click.
     async function copySelection() {
       const selection = term.getSelection()
       if (!selection) return
-      try {
-        if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
-        await navigator.clipboard.writeText(selection)
-        showNotice(`Copied ${selection.length} character${selection.length === 1 ? '' : 's'}`)
-      } catch {
-        showNotice(CLIPBOARD_DENIED_MESSAGE)
-      }
+      if (await copyText(selection)) term.clearSelection()
     }
 
     // Paste the system clipboard straight into the pty, as if it were typed.
@@ -79,7 +99,7 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       try {
         if (!navigator.clipboard?.readText) throw new Error('Clipboard API unavailable')
         const text = await navigator.clipboard.readText()
-        if (text) socket.emit('terminal:input', { terminalId, data: text })
+        if (text) term.paste(text)
       } catch {
         showNotice(CLIPBOARD_DENIED_MESSAGE)
       }
@@ -96,13 +116,12 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
 
       const key = event.key.toLowerCase()
 
-      if (key === 'c' && !event.shiftKey) {
-        if (term.hasSelection()) {
-          event.preventDefault()
-          void copySelection()
-          return false
-        }
-        return true
+      if (key === 'c') {
+        const hasSelection = term.hasSelection()
+        if (!event.shiftKey && !hasSelection) return true
+        event.preventDefault()
+        if (hasSelection) void copySelection()
+        return false
       }
 
       if (key === 'v') {
@@ -117,9 +136,12 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     // Right-click copies an active selection (common terminal UX), otherwise it
     // falls through to the browser.
     function handleContextMenu(event) {
-      if (!term.hasSelection()) return
       event.preventDefault()
-      void copySelection()
+      setContextMenu({
+        x: Math.max(0, Math.min(event.clientX, window.innerWidth - MENU_EDGE_MARGIN)),
+        y: Math.max(0, Math.min(event.clientY, window.innerHeight - 90)),
+        text: term.getSelection(),
+      })
     }
     container.addEventListener('contextmenu', handleContextMenu)
 
@@ -219,6 +241,7 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
 
     termRef.current = term
     fitRef.current = fitAddon
+    actionsRef.current = { copySelection, copyText, pasteFromClipboard }
 
     // Debug/automation hook: exposes live xterm instances so the console (or
     // an automated browser test) can read the scrollback buffer.
@@ -244,8 +267,31 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       term.dispose()
       termRef.current = null
       fitRef.current = null
+      actionsRef.current = null
+      setContextMenu(null)
     }
   }, [terminalId, projectId, shell, dispatch])
+
+  useEffect(() => {
+    if (!contextMenu) return undefined
+    function dismiss() {
+      setContextMenu(null)
+    }
+    function onKeyDown(event) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setContextMenu(null)
+    }
+    document.addEventListener('mousedown', dismiss)
+    document.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('blur', dismiss)
+    return () => {
+      document.removeEventListener('mousedown', dismiss)
+      document.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('blur', dismiss)
+    }
+  }, [contextMenu])
 
   // Apply theme / font-size changes to the live xterm instance without
   // recreating it (which would kill the shell session).
@@ -287,12 +333,53 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     return () => cancelAnimationFrame(raf)
   }, [isActive, autoFocus, terminalId])
 
+  async function handleCopyFromMenu() {
+    const { text } = contextMenu
+    setContextMenu(null)
+    const actions = actionsRef.current
+    if (!actions) return
+    if (await actions.copyText(text)) termRef.current?.clearSelection()
+    termRef.current?.focus()
+  }
+
+  function handlePasteFromMenu() {
+    setContextMenu(null)
+    void actionsRef.current?.pasteFromClipboard()
+    termRef.current?.focus()
+  }
+
   return (
     <>
       <div className="terminal-view" ref={containerRef} />
       {notice && (
         <div className="terminal-notice" role="status">
           {notice}
+        </div>
+      )}
+      {contextMenu && (
+        <div
+          className="terminal-context-menu"
+          role="menu"
+          style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="terminal-context-item"
+            disabled={!contextMenu.text}
+            onClick={handleCopyFromMenu}
+          >
+            Copy
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="terminal-context-item"
+            onClick={handlePasteFromMenu}
+          >
+            Paste
+          </button>
         </div>
       )}
     </>

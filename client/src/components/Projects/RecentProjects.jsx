@@ -3,7 +3,6 @@ import { useDispatch, useSelector } from 'react-redux'
 import {
   cancelDeleteRecent,
   dismissRecentMissing,
-  fetchRecentProjects,
   openRecentProject,
   removeRecentProject,
   requestDeleteRecent,
@@ -37,16 +36,9 @@ export default function RecentProjects({ variant = 'full' }) {
 
   function handleDelete(item) {
     dispatch(cancelDeleteRecent())
-    const isActive = item.id === activeProjectId
-    // An active project must go through the workspace thunk so the open editor
-    // and workspace ref are cleared; a closed one is removed straight from the list.
-    const request = isActive
-      ? dispatch(deleteWorkspaceProject({ projectId: item.id })).unwrap()
-      : dispatch(removeRecentProject({ projectId: item.id })).unwrap()
-
-    request
+    dispatch(deleteWorkspaceProject({ projectId: item.id, name: item.name }))
+      .unwrap()
       .then(() => {
-        dispatch(fetchRecentProjects())
         dispatch(showToast({ message: `Deleted project ${item.name}.`, type: 'success' }))
       })
       .catch((deleteError) => {

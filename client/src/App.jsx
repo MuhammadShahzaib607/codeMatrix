@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import ActivityBar from './components/ActivityBar/ActivityBar'
 import AuthModal from './components/Auth/AuthModal'
 import EditorArea from './components/Editor/EditorArea'
+import HelpModal from './components/Help/HelpModal'
 import StorageNotice from './components/Notices/StorageNotice'
 import WorkspaceMissingNotice from './components/Notices/WorkspaceMissingNotice'
 import SettingsModal from './components/Settings/SettingsModal'
@@ -262,6 +263,7 @@ export default function App() {
       <Toast />
       <AuthModal />
       <SettingsModal />
+      <HelpModal />
     </div>
   )
 }

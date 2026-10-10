@@ -11,10 +11,11 @@ import {
   setActiveFile,
   setFolderOpen,
 } from '../../features/fileSystemSlice'
-import { showToast } from '../../features/uiSlice'
+import { closeDeleteProjectModal, showToast } from '../../features/uiSlice'
 import { setAskBeforeMovingFolders } from '../../features/settingsSlice'
 import {
   createWorkspaceEntry,
+  deleteWorkspaceProject,
   duplicateWorkspaceEntry,
   refreshWorkspaceTree,
   renameWorkspaceEntry,
@@ -39,7 +40,7 @@ import { resolveCreateTargetId } from '../../utils/explorerTarget'
 import { extensionOf } from '../../utils/fileTypes'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { openPreviewTab } from '../../utils/preview'
-import { hasActiveWorkspace } from '../../utils/workspace'
+import { hasActiveWorkspace, isCloudWorkspace } from '../../utils/workspace'
 import FileTree from './FileTree'
 import './Sidebar.css'
 import './UploadDrop.css'
@@ -79,6 +80,7 @@ export default function Sidebar() {
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
   const activeFileId = useSelector((state) => state.fileSystem.activeFileId)
   const askBeforeMovingFolders = useSelector((state) => state.settings.askBeforeMovingFolders)
+  const isDeleteProjectModalOpen = useSelector((state) => state.ui.isDeleteProjectModalOpen)
   const hasProject = hasActiveWorkspace(workspace)
 
   const [selectedId, setSelectedId] = useState(null)
@@ -671,6 +673,34 @@ export default function Sidebar() {
           confirmLabel="Delete"
           onConfirm={confirmDelete}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {isDeleteProjectModalOpen && isCloudWorkspace(workspace) && (
+        <ConfirmModal
+          title={`Delete project '${workspace.name}'?`}
+          message="This deletes every file in this project permanently and cannot be undone."
+          confirmLabel="Delete project"
+          confirmPhrase={workspace.name}
+          onConfirm={() => {
+            const projectId = workspace.projectId
+            const name = workspace.name
+            dispatch(closeDeleteProjectModal())
+            dispatch(deleteWorkspaceProject({ projectId, name }))
+              .unwrap()
+              .then(() => {
+                dispatch(showToast({ message: `Deleted project ${name}.`, type: 'success' }))
+              })
+              .catch((error) => {
+                dispatch(
+                  showToast({
+                    message: `Could not delete ${name}: ${error?.message ?? error}`,
+                    type: 'error',
+                  }),
+                )
+              })
+          }}
+          onCancel={() => dispatch(closeDeleteProjectModal())}
         />
       )}
 

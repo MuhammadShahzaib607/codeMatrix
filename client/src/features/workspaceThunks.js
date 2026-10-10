@@ -1,7 +1,8 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
-import { isWorkspaceMissingError, projectApi, workspaceApi } from '../services/api'
+import { getAuthToken, isWorkspaceMissingError, projectApi, workspaceApi } from '../services/api'
 import { clearFileContentCache, setCachedFileContent } from '../services/fileContentCache'
-import { clearWorkspaceRef, saveWorkspaceRef } from '../services/workspaceStorage'
+import { getSocket } from '../services/socket'
+import { clearWorkspaceRefIfMatches, saveWorkspaceRef } from '../services/workspaceStorage'
 import { toReduxTree } from '../utils/cloudTree'
 import {
   TS_CONFIG_FILENAMES,
@@ -9,19 +10,21 @@ import {
   parseTsconfigJson,
 } from '../utils/monacoTsconfig'
 import { markSaved, removeContent, setContent } from './editorSlice'
+import { fetchRecentProjects, removeRecentProjectItem } from './projectsSlice'
 import { clearTsConfig, setTsConfig } from './tsconfigSlice'
 import { folderNodeForPath, uniqueChildName } from '../utils/explorerTransfer'
 import { findNode } from '../utils/tree'
 import {
   addTab,
   applyAgentProject,
-  clearWorkspace,
   copyNode,
+  focusContainerProject,
   markWorkspaceMissing,
   moveNode,
   refreshTree,
   remapPaths,
   removeNode,
+  removeProject,
   setContainer,
   setScratchWorkspace,
 } from './fileSystemSlice'
@@ -342,6 +345,38 @@ export const readWorkspaceFile = createAsyncThunk(
   },
 )
 
+function projectNodeInTree(tree, projectId, path) {
+  const topLevel = tree[0]?.children ?? tree
+  return (
+    topLevel.find(
+      (node) =>
+        node?.type === 'folder' &&
+        ((projectId && node.projectId === projectId) || (path && node.id === path)),
+    ) ?? null
+  )
+}
+
+export function forgetDeletedProject({ projectId, path = null }) {
+  return (dispatch, getState) => {
+    const before = getState()
+    const wasActive = before.fileSystem.workspace.projectId === projectId
+    const agentRunning = Boolean(before.ai?.running)
+    const node = projectNodeInTree(before.fileSystem.tree, projectId, path)
+    const fileIds = node ? collectFileIds([node]) : []
+
+    dispatch(removeRecentProjectItem(projectId))
+    dispatch(removeProject({ projectId, path }))
+    if (fileIds.length) dispatch(removeContent(fileIds))
+    clearWorkspaceRefIfMatches(projectId)
+
+    if (agentRunning && wasActive) {
+      try {
+        getSocket().emit('agent:stop', { token: getAuthToken() })
+      } catch {}
+    }
+  }
+}
+
 /**
  * Deletes the whole active project: the server removes the workspace folder
  * (recursive) and the MongoDB record, then the client drops every trace of it —
@@ -351,11 +386,28 @@ export const readWorkspaceFile = createAsyncThunk(
  */
 export const deleteWorkspaceProject = createAsyncThunk(
   'workspace/deleteProject',
-  async ({ projectId }, { dispatch }) => {
-    await projectApi.remove(projectId)
-    clearWorkspaceRef()
-    clearFileContentCache()
-    dispatch(clearWorkspace())
-    return { projectId }
+  async ({ projectId, name = null, path = null }, { dispatch, getState }) => {
+    const source = String(projectId).startsWith('scratch-') ? 'scratch' : 'cloud'
+    const wasActive = getState().fileSystem.workspace.projectId === projectId
+
+    dispatch(forgetDeletedProject({ projectId, path }))
+
+    try {
+      await projectApi.remove(projectId)
+    } catch (error) {
+      await dispatch(fetchRecentProjects()).catch(() => {})
+      await dispatch(refreshWorkspaceTree({})).catch(() => {})
+      const stillListed = getState().projects.items.some((item) => item.id === projectId)
+      if (wasActive && stillListed && name) {
+        dispatch(focusContainerProject({ projectId, name, source }))
+        saveWorkspaceRef({ projectId, name })
+      }
+      throw handleFailure(error, dispatch)
+    }
+
+    if (wasActive) clearFileContentCache()
+    dispatch(fetchRecentProjects())
+    dispatch(refreshWorkspaceTree({}))
+    return { projectId, name }
   },
 )

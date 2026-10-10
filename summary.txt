@@ -9183,3 +9183,226 @@ CORS FINDING (FLAGGED — needs a dashboard change, not a code change)
 TEMPORARY FILES: none created for this task (verification used inline curl), so
   nothing to delete.
 ================================================================================
+
+================================================================================
+AI Code Editor — Terminal Auto-Create Race on First Load Fixed
+        (2026-10-10)
+================================================================================
+
+STATUS: complete and VERIFIED in a real browser (headless Chrome via CDP) against
+        the real local server + MongoDB. Exactly ONE terminal spawn on a fresh
+        first load and on reload, in the correct per-user workspace; the
+        guest-then-real respawn cycle is gone. vite build OK.
+
+ROOT CAUSE (from the real code, then confirmed by captured socket frames)
+  The right sidebar auto-creates its terminal when the Terminal tab is active,
+  and a non-admin with no stored tab defaults to that tab. Three compounding
+  bugs produced the cycle:
+
+  1) RightPanel.jsx computed `activeTab = storedTab ?? (isAdmin ? 'agent' :
+     'terminal')` WITHOUT consulting its own `roleResolved` gate, so on the very
+     first paint (user still null) a non-admin was treated as "Terminal" and
+     SidebarTerminal mounted immediately. The `roleResolved` effect that sets the
+     tab only ran afterwards, so it never prevented the early mount.
+
+  2) SidebarTerminal.jsx's open effect fired as soon as terminalId was null,
+     with `effectiveProjectId = projectId || scratchProjectIdFor(userId)`. Before
+     fetchCurrentUser() fulfilled, `userId` is undefined, so it spawned in
+     `scratch-guest` (server container workspaces/u-guest) — the "guest" attempt.
+
+  3) TerminalView's creation effect depends on [terminalId, projectId, shell].
+     Every time one changed it tore the current pty down
+     (`terminal:close` -> killTerminal -> xterm prints "[process exited with code
+     0]") and respawned under the SAME terminalId. Two separate changes arrived
+     after the first paint: fetchAvailableShells() set defaultShell (shell null ->
+     powershell) and fetchCurrentUser() set the real userId (scratch-guest ->
+     scratch-<userId>). Hence 2-3 spawns, the first one/two in u-guest.
+
+  On Render the guest pty exits with code 0 (Linux); on Windows the same kill
+  path reports the Ctrl-C exit code -1073741510. Same teardown either way.
+
+FIX (client only)
+  src/features/authSlice.js       NEW state flag `isAuthResolved`: false while a
+    stored token still has to be validated, true otherwise. Initialised to
+    !storedToken (a signed-out visitor is resolved immediately), set false on
+    fetchCurrentUser.pending, true on fulfilled AND on rejected (a failed restore
+    must not leave the UI gated forever), and true in applySession (login/
+    register) and logout.
+  src/components/RightPanel/RightPanel.jsx   `roleResolved` now comes from
+    `isAuthResolved`, and `activeTab = roleResolved ? (storedTab ?? (isAdmin ?
+    'agent' : 'terminal')) : null`. The terminal view is not mounted (and so no
+    pty is spawned) until the session is resolved.
+  src/components/RightPanel/SidebarTerminal.jsx   the auto-create effect now
+    waits for `isAuthResolved` AND for the server shell list to settle
+    (shellStatus 'ready'|'failed'), so the single spawn already uses the final
+    shell and cannot be respawned by the later defaultShell correction.
+
+  Guest/signed-out flow is preserved: with no token, isAuthResolved is true from
+  the start, so the scratch-guest terminal still appears immediately (verified).
+
+VERIFICATION (headless Chrome + CDP WebSocket frame capture, real server, fresh
+  temp Chrome profile; the ONLY localStorage entry is the auth token, so the user
+  id really is unresolved at first paint)
+  BEFORE (captured against the pre-fix build):
+    fresh first load:
+      terminal:create  projectId=scratch-guest                 shell=(none)
+      terminal:close
+      terminal:create  projectId=scratch-6ac9d5d8…  shell=powershell
+      terminal:create  projectId=scratch-6ac9d5d8…  shell=powershell
+    reload:
+      terminal:create  projectId=scratch-guest                 shell=(none)
+      terminal:close
+      terminal:create  projectId=scratch-guest     shell=powershell
+      terminal:close
+      terminal:create  projectId=scratch-6ac9d5d8…  shell=powershell
+    xterm buffer ended with "[process exited with code -1073741510]" — the exact
+    guest-then-respawn flicker reported.
+  AFTER (same harness, post-fix build):
+    fresh first load:
+      terminal:create  projectId=scratch-6ac9d664…  shell=powershell   (ONE)
+      xterm: "Windows PowerShell … PS D:\…\server\workspaces\u-6ac9d664…>"
+    reload:
+      terminal:create  projectId=scratch-6ac9d664…  shell=powershell   (ONE)
+      xterm: same live prompt, cwd u-<userId>, no exit line
+    signed-out guest:
+      one live scratch-guest session in workspaces/u-guest (unchanged behavior)
+  No page exceptions, no console errors in any run.
+
+TEMPORARY FILES: server/tmp-firstload-race.mjs (+ its before/after logs) were
+  removed after the runs.
+
+NOTE: client `oxlint` could NOT be run in this environment — the OS blocks the
+  native binding ("An Application Control policy has blocked this file",
+  @oxlint/binding-win32-x64-msvc), and no WASI fallback is installed. `vite
+  build` (oxc-based) passed on the final code; no server source file was changed
+  for this fix, so node --check had nothing new to validate.
+================================================================================
+
+================================================================================
+AI Code Editor — Instant Project Delete (No Reload)
+        (2026-10-10)
+================================================================================
+
+STATUS: complete and VERIFIED in a real browser (headless Chrome via CDP) against
+        the real local server + MongoDB. 18/18 delete-flow checks and 4/4
+        rollback checks. vite build OK; node --check OK on the changed server
+        file.
+
+ROOT CAUSE (from the real code, then confirmed by driving the UI)
+  Deleting a project updated only PART of the client state, and the entry points
+  disagreed on what they updated:
+
+  1) RECENT PROJECTS trash (components/Projects/RecentProjects.jsx) branched:
+     - ACTIVE project -> deleteWorkspaceProject(), which cleared the workspace
+       but did NOT remove the item from projects.items, and cleared state.tree
+       wholesale (clearWorkspace) so sibling projects vanished from the Explorer;
+     - NON-ACTIVE project -> removeRecentProject(), which removed the list item
+       but never touched the Explorer tree row, projects.trees, focusedProjectId
+       or the active workspace.
+     Neither path cleared the persisted last-opened ref
+     (localStorage 'code-matrix:workspace') when it pointed at the deleted
+     project.
+
+  2) Explorer TOP-LEVEL folder delete (per-row trash / context menu) went through
+     deleteExplorerEntry -> deleteWorkspaceEntry, which only did removeNode(path)
+     plus a background tree refetch. It never touched projects.items, the active
+     workspace / Topbar chip, the persisted ref, focusedProjectId or the editor's
+     unsaved buffers — so the folder vanished but RECENT PROJECTS and the Topbar
+     kept showing the project.
+
+  3) Settings > General "Delete this project" dispatched
+     uiSlice.openDeleteProjectModal(), but NO component rendered a modal for
+     isDeleteProjectModalOpen, so that entry point did nothing at all.
+
+  4) GET /api/projects returned plain JSON with an ETag and no Cache-Control, so
+     a stale (or cached) list could keep a deleted item on the deployed build.
+
+WHAT CHANGED (files)
+SERVER
+  src/controllers/project.controller.js  listProjectsHandler now sets
+    Cache-Control: no-store, no-cache, must-revalidate, max-age=0 and
+    Pragma: no-cache, so a deleted project can never be served from a cache.
+
+CLIENT
+  services/workspaceStorage.js  clearWorkspaceRefIfMatches(projectId) — clears
+    the remembered last-opened project ONLY when it is the deleted one.
+  features/fileSystemSlice.js  new removeProject({ projectId, path }) reducer:
+    drops the matching top-level project folder from the tree AND from
+    state.container.entries, prunes its open tabs, and when it was the active
+    (or focused) project falls back to the NEXT remaining project — or the
+    "No project imported" empty state when none is left.
+  features/projectsSlice.js  removeRecentProjectItem also clears a matching
+    pendingDelete.
+  features/workspaceThunks.js  new forgetDeletedProject({ projectId, path })
+    thunk — the single cleanup used by every delete path: dispatches
+    removeRecentProjectItem + removeProject + removeContent (the project's file
+    ids) + clearWorkspaceRefIfMatches, and stops a running agent task when the
+    deleted project was the active one (socket 'agent:stop'). deleteWorkspaceProject
+    is now: optimistically dispatch forgetDeletedProject -> await
+    DELETE /api/projects/:projectId -> on FAILURE refetch the recent list and the
+    container tree, re-focus the project if it still exists (rollback) and
+    rethrow; on SUCCESS clear the file-content cache when it was active and
+    background-refetch the list + tree. No navigation/redirect anywhere.
+  features/explorerHistoryThunks.js  deleteExplorerEntry: after a successful
+    delete of a TOP-LEVEL project folder it also dispatches forgetDeletedProject
+    + fetchRecentProjects, so the Explorer delete updates RECENT PROJECTS, the
+    Topbar chip and the persisted ref too.
+  components/Projects/RecentProjects.jsx  the RECENT PROJECTS trash now always
+    goes through deleteWorkspaceProject (active or not) — one code path, instant
+    and complete. The typed-name ConfirmModal is kept.
+  components/Sidebar/Sidebar.jsx  renders the Delete Project ConfirmModal for
+    ui.isDeleteProjectModalOpen (confirmPhrase = the project name), so the
+    Settings "Delete this project" button finally opens a working typed-name
+    confirmation.
+
+VERIFICATION
+  - 18/18 headless-Chrome (CDP) checks against the real local server + MongoDB:
+      * non-active delete from RECENT PROJECTS: row gone 94ms, Explorer row gone,
+        Topbar chip untouched, still gone after a reload;
+      * active project delete (Explorer top-level folder trash, with an open
+        editor tab): Explorer row gone, Topbar chip cleared (fell back to the
+        next project), open tab closed, RECENT row removed, still gone after a
+        reload (server confirmed the folder + record were removed);
+      * Settings Delete Project typed modal: same instant result, chip cleared,
+        row gone, still gone after a reload;
+      * GET /api/projects returns Cache-Control: no-store, no-cache,
+        must-revalidate, max-age=0.
+  - 4/4 rollback checks: with the DELETE failed at the network layer
+    (CDP Fetch.failRequest), the row was removed optimistically, then RESTORED,
+    a readable "Could not delete …" toast appeared, and the project was still on
+    the server.
+  - A late container watcher refresh after a successful delete did NOT bring the
+    row back (the client refetch returned the server's post-delete tree).
+  - vite build succeeds; node --check passes on the changed server file.
+
+OPEN ITEMS
+  - client oxlint could NOT be run in this environment: the OS blocks the native
+    binding (@oxlint/binding-win32-x64-msvc, "Application Control policy"), and
+    no WASI fallback package exists on npm. Reported as not-run, not as a pass.
+  - Verified on local Windows only. The deployed Render (Linux) + Vercel path and
+    MongoDB-backed multi-user ownership were not exercised (those URLs are not
+    reachable from this checkout).
+  - An UNSAVED Monaco buffer specifically was not simulated; open tabs were
+    verified to close, and the same pruneTabs/removeContent path clears the
+    unsaved/saving flags for the project's files.
+  - The Explorer top-level folder delete is optimistic the moment the server
+    confirms (the recursive folder removal is the slow part) — consistent with
+    the existing "row gone when the API confirms" design; measured ~2.2s for a
+    local Windows folder, instant on the deployed Linux.
+  - Live preview opens in a separate browser tab, so the app cannot close it; it
+    simply 404s once the project is gone.
+  - No previously-recorded OPEN ITEM was solved by this change, so none was
+    removed.
+
+STATUS SUMMARY (WHERE THINGS STAND)
+  - Instant, on-the-spot project delete: complete and VERIFIED (18/18 flow +
+    4/4 rollback): removed at once from RECENT PROJECTS, the Explorer tree, the
+    Topbar chip/workspace label and open tabs, with no reload and no redirect,
+    and it does not come back after a reload; the server failing rolls back with
+    a short readable message; both the Explorer top-level folder delete and the
+    RECENT PROJECTS trash use the same path; the projects list endpoint is
+    no-store; Delete Project still requires typing the project name.
+  - NOT verified: the deployed Render/Vercel build, a real 403 ownership
+    rollback driven from the UI, an unsaved (dirty) Monaco buffer delete, and
+    client oxlint (blocked by the OS policy).
+================================================================================

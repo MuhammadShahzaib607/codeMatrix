@@ -7,6 +7,7 @@ const initialState = {
   user: null,
   token: storedToken,
   isAuthenticated: Boolean(storedToken),
+  isAuthResolved: !storedToken,
   loading: false,
   error: null,
 }
@@ -23,6 +24,7 @@ function applySession(state, action) {
   state.token = token
   state.user = user
   state.isAuthenticated = true
+  state.isAuthResolved = true
   state.error = null
 }
 
@@ -72,6 +74,7 @@ const authSlice = createSlice({
       state.user = null
       state.token = null
       state.isAuthenticated = false
+      state.isAuthResolved = true
       state.loading = false
       state.error = null
     },
@@ -88,15 +91,20 @@ const authSlice = createSlice({
       .addCase(loginUser.pending, startLoading)
       .addCase(loginUser.fulfilled, applySession)
       .addCase(loginUser.rejected, applyFailure)
-      .addCase(fetchCurrentUser.pending, startLoading)
+      .addCase(fetchCurrentUser.pending, (state) => {
+        startLoading(state)
+        state.isAuthResolved = false
+      })
       .addCase(fetchCurrentUser.fulfilled, (state, action) => {
         state.loading = false
+        state.isAuthResolved = true
         state.user = action.payload.user
         state.isAuthenticated = true
         state.error = null
       })
       .addCase(fetchCurrentUser.rejected, (state, action) => {
         state.loading = false
+        state.isAuthResolved = true
         if (action.payload?.status === 401) {
           clearAuthToken()
           state.user = null

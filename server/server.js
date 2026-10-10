@@ -12,7 +12,8 @@ import { closeAllWatchers } from './src/utils/fileWatcher.js'
 import { killAllTerminals } from './src/utils/terminalManager.js'
 import { migrateWorkspaceFolders } from './src/utils/workspaceMigration.js'
 import { WORKSPACES_ROOT } from './src/utils/workspaceManager.js'
-import { describeProcess, findListeningPid } from './src/utils/portOwner.js'
+import { describeProcess, findListeningPid, resolvePortHolder, waitForPortFree } from './src/utils/portOwner.js'
+import { removeServerLock, writeServerLock } from './src/utils/serverLock.js'
 
 fs.mkdirSync(WORKSPACES_ROOT, { recursive: true })  
 
@@ -30,6 +31,7 @@ const server = http.createServer(app);
 let shuttingDown = false
 
 function onListening() {
+  writeServerLock()
   console.log(`[server] listening on http://localhost:${env.port}`)
   console.log(`[server] health check: http://localhost:${env.port}/api/health`)
   console.log(`[server] workspaces root: ${WORKSPACES_ROOT}`)
@@ -61,6 +63,29 @@ registerWorkspaceSocket(io)
 registerAgentSocket(io)
 
 async function start() {
+  const holder = await resolvePortHolder(env.port)
+  if (holder.status === 'held') {
+    console.error(
+      `[server] Port ${env.port} is held by PID ${holder.pid} (${holder.name}), which is not this project's CodeMatrix server. Stop that program yourself, then start the server again.`,
+    )
+    process.exit(1)
+  }
+  if (holder.status === 'failed') {
+    console.error(
+      `[server] Port ${env.port} is held by PID ${holder.pid} (${holder.name}) and it could not be stopped.`,
+    )
+    process.exit(1)
+  }
+  if (holder.status === 'stopped') {
+    console.log(
+      `[server] Stopped stale CodeMatrix server on port ${env.port} (PID ${holder.pid}) — ${holder.reason}.`,
+    )
+    if (!(await waitForPortFree(env.port, 20))) {
+      console.error(`[server] Port ${env.port} is still in use.`)
+      process.exit(1)
+    }
+  }
+
   await connectDatabase()
 
   if (isDatabaseConnected()) {
@@ -87,13 +112,16 @@ async function start() {
   server.listen(env.port, onListening)
 }
 
+let shutdownExitCode = 0
+
 function exitNow() {
-  process.exit(0)
+  process.exit(shutdownExitCode)
 }
 
-async function shutdown(signal) {
+async function shutdown(signal, exitCode = 0) {
   if (shuttingDown) return
   shuttingDown = true
+  shutdownExitCode = exitCode
   console.log(`[server] ${signal} received, shutting down.`)
   killAllTerminals()
   try {
@@ -105,6 +133,7 @@ async function shutdown(signal) {
   try {
     io.close()
   } catch {}
+  removeServerLock()
   server.close(exitNow)
   setTimeout(exitNow, 3000).unref()
 }
@@ -112,7 +141,14 @@ async function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'))
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGBREAK', () => shutdown('SIGBREAK'))
-process.on('exit', () => killAllTerminals())
+process.on('uncaughtException', (error) => {
+  console.error(`[server] uncaught exception: ${error?.stack ?? error}`)
+  shutdown('uncaughtException', 1)
+})
+process.on('exit', () => {
+  killAllTerminals()
+  removeServerLock()
+})
 
 start()
 

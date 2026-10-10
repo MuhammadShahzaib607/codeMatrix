@@ -102,12 +102,12 @@ async function restoreSnapshot(projectId, snapshot) {
  */
 export const deleteExplorerEntry = createAsyncThunk(
   'explorerHistory/delete',
-  async ({ projectId, node }, { dispatch }) => {
+  async ({ projectId, node, closeTerminals }, { dispatch }) => {
     // Snapshot first (bounded — see SNAPSHOT_MAX_FILES), then delete. The delete
     // thunk itself updates the Explorer optimistically, so the row disappears
     // the moment the DELETE API responds.
     const snapshot = await captureSnapshot(projectId, node)
-    await dispatch(deleteWorkspaceEntry({ projectId, path: node.id })).unwrap()
+    await dispatch(deleteWorkspaceEntry({ projectId, path: node.id, closeTerminals })).unwrap()
     dispatch(
       recordExplorerAction({
         kind: 'delete',

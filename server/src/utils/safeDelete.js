@@ -11,7 +11,7 @@ const IN_USE_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'])
  * When the folder is busy because a shell's working directory sits inside it,
  * the message names that cause explicitly so the user knows what to do.
  */
-export function deleteFailureError(error, absolutePath, displayName) {
+export function deleteFailureError(error, absolutePath, displayName, options = {}) {
   const name = String(displayName ?? 'that folder')
   console.warn(
     `[delete] ${name}: ${error?.code ?? 'UNKNOWN'} ${error?.message ?? error}` +
@@ -19,12 +19,14 @@ export function deleteFailureError(error, absolutePath, displayName) {
   )
 
   if (IN_USE_CODES.has(error?.code)) {
-    const terminals = findTerminalsCwdInside(absolutePath)
+    const terminals = Array.isArray(options.terminals)
+      ? options.terminals
+      : findTerminalsCwdInside(absolutePath)
     if (terminals.length > 0) {
       return new ApiError(
         409,
-        'A terminal is running inside this folder. Close it or run cd .. and try again.',
-        'FOLDER_IN_USE',
+        'A terminal is running inside this folder. Close it and try again.',
+        'TERMINALS_IN_USE',
       )
     }
     return new ApiError(
@@ -38,11 +40,11 @@ export function deleteFailureError(error, absolutePath, displayName) {
 }
 
 /** Runs a deletion and maps any filesystem failure to a clean user-facing error. */
-export async function runDeletion(deleteIt, absolutePath, displayName) {
+export async function runDeletion(deleteIt, absolutePath, displayName, options = {}) {
   try {
     return await deleteIt()
   } catch (error) {
-    throw deleteFailureError(error, absolutePath, displayName)
+    throw deleteFailureError(error, absolutePath, displayName, options)
   }
 }
 

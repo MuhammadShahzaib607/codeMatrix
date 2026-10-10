@@ -2,9 +2,21 @@ import { useEffect, useRef, useState } from 'react'
 import './ConfirmModal.css'
 import './MoveFolderModal.css'
 
-export default function MoveFolderModal({ folderName, destinationName, onConfirm, onCancel }) {
+export default function MoveFolderModal({ items = [], destinationName, onConfirm, onCancel }) {
   const [dontAskAgain, setDontAskAgain] = useState(false)
   const cardRef = useRef(null)
+  const list = Array.isArray(items) ? items : []
+  const single = list.length === 1 ? list[0] : null
+  const title =
+    list.length > 1
+      ? `Move ${list.length} items?`
+      : single?.type === 'folder'
+        ? 'Move folder?'
+        : 'Move file?'
+  const names = list.map((item) => `“${item.name}”`).join(', ')
+  const message = destinationName
+    ? `Move ${names} into “${destinationName}”?`
+    : `Move ${names} to the top level?`
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -43,18 +55,14 @@ export default function MoveFolderModal({ folderName, destinationName, onConfirm
       className="confirm-overlay"
       role="dialog"
       aria-modal="true"
-      aria-label="Move folder?"
+      aria-label={title}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onCancel()
       }}
     >
       <div className="confirm-card move-confirm-card" ref={cardRef}>
-        <h3 className="confirm-title">Move folder?</h3>
-        <p className="confirm-message">
-          {destinationName
-            ? `Move “${folderName}” into “${destinationName}”?`
-            : `Move “${folderName}” to the top level?`}
-        </p>
+        <h3 className="confirm-title">{title}</h3>
+        <p className="confirm-message">{message}</p>
 
         <label className="move-confirm-check">
           <input

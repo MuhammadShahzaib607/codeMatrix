@@ -84,6 +84,7 @@ export default function Sidebar() {
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
+  const [terminalBlockedDelete, setTerminalBlockedDelete] = useState(null)
   const [pendingMove, setPendingMove] = useState(null)
   const [isRootDragOver, setIsRootDragOver] = useState(false)
   const pickerInputRef = useRef(null)
@@ -211,8 +212,13 @@ export default function Sidebar() {
         dispatch(clearClipboard())
         return
       }
-      if (clipboard.type === 'folder' && askBeforeMovingFolders) {
-        setPendingMove({ kind: 'paste', sourcePath, targetFolderPath })
+      if (askBeforeMovingFolders) {
+        setPendingMove({
+          kind: 'paste',
+          sourcePath,
+          targetFolderPath,
+          items: [{ name, type: clipboard.type }],
+        })
         return
       }
       await performPasteMove(sourcePath, targetFolderPath)
@@ -275,8 +281,13 @@ export default function Sidebar() {
       if (!sourcePath) return
       const folderPath = targetFolderPath ?? ''
       if (folderPath === parentPathOf(sourcePath)) return
-      if (!options.copy && sourceNode.type === 'folder' && askBeforeMovingFolders) {
-        setPendingMove({ kind: 'drag', source: sourceNode, targetFolderPath: folderPath })
+      if (!options.copy && askBeforeMovingFolders) {
+        setPendingMove({
+          kind: 'drag',
+          source: sourceNode,
+          targetFolderPath: folderPath,
+          items: [{ name: sourceNode.name, type: sourceNode.type }],
+        })
         return
       }
       runDragTransfer(sourceNode, folderPath, options)
@@ -508,6 +519,21 @@ export default function Sidebar() {
     try {
       await dispatch(deleteExplorerEntry({ node })).unwrap()
     } catch (error) {
+      if (error?.code === 'TERMINALS_IN_USE') {
+        setTerminalBlockedDelete(node)
+        return
+      }
+      reportError(`Could not delete ${node.name}: ${error.message}`)
+    }
+  }
+
+  async function confirmCloseTerminalsAndDelete() {
+    const node = terminalBlockedDelete
+    setTerminalBlockedDelete(null)
+    if (!node) return
+    try {
+      await dispatch(deleteExplorerEntry({ node, closeTerminals: true })).unwrap()
+    } catch (error) {
       reportError(`Could not delete ${node.name}: ${error.message}`)
     }
   }
@@ -648,13 +674,19 @@ export default function Sidebar() {
         />
       )}
 
+      {terminalBlockedDelete && (
+        <ConfirmModal
+          title={`Close terminals and delete '${terminalBlockedDelete.name}'?`}
+          message="A terminal is open inside this folder. Deleting will end the terminal sessions whose working directory is inside it."
+          confirmLabel="Close terminals and delete"
+          onConfirm={confirmCloseTerminalsAndDelete}
+          onCancel={() => setTerminalBlockedDelete(null)}
+        />
+      )}
+
       {pendingMove && (
         <MoveFolderModal
-          folderName={
-            pendingMove.kind === 'paste'
-              ? baseNameOf(pendingMove.sourcePath)
-              : pendingMove.source.name
-          }
+          items={pendingMove.items}
           destinationName={
             pendingMove.targetFolderPath ? baseNameOf(pendingMove.targetFolderPath) : null
           }

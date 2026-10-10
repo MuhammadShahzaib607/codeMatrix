@@ -2,6 +2,7 @@ node_modules
 .env
 *.log
 npm-debug.log*
+.server.pid
 
 # Ephemeral project storage — never commit user projects.
 workspaces/*

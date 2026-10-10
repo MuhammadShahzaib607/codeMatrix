@@ -14,6 +14,7 @@ export const THEME_IDS = ALL_THEME_IDS
 
 export const DEFAULT_SETTINGS = {
   theme: DEFAULT_THEME_ID,
+  askBeforeMovingFolders: true,
   editor: {
     fontSize: 14,
     tabSize: 2,
@@ -93,6 +94,10 @@ export function sanitizeSettings(raw) {
 
   return {
     theme: oneOf(source.theme, THEME_IDS, DEFAULT_SETTINGS.theme),
+    askBeforeMovingFolders:
+      source.askBeforeMovingFolders === undefined
+        ? DEFAULT_SETTINGS.askBeforeMovingFolders
+        : Boolean(source.askBeforeMovingFolders),
     editor: {
       fontSize: clamp(editor.fontSize, 12, 24, DEFAULT_SETTINGS.editor.fontSize),
       tabSize: oneOf(editor.tabSize, [2, 4], DEFAULT_SETTINGS.editor.tabSize),

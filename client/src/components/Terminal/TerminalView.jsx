@@ -6,6 +6,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { setTerminalShell } from '../../features/terminalSlice'
 import { getSocket } from '../../services/socket'
 import { TERMINAL_FONT_FAMILY, terminalThemeFor } from '../../utils/terminalThemes'
+import { getTheme } from '../../utils/themes'
 
 const CLIPBOARD_DENIED_MESSAGE = 'Clipboard access denied — check browser permissions'
 const NOTICE_TIMEOUT_MS = 4000
@@ -39,7 +40,8 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
 
     const term = new Terminal({
       theme: terminalThemeFor(initialAppearanceRef.current.theme),
-      fontFamily: TERMINAL_FONT_FAMILY,
+      fontFamily:
+        getTheme(initialAppearanceRef.current.theme).fonts.terminal || TERMINAL_FONT_FAMILY,
       fontSize: initialAppearanceRef.current.fontSize,
       lineHeight: 1.2,
       cursorBlink: true,
@@ -251,6 +253,7 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     const term = termRef.current
     if (!term) return
     term.options.theme = terminalThemeFor(appTheme)
+    term.options.fontFamily = getTheme(appTheme).fonts.terminal || TERMINAL_FONT_FAMILY
     term.options.fontSize = terminalFontSize
     try {
       fitRef.current?.fit()

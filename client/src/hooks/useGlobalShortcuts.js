@@ -6,6 +6,8 @@ import {
   undoLastExplorerAction,
 } from '../features/explorerHistoryThunks'
 import { showToast, toggleAIPanel, toggleSidebar } from '../features/uiSlice'
+import { setTheme } from '../features/settingsSlice'
+import { DEFAULT_THEME_ID } from '../utils/themes'
 import useSaveActiveFile from './useSaveActiveFile'
 
 /**
@@ -49,6 +51,11 @@ export default function useGlobalShortcuts() {
     }
 
     function handleKeyDown(event) {
+      if (event.ctrlKey && event.altKey && event.shiftKey && event.code === 'Digit0') {
+        event.preventDefault()
+        dispatch(setTheme(DEFAULT_THEME_ID))
+        return
+      }
       if (!event.ctrlKey && !event.metaKey) return
       // While a terminal is focused every Ctrl/Cmd chord goes to the program.
       if (isTerminalFocused()) return

@@ -12,6 +12,7 @@ import {
   setFolderOpen,
 } from '../../features/fileSystemSlice'
 import { showToast } from '../../features/uiSlice'
+import { setAskBeforeMovingFolders } from '../../features/settingsSlice'
 import {
   createWorkspaceEntry,
   duplicateWorkspaceEntry,
@@ -22,6 +23,7 @@ import {
 import useAuthGuard from '../../hooks/useAuthGuard'
 import useUploadFiles from '../../hooks/useUploadFiles'
 import ConfirmModal from '../Common/ConfirmModal'
+import MoveFolderModal from '../Common/MoveFolderModal'
 import RecentProjects from '../Projects/RecentProjects'
 import Tooltip from '../Common/Tooltip'
 import { CONTAINER_ID, ROOT_ID } from '../../services/fileSystemAccess'
@@ -76,11 +78,13 @@ export default function Sidebar() {
   const clipboard = useSelector((state) => state.clipboard)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
   const activeFileId = useSelector((state) => state.fileSystem.activeFileId)
+  const askBeforeMovingFolders = useSelector((state) => state.settings.askBeforeMovingFolders)
   const hasProject = hasActiveWorkspace(workspace)
 
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
+  const [pendingMove, setPendingMove] = useState(null)
   const [isRootDragOver, setIsRootDragOver] = useState(false)
   const pickerInputRef = useRef(null)
   const pickerTargetRef = useRef('')
@@ -164,6 +168,19 @@ export default function Sidebar() {
     [dispatch],
   )
 
+  async function performPasteMove(sourcePath, targetFolderPath) {
+    const name = baseNameOf(sourcePath)
+    const newPath = joinPath(targetFolderPath, name)
+    try {
+      await dispatch(renameWorkspaceEntry({ oldPath: sourcePath, newPath })).unwrap()
+      dispatch(recordExplorerAction({ kind: 'move', oldPath: sourcePath, newPath }))
+      dispatch(clearClipboard())
+      dispatch(showToast({ message: `Moved ${name}`, type: 'success' }))
+    } catch (error) {
+      reportError(`Could not move ${name}: ${error.message}`)
+    }
+  }
+
   /**
    * Copy / Cut -> Paste, by CONTAINER-relative path. A cut is a server-side
    * move, a copy a server-side duplicate; only the path travels through Redux.
@@ -194,15 +211,11 @@ export default function Sidebar() {
         dispatch(clearClipboard())
         return
       }
-      const newPath = joinPath(targetFolderPath, name)
-      try {
-        await dispatch(renameWorkspaceEntry({ oldPath: sourcePath, newPath })).unwrap()
-        dispatch(recordExplorerAction({ kind: 'move', oldPath: sourcePath, newPath }))
-        dispatch(clearClipboard())
-        dispatch(showToast({ message: `Moved ${name}`, type: 'success' }))
-      } catch (error) {
-        reportError(`Could not move ${name}: ${error.message}`)
+      if (clipboard.type === 'folder' && askBeforeMovingFolders) {
+        setPendingMove({ kind: 'paste', sourcePath, targetFolderPath })
+        return
       }
+      await performPasteMove(sourcePath, targetFolderPath)
       return
     }
 
@@ -224,12 +237,10 @@ export default function Sidebar() {
     }
   }
 
-  const handleTransferEntry = useCallback(
-    async (sourceNode, targetFolderPath, { copy } = {}) => {
+  const runDragTransfer = useCallback(
+    async (sourceNode, folderPath, { copy } = {}) => {
       const sourcePath = sourceNode?.path ?? sourceNode?.id
       if (!sourcePath) return
-      const folderPath = targetFolderPath ?? ''
-      if (folderPath === parentPathOf(sourcePath)) return
 
       const label = baseNameOf(sourcePath)
       try {
@@ -257,6 +268,33 @@ export default function Sidebar() {
     },
     [dispatch, reportError],
   )
+
+  const handleTransferEntry = useCallback(
+    (sourceNode, targetFolderPath, options = {}) => {
+      const sourcePath = sourceNode?.path ?? sourceNode?.id
+      if (!sourcePath) return
+      const folderPath = targetFolderPath ?? ''
+      if (folderPath === parentPathOf(sourcePath)) return
+      if (!options.copy && sourceNode.type === 'folder' && askBeforeMovingFolders) {
+        setPendingMove({ kind: 'drag', source: sourceNode, targetFolderPath: folderPath })
+        return
+      }
+      runDragTransfer(sourceNode, folderPath, options)
+    },
+    [runDragTransfer, askBeforeMovingFolders],
+  )
+
+  async function confirmPendingMove(dontAskAgain) {
+    const pending = pendingMove
+    setPendingMove(null)
+    if (!pending) return
+    if (dontAskAgain) dispatch(setAskBeforeMovingFolders(false))
+    if (pending.kind === 'paste') {
+      await performPasteMove(pending.sourcePath, pending.targetFolderPath)
+      return
+    }
+    runDragTransfer(pending.source, pending.targetFolderPath, { copy: false })
+  }
 
   /** Opens a file from ANY project folder. Focus follows the file's project. */
   const handleOpenFile = useCallback(
@@ -607,6 +645,21 @@ export default function Sidebar() {
           confirmLabel="Delete"
           onConfirm={confirmDelete}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {pendingMove && (
+        <MoveFolderModal
+          folderName={
+            pendingMove.kind === 'paste'
+              ? baseNameOf(pendingMove.sourcePath)
+              : pendingMove.source.name
+          }
+          destinationName={
+            pendingMove.targetFolderPath ? baseNameOf(pendingMove.targetFolderPath) : null
+          }
+          onConfirm={confirmPendingMove}
+          onCancel={() => setPendingMove(null)}
         />
       )}
     </aside>

@@ -9,6 +9,7 @@ import {
   Palette,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Settings2,
   ShieldAlert,
@@ -32,6 +33,7 @@ import {
   closeSettings,
   removeStrictRule,
   resetSettings,
+  setAskBeforeMovingFolders,
   setSettingsSection,
   setTheme,
   toggleStrictRule,
@@ -47,7 +49,7 @@ import {
   STRICT_RULE_MAX_LENGTH,
 } from '../../services/settingsStorage'
 import { formatCompact, keyStatusLabel, resetHint, usageMeters } from '../../utils/rateLimit'
-import { THEMES } from '../../utils/themes'
+import { THEMES, DEFAULT_THEME_ID } from '../../utils/themes'
 import { isCloudWorkspace } from '../../utils/workspace'
 import Tooltip from '../Common/Tooltip'
 import UsageBar from '../Common/UsageBar'
@@ -204,9 +206,8 @@ function Row({ label, hint, children }) {
 
 export default function SettingsModal() {
   const dispatch = useDispatch()
-  const { isOpen, activeSection, theme, editor, terminal, agent } = useSelector(
-    (state) => state.settings,
-  )
+  const { isOpen, activeSection, theme, editor, terminal, agent, askBeforeMovingFolders } =
+    useSelector((state) => state.settings)
   const { availableShells, defaultShell } = useSelector((state) => state.terminal)
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const user = useSelector((state) => state.auth.user)
@@ -463,6 +464,15 @@ export default function SettingsModal() {
                     </>
                   )}
                 </p>
+
+                <button
+                  type="button"
+                  className="settings-btn settings-btn-reset"
+                  onClick={() => dispatch(setTheme(DEFAULT_THEME_ID))}
+                >
+                  <RotateCcw size={14} />
+                  <span>Reset to default theme</span>
+                </button>
 
                 <label className="theme-search">
                   <Search size={14} />
@@ -983,6 +993,18 @@ export default function SettingsModal() {
                 ) : (
                   <p className="settings-section-desc">Not signed in.</p>
                 )}
+
+                <h3 className="settings-section-title settings-section-title-spaced">Explorer</h3>
+                <Row
+                  label="Ask before moving folders"
+                  hint="Show a confirmation dialog before a folder is moved in the Explorer, whether by drag and drop or by cut and paste."
+                >
+                  <Toggle
+                    label="Ask before moving folders"
+                    checked={askBeforeMovingFolders !== false}
+                    onChange={(value) => dispatch(setAskBeforeMovingFolders(value))}
+                  />
+                </Row>
 
                 <h3 className="settings-section-title settings-section-title-spaced">Agent</h3>
                 <Row

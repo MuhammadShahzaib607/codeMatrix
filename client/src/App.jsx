@@ -37,6 +37,7 @@ import { writeSettings } from './services/settingsStorage'
 import { clearWorkspaceRef } from './services/workspaceStorage'
 import { getTheme } from './utils/themes'
 import './App.css'
+import './themeExtremes.css'
 
 export default function App() {
   const dispatch = useDispatch()
@@ -78,6 +79,8 @@ export default function App() {
     const theme = getTheme(settings.theme)
     root.setAttribute('data-theme', theme.id)
     root.style.colorScheme = theme.dark ? 'dark' : 'light'
+    if (theme.extreme) root.setAttribute('data-extreme', 'true')
+    else root.removeAttribute('data-extreme')
     for (const [property, value] of Object.entries(theme.palette)) {
       root.style.setProperty(property, value)
     }
@@ -87,11 +90,18 @@ export default function App() {
   useEffect(() => {
     writeSettings({
       theme: settings.theme,
+      askBeforeMovingFolders: settings.askBeforeMovingFolders,
       editor: settings.editor,
       terminal: settings.terminal,
       agent: settings.agent,
     })
-  }, [settings.theme, settings.editor, settings.terminal, settings.agent])
+  }, [
+    settings.theme,
+    settings.askBeforeMovingFolders,
+    settings.editor,
+    settings.terminal,
+    settings.agent,
+  ])
 
   // The available shells are decided by the server's OS, so ask the server once
   // on load (Windows dev sees PowerShell/CMD/bash, the Linux deploy sees bash).

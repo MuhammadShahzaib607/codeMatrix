@@ -8,7 +8,7 @@ import apiRoutes from './routes/index.js'
 import previewRoutes from './routes/preview.routes.js'
 
 if (process.env.NODE_ENV !== 'production') {
-  dns.setServers(['8.8.8.8', '1.1.1.1'])
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
 }
 
 const app = express();

@@ -49,6 +49,10 @@ const settingsSlice = createSlice({
       state.theme = action.payload
     },
 
+    setAskBeforeMovingFolders(state, action) {
+      state.askBeforeMovingFolders = Boolean(action.payload)
+    },
+
     updateEditorSetting(state, action) {
       const { key, value } = action.payload ?? {}
       if (key && Object.hasOwn(state.editor, key)) state.editor[key] = value
@@ -111,6 +115,7 @@ const settingsSlice = createSlice({
     resetSettings(state) {
       const defaults = sanitizeSettings(DEFAULT_SETTINGS)
       state.theme = defaults.theme
+      state.askBeforeMovingFolders = defaults.askBeforeMovingFolders
       state.editor = defaults.editor
       state.terminal = defaults.terminal
       state.agent.projectHistory = defaults.agent.projectHistory
@@ -123,6 +128,7 @@ export const {
   closeSettings,
   setSettingsSection,
   setTheme,
+  setAskBeforeMovingFolders,
   updateEditorSetting,
   updateTerminalSetting,
   updateAgentSetting,

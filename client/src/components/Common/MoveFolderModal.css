@@ -1,0 +1,26 @@
+.move-confirm-card {
+  max-width: 400px;
+}
+
+.move-confirm-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 18px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.move-confirm-check input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.move-confirm-check span {
+  color: var(--text);
+}

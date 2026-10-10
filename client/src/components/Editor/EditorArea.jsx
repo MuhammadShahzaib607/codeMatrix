@@ -10,6 +10,7 @@ import { workspaceApi } from '../../services/api'
 import { formatBytes, isBinaryPath, isImagePath, isSvgPath } from '../../utils/fileTypes'
 import { getLanguageFromFilename } from '../../utils/language'
 import { defineAppMonacoThemes, monacoThemeFor } from '../../utils/monacoThemes'
+import { getTheme } from '../../utils/themes'
 import { applyMonacoTsConfig } from '../../utils/monacoTsconfig'
 import { findNode } from '../../utils/tree'
 import { hasActiveWorkspace } from '../../utils/workspace'
@@ -56,6 +57,7 @@ export default function EditorArea() {
   const monacoTsConfig = useSelector((state) => state.tsconfig.compilerOptions)
   const editorSettings = useSelector((state) => state.settings.editor)
   const appTheme = useSelector((state) => state.settings.theme)
+  const themeFont = getTheme(appTheme).fonts.editor
   const [failure, setFailure] = useState(null)
   const [asset, setAsset] = useState(null)
   const [svgTextFileId, setSvgTextFileId] = useState(null)
@@ -82,12 +84,12 @@ export default function EditorArea() {
     if (!editor) return
     editor.updateOptions({
       fontSize: editorSettings.fontSize,
-      fontFamily: editorSettings.fontFamily || DEFAULT_MONO_FONT,
+      fontFamily: themeFont || editorSettings.fontFamily || DEFAULT_MONO_FONT,
       minimap: { enabled: editorSettings.minimap, renderCharacters: false },
       wordWrap: editorSettings.wordWrap ? 'on' : 'off',
       tabSize: editorSettings.tabSize,
     })
-  }, [editorSettings])
+  }, [editorSettings, appTheme, themeFont])
 
   // Keep the language service in step with the project's tsconfig: apply it as
   // soon as Monaco is ready and re-apply whenever the workspace config changes.
@@ -377,7 +379,7 @@ export default function EditorArea() {
             options={{
               automaticLayout: true,
               fontSize: editorSettings.fontSize,
-              fontFamily: editorSettings.fontFamily || DEFAULT_MONO_FONT,
+              fontFamily: themeFont || editorSettings.fontFamily || DEFAULT_MONO_FONT,
               fontLigatures: true,
               minimap: { enabled: editorSettings.minimap, renderCharacters: false },
               wordWrap: editorSettings.wordWrap ? 'on' : 'off',

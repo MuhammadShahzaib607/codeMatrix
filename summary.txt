@@ -9111,3 +9111,75 @@ STATUS SUMMARY (WHERE THINGS STAND)
     terminal cwd inside the moved folder; and MongoDB-backed project metadata for
     a folder moved to the container root.
 ================================================================================
+
+================================================================================
+AI Code Editor — Root + Health-Check Routes for Deployment Verification
+        (2026-10-10)
+================================================================================
+
+STATUS: complete. node --check OK on every changed server file. Both new routes
+        verified live against the real server on :4000 with real curl output.
+
+WHAT THIS IS FOR
+  A deployment is live now (backend on Render, frontend on Vercel). Two plain,
+  app-level reachability routes were added so the deployed backend URL can be
+  confirmed from a browser, an uptime monitor, or curl — deliberately OUTSIDE
+  /api and with NO auth and NO database access.
+
+ROUTES ADDED (app level, not under /api)
+  GET /             liveness only. Returns status/message/timestamp. Never
+                    touches MongoDB, so it answers even when the DB is down.
+  GET /health-check slightly richer. Reuses the EXISTING health logic — it does
+                    not duplicate the /api/health route. Returns status, uptime,
+                    timestamp, database state, and a terminal block with
+                    availability + platform + default shell + shell list (the
+                    same data GET /api/terminal/shells returns, summarized).
+
+FILES TOUCHED
+SERVER
+  src/controllers/health.controller.js  added getRootStatus and getHealthCheck;
+    extracted the existing db-state string into a small databaseState() helper
+    that BOTH /api/health and /health-check use. getHealth's JSON is byte-for-
+    byte unchanged (isCodeMatrixServer in utils/portOwner.js depends on
+    status/database/terminal being present as strings).
+  src/routes/status.routes.js            NEW. Router: GET / and GET /health-check.
+  src/app.js                             imports statusRoutes and mounts it with
+    app.use(statusRoutes) (app level, before /api), after cors + express.json.
+  No other route, middleware, socket (terminal/workspace/agent/preview), or
+  CORS flow was changed. No comments in any .js file. No sync fs, no DB writes,
+  no workspace scans on either route.
+
+LIVE VERIFICATION (real curl against the local server on :4000)
+  GET /                 -> 200
+    {"status":"ok","message":"CodeMatrix API is running",
+     "timestamp":"2026-10-10T05:47:06.855Z"}
+  GET /health-check     -> 200
+    {"status":"ok","uptime":10,"timestamp":"2026-10-10T05:47:06.957Z",
+     "database":"connected","terminal":{"available":true,"platform":"win32",
+     "defaultShell":"powershell","shells":[{"id":"powershell","label":
+     "PowerShell"},{"id":"cmd","label":"CMD"},{"id":"bash","label":"bash"}]}}
+  GET /api/health       -> unchanged (still string database/terminal fields).
+  The deployed Render/Vercel URLs were not present anywhere in the repo (.env,
+  client/.env, git config, summary, no render.yaml/Procfile/README), so the
+  hosted URL could not be curled from here — the local run proves the routes.
+
+CORS FINDING (FLAGGED — needs a dashboard change, not a code change)
+  server/.env has:  CLIENT_ORIGIN=http://localhost:5173
+  server/.env.example also only ships http://localhost:5173.
+  resolveCorsOrigin() treats a non-'*' value as an exact allow-list, and the
+  cors package only echoes Access-Control-Allow-Origin when the request Origin
+  matches. Measured with the real origin header:
+    Origin: http://localhost:5173        -> Access-Control-Allow-Origin returned
+    Origin: https://<anything>.vercel.app -> NO Access-Control-Allow-Origin
+  So unless Render's dashboard sets CLIENT_ORIGIN to the EXACT Vercel origin
+  (scheme + host, no trailing slash, e.g. https://your-app.vercel.app), the
+  deployed frontend is CORS-blocked from the deployed backend for auth,
+  workspace, projects — everything. This is NOT a code bug; the code default is
+  '*' when the var is unset, but the local .env pins it to localhost. ACTION:
+  set CLIENT_ORIGIN on Render to the real Vercel origin (comma-separate multiple
+  origins if previews should work; a trailing slash is stripped by the code).
+  The real Vercel domain could not be derived from this checkout.
+
+TEMPORARY FILES: none created for this task (verification used inline curl), so
+  nothing to delete.
+================================================================================

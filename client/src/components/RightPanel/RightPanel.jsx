@@ -25,15 +25,14 @@ export default function RightPanel() {
   const storedTab = useSelector((state) => state.ui.rightPanelTab)
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
   const user = useSelector((state) => state.auth.user)
-  const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
-  const authLoading = useSelector((state) => state.auth.loading)
+  const isAuthResolved = useSelector((state) => state.auth.isAuthResolved)
   const hasSidebarTerminal = useSelector(
     (state) => Boolean(state.sidebarTerminal.terminalId),
   )
 
   const isAdmin = user?.role === 'admin'
-  const roleResolved = !authLoading && (!isAuthenticated || Boolean(user))
-  const activeTab = storedTab ?? (isAdmin ? 'agent' : 'terminal')
+  const roleResolved = isAuthResolved
+  const activeTab = roleResolved ? (storedTab ?? (isAdmin ? 'agent' : 'terminal')) : null
 
   useEffect(() => {
     if (storedTab || !roleResolved) return

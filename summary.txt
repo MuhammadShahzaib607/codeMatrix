@@ -9183,3 +9183,97 @@ CORS FINDING (FLAGGED — needs a dashboard change, not a code change)
 TEMPORARY FILES: none created for this task (verification used inline curl), so
   nothing to delete.
 ================================================================================
+
+================================================================================
+AI Code Editor — Terminal Auto-Create Race on First Load Fixed
+        (2026-10-10)
+================================================================================
+
+STATUS: complete and VERIFIED in a real browser (headless Chrome via CDP) against
+        the real local server + MongoDB. Exactly ONE terminal spawn on a fresh
+        first load and on reload, in the correct per-user workspace; the
+        guest-then-real respawn cycle is gone. vite build OK.
+
+ROOT CAUSE (from the real code, then confirmed by captured socket frames)
+  The right sidebar auto-creates its terminal when the Terminal tab is active,
+  and a non-admin with no stored tab defaults to that tab. Three compounding
+  bugs produced the cycle:
+
+  1) RightPanel.jsx computed `activeTab = storedTab ?? (isAdmin ? 'agent' :
+     'terminal')` WITHOUT consulting its own `roleResolved` gate, so on the very
+     first paint (user still null) a non-admin was treated as "Terminal" and
+     SidebarTerminal mounted immediately. The `roleResolved` effect that sets the
+     tab only ran afterwards, so it never prevented the early mount.
+
+  2) SidebarTerminal.jsx's open effect fired as soon as terminalId was null,
+     with `effectiveProjectId = projectId || scratchProjectIdFor(userId)`. Before
+     fetchCurrentUser() fulfilled, `userId` is undefined, so it spawned in
+     `scratch-guest` (server container workspaces/u-guest) — the "guest" attempt.
+
+  3) TerminalView's creation effect depends on [terminalId, projectId, shell].
+     Every time one changed it tore the current pty down
+     (`terminal:close` -> killTerminal -> xterm prints "[process exited with code
+     0]") and respawned under the SAME terminalId. Two separate changes arrived
+     after the first paint: fetchAvailableShells() set defaultShell (shell null ->
+     powershell) and fetchCurrentUser() set the real userId (scratch-guest ->
+     scratch-<userId>). Hence 2-3 spawns, the first one/two in u-guest.
+
+  On Render the guest pty exits with code 0 (Linux); on Windows the same kill
+  path reports the Ctrl-C exit code -1073741510. Same teardown either way.
+
+FIX (client only)
+  src/features/authSlice.js       NEW state flag `isAuthResolved`: false while a
+    stored token still has to be validated, true otherwise. Initialised to
+    !storedToken (a signed-out visitor is resolved immediately), set false on
+    fetchCurrentUser.pending, true on fulfilled AND on rejected (a failed restore
+    must not leave the UI gated forever), and true in applySession (login/
+    register) and logout.
+  src/components/RightPanel/RightPanel.jsx   `roleResolved` now comes from
+    `isAuthResolved`, and `activeTab = roleResolved ? (storedTab ?? (isAdmin ?
+    'agent' : 'terminal')) : null`. The terminal view is not mounted (and so no
+    pty is spawned) until the session is resolved.
+  src/components/RightPanel/SidebarTerminal.jsx   the auto-create effect now
+    waits for `isAuthResolved` AND for the server shell list to settle
+    (shellStatus 'ready'|'failed'), so the single spawn already uses the final
+    shell and cannot be respawned by the later defaultShell correction.
+
+  Guest/signed-out flow is preserved: with no token, isAuthResolved is true from
+  the start, so the scratch-guest terminal still appears immediately (verified).
+
+VERIFICATION (headless Chrome + CDP WebSocket frame capture, real server, fresh
+  temp Chrome profile; the ONLY localStorage entry is the auth token, so the user
+  id really is unresolved at first paint)
+  BEFORE (captured against the pre-fix build):
+    fresh first load:
+      terminal:create  projectId=scratch-guest                 shell=(none)
+      terminal:close
+      terminal:create  projectId=scratch-6ac9d5d8…  shell=powershell
+      terminal:create  projectId=scratch-6ac9d5d8…  shell=powershell
+    reload:
+      terminal:create  projectId=scratch-guest                 shell=(none)
+      terminal:close
+      terminal:create  projectId=scratch-guest     shell=powershell
+      terminal:close
+      terminal:create  projectId=scratch-6ac9d5d8…  shell=powershell
+    xterm buffer ended with "[process exited with code -1073741510]" — the exact
+    guest-then-respawn flicker reported.
+  AFTER (same harness, post-fix build):
+    fresh first load:
+      terminal:create  projectId=scratch-6ac9d664…  shell=powershell   (ONE)
+      xterm: "Windows PowerShell … PS D:\…\server\workspaces\u-6ac9d664…>"
+    reload:
+      terminal:create  projectId=scratch-6ac9d664…  shell=powershell   (ONE)
+      xterm: same live prompt, cwd u-<userId>, no exit line
+    signed-out guest:
+      one live scratch-guest session in workspaces/u-guest (unchanged behavior)
+  No page exceptions, no console errors in any run.
+
+TEMPORARY FILES: server/tmp-firstload-race.mjs (+ its before/after logs) were
+  removed after the runs.
+
+NOTE: client `oxlint` could NOT be run in this environment — the OS blocks the
+  native binding ("An Application Control policy has blocked this file",
+  @oxlint/binding-win32-x64-msvc), and no WASI fallback is installed. `vite
+  build` (oxc-based) passed on the final code; no server source file was changed
+  for this fix, so node --check had nothing new to validate.
+================================================================================

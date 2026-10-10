@@ -32,7 +32,8 @@ export default function SidebarTerminal() {
     const isAdmin = state.auth.user?.role === 'admin'
     return (stored ?? (isAdmin ? 'agent' : 'terminal')) === 'terminal'
   })
-  const { availableShells, defaultShell } = useSelector((state) => state.terminal)
+  const isAuthResolved = useSelector((state) => state.auth.isAuthResolved)
+  const { availableShells, defaultShell, shellStatus } = useSelector((state) => state.terminal)
   const preferredShell = useSelector((state) => state.settings.terminal.preferredShell)
   const [isShellMenuOpen, setIsShellMenuOpen] = useState(false)
   const shellMenuRef = useRef(null)
@@ -43,6 +44,7 @@ export default function SidebarTerminal() {
   const effectiveProjectId = projectId || scratchProjectIdFor(userId)
   const isActive = isTerminalTab && isAIPanelOpen
   const fallbackShell = preferredShell ?? defaultShell ?? null
+  const shellsSettled = shellStatus === 'ready' || shellStatus === 'failed'
 
   function shellLabel(shellId) {
     if (!shellId) return 'shell'
@@ -53,13 +55,18 @@ export default function SidebarTerminal() {
     )
   }
 
-  // Create the terminal the first time this view is shown. The reducer ignores
-  // the call once an id exists, so React StrictMode's double effect cannot mint
-  // two terminals.
+  // Create the terminal the first time this view is shown, but ONLY once the
+  // auth session and the server's shell list have both settled: creating it
+  // sooner would spawn in the "scratch-guest" workspace (the user id is not
+  // restored yet) and then tear that pty down and respawn as soon as the real
+  // user/shell arrives — the first-load guest-then-real flicker. Waiting means
+  // exactly ONE spawn, already in the correct per-user workspace. The reducer
+  // ignores the call once an id exists, so React StrictMode cannot mint two.
   useEffect(() => {
     if (terminalId) return
+    if (!isAuthResolved || !shellsSettled) return
     dispatch(openSidebarTerminal({ shell: fallbackShell }))
-  }, [terminalId, fallbackShell, dispatch])
+  }, [terminalId, isAuthResolved, shellsSettled, fallbackShell, dispatch])
 
   // If the pty started before the shell list arrived, label it with the shell
   // the server defaulted to once that list is known.

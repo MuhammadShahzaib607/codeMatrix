@@ -6,6 +6,7 @@ import errorHandler from './middlewares/errorHandler.js'
 import notFound from './middlewares/notFound.js'
 import apiRoutes from './routes/index.js'
 import previewRoutes from './routes/preview.routes.js'
+import statusRoutes from './routes/status.routes.js'
 
 if (process.env.NODE_ENV !== 'production') {
   dns.setServers(['8.8.8.8', '1.1.1.1']);
@@ -18,6 +19,8 @@ app.disable('x-powered-by');
 app.use(cors({ origin: resolveCorsOrigin() }))
 
 app.use(express.json({ limit: '50mb' }))
+
+app.use(statusRoutes)
 
 app.use('/api', apiRoutes)
 

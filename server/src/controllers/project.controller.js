@@ -69,6 +69,8 @@ export const createProjectHandler = asyncHandler(async (req, res) => {
 
 export const listProjectsHandler = asyncHandler(async (req, res) => {
   const projects = await listProjectsByOwner(req.user.id)
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+  res.set('Pragma', 'no-cache')
   res.json({ projects: projects.map(toPublicProject) })
 })
 

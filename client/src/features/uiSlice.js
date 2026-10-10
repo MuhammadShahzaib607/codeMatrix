@@ -61,6 +61,7 @@ const initialState = {
   // Sidebar owns the modal + the actual deletion so both entry points share one
   // code path.
   isDeleteProjectModalOpen: false,
+  isHelpModalOpen: false,
 }
 
 const uiSlice = createSlice({
@@ -157,6 +158,14 @@ const uiSlice = createSlice({
       state.isDeleteProjectModalOpen = false
     },
 
+    openHelpModal(state) {
+      state.isHelpModalOpen = true
+    },
+
+    closeHelpModal(state) {
+      state.isHelpModalOpen = false
+    },
+
     setAuthModalMode(state, action) {
       state.authModal = { ...state.authModal, mode: action.payload, message: null }
     },
@@ -181,6 +190,8 @@ export const {
   setAuthModalMode,
   openDeleteProjectModal,
   closeDeleteProjectModal,
+  openHelpModal,
+  closeHelpModal,
 } = uiSlice.actions
 
 export { SIDEBAR_WIDTH_KEY, AI_PANEL_WIDTH_KEY }

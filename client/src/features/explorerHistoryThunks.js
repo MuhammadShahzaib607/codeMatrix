@@ -1,11 +1,15 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import { workspaceApi } from '../services/api'
+import { saveWorkspaceRef } from '../services/workspaceStorage'
+import { focusContainerProject } from './fileSystemSlice'
+import { fetchRecentProjects } from './projectsSlice'
 import { showToast } from './uiSlice'
 import { recordExplorerAction, shiftRedoToUndo, shiftUndoToRedo } from './explorerHistorySlice'
 import {
   createWorkspaceEntry,
   deleteWorkspaceEntry,
   duplicateWorkspaceEntry,
+  forgetDeletedProject,
   refreshWorkspaceTree,
   renameWorkspaceEntry,
 } from './workspaceThunks'
@@ -102,12 +106,49 @@ async function restoreSnapshot(projectId, snapshot) {
  */
 export const deleteExplorerEntry = createAsyncThunk(
   'explorerHistory/delete',
-  async ({ projectId, node, closeTerminals }, { dispatch }) => {
+  async ({ projectId, node, closeTerminals }, { dispatch, getState }) => {
+    const isTopLevelProject =
+      node.type === 'folder' && Boolean(node.projectId) && !String(node.id).includes('/')
+
+    if (isTopLevelProject) {
+      // A whole project: the row and every trace of it go away on the spot, and
+      // a failed DELETE puts them back from the server (the folder, the recent
+      // entry and the workspace are all re-read rather than rebuilt locally).
+      const wasActive = getState().fileSystem.workspace.projectId === projectId
+      const source = String(projectId).startsWith('scratch-') ? 'scratch' : 'cloud'
+      dispatch(forgetDeletedProject({ projectId, path: node.id }))
+
+      try {
+        await dispatch(deleteWorkspaceEntry({ projectId, path: node.id, closeTerminals })).unwrap()
+      } catch (error) {
+        await dispatch(refreshWorkspaceTree({})).catch(() => {})
+        await dispatch(fetchRecentProjects()).catch(() => {})
+        if (wasActive) {
+          dispatch(focusContainerProject({ projectId, name: node.name, source }))
+          saveWorkspaceRef({ projectId, name: node.name })
+        }
+        throw error
+      }
+
+      dispatch(fetchRecentProjects())
+      dispatch(
+        recordExplorerAction({
+          kind: 'delete',
+          path: node.id,
+          type: node.type,
+          name: node.name,
+          snapshot: null,
+        }),
+      )
+      return { path: node.id }
+    }
+
     // Snapshot first (bounded — see SNAPSHOT_MAX_FILES), then delete. The delete
     // thunk itself updates the Explorer optimistically, so the row disappears
     // the moment the DELETE API responds.
     const snapshot = await captureSnapshot(projectId, node)
     await dispatch(deleteWorkspaceEntry({ projectId, path: node.id, closeTerminals })).unwrap()
+
     dispatch(
       recordExplorerAction({
         kind: 'delete',

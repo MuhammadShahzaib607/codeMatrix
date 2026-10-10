@@ -4,6 +4,7 @@ import {
   FolderInput,
   FolderOutput,
   FolderSync,
+  HelpCircle,
   Loader2,
   LogOut,
   Save,
@@ -15,7 +16,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { logout } from '../../features/authSlice'
 import { openSettings } from '../../features/settingsSlice'
 import { togglePanel } from '../../features/terminalSlice'
-import { openAuthModal, showToast, toggleAIPanel } from '../../features/uiSlice'
+import { openAuthModal, openHelpModal, showToast, toggleAIPanel } from '../../features/uiSlice'
 import useAuthGuard from '../../hooks/useAuthGuard'
 import useExportToFolder from '../../hooks/useExportToFolder'
 import useExportWorkspace from '../../hooks/useExportWorkspace'
@@ -204,6 +205,17 @@ export default function Topbar() {
             onClick={() => dispatch(toggleAIPanel())}
           >
             <Bot size={18} />
+          </button>
+        </Tooltip>
+
+        <Tooltip label="Help">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Help"
+            onClick={() => dispatch(openHelpModal())}
+          >
+            <HelpCircle size={18} />
           </button>
         </Tooltip>
 

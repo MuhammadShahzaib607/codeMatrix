@@ -43,6 +43,11 @@ function collectPaths(node, set) {
   for (const child of node.children ?? []) collectPaths(child, set)
 }
 
+function topLevelProjects(tree) {
+  const children = tree[0]?.id === ROOT_ID ? (tree[0].children ?? []) : tree
+  return children.filter((node) => node.type === 'folder' && Boolean(node.projectId))
+}
+
 function ancestorPathsOf(path) {
   const ancestors = []
   let cursor = parentPathOf(path)
@@ -143,6 +148,49 @@ const fileSystemSlice = createSlice({
     removeNode(state, action) {
       state.tree = dropNodeFrom(state.tree, action.payload)
       pruneTabs(state)
+    },
+
+    removeProject(state, action) {
+      const { projectId = null, path = null } = action.payload ?? {}
+      const matches = (child) =>
+        child?.type === 'folder' &&
+        ((projectId && child.projectId === projectId) ||
+          (path && (child.id === path || child.path === path)))
+
+      if (state.tree[0]?.id === ROOT_ID) {
+        const root = state.tree[0]
+        state.tree = [{ ...root, children: (root.children ?? []).filter((child) => !matches(child)) }]
+      } else {
+        state.tree = state.tree.filter((node) => !matches(node))
+      }
+
+      state.container = {
+        ...state.container,
+        entries: (state.container.entries ?? []).filter(
+          (entry) =>
+            !(projectId && entry?.projectId === projectId) &&
+            !(path && (entry?.path === path || entry?.name === path)),
+        ),
+      }
+
+      pruneTabs(state)
+
+      const wasActive = Boolean(projectId) && state.workspace.projectId === projectId
+      const wasFocused = Boolean(projectId) && state.focusedProjectId === projectId
+      if (!wasActive && !wasFocused) return
+
+      const next = topLevelProjects(state.tree)[0] ?? null
+      if (wasActive) {
+        state.workspaceMissing = false
+        state.workspace = next
+          ? {
+              name: next.name,
+              source: String(next.projectId).startsWith('scratch-') ? 'scratch' : 'cloud',
+              projectId: next.projectId,
+            }
+          : EMPTY_WORKSPACE
+      }
+      state.focusedProjectId = next?.projectId ?? null
     },
 
     moveNode(state, action) {
@@ -312,6 +360,7 @@ export const {
   applyFsChanges,
   applyAgentProject,
   removeNode,
+  removeProject,
   moveNode,
   copyNode,
   markWorkspaceMissing,

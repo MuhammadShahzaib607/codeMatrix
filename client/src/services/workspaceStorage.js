@@ -22,3 +22,9 @@ export function clearWorkspaceRef() {
     localStorage.removeItem(STORAGE_KEY)
   } catch {}
 }
+
+export function clearWorkspaceRefIfMatches(projectId) {
+  if (!projectId) return
+  const current = getWorkspaceRef()
+  if (current && current.projectId === projectId) clearWorkspaceRef()
+}

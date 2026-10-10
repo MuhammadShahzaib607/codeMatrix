@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import ApiError from './ApiError.js'
+import { isProcessAlive, readProcessCwds } from './processCwd.js'
 import { WORKSPACE_MISSING_MESSAGE, getTerminalRootPath, getWorkspacePath, workspaceExists } from './workspaceManager.js'
 
 let pty = null
@@ -278,6 +279,77 @@ export function findTerminalsCwdInside(absolutePath) {
     }
   }
   return matches
+}
+
+function normalizeCwdPath(value) {
+  const normalized = String(value ?? '')
+    .split(path.sep)
+    .join('/')
+    .replace(/\/+$/, '')
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+export async function listTerminalsCwdInside(absolutePath) {
+  if (!absolutePath) return []
+  const target = normalizeCwdPath(path.resolve(absolutePath))
+  if (!target) return []
+
+  const candidates = []
+  for (const session of sessions.values()) {
+    candidates.push({
+      terminalId: session.terminalId,
+      pid: session.ptyProcess?.pid ?? null,
+      cwd: session.cwd,
+    })
+  }
+  for (const [commandId, agentProcess] of agentCommands) {
+    candidates.push({ terminalId: commandId, pid: agentProcess?.pid ?? null, cwd: null })
+  }
+  if (candidates.length === 0) return []
+
+  const cwds = await readProcessCwds(candidates.map((candidate) => candidate.pid))
+  const matches = []
+  for (const candidate of candidates) {
+    const cwd = normalizeCwdPath(cwds.get(candidate.pid) ?? candidate.cwd)
+    if (!cwd) continue
+    if (cwd === target || cwd.startsWith(`${target}/`)) {
+      matches.push({ terminalId: candidate.terminalId, pid: candidate.pid })
+    }
+  }
+  return matches
+}
+
+export function killTerminalsInside(terminals) {
+  let killed = 0
+  for (const entry of terminals ?? []) {
+    const terminalId = entry?.terminalId
+    if (!terminalId) continue
+    if (sessions.has(terminalId)) {
+      if (killTerminal(terminalId)) killed += 1
+      continue
+    }
+    const agentProcess = agentCommands.get(terminalId)
+    if (agentProcess) {
+      agentCommands.delete(terminalId)
+      try {
+        agentProcess.kill()
+        killed += 1
+      } catch (error) {
+        console.error(`[terminal] kill of ${terminalId} failed: ${error?.message ?? error}`)
+      }
+    }
+  }
+  return killed
+}
+
+export async function waitForTerminalsExit(terminals, timeoutMs = 2500) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const remaining = (terminals ?? []).filter((entry) => entry?.pid && isProcessAlive(entry.pid))
+    if (remaining.length === 0) return true
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+  return false
 }
 
 export function resizeTerminal(terminalId, cols, rows) {

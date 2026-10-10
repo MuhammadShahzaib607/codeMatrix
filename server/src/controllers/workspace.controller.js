@@ -24,6 +24,11 @@ import {
   suppressWatcher,
 } from '../utils/fileWatcher.js'
 import { runDeletion, transferFailureError } from '../utils/safeDelete.js'
+import {
+  killTerminalsInside,
+  listTerminalsCwdInside,
+  waitForTerminalsExit,
+} from '../utils/terminalManager.js'
 import { contentTypeFor } from './preview.controller.js'
 import {
   copyDirectoryRecursive,
@@ -466,6 +471,24 @@ export const deleteContainerEntryAt = asyncHandler(async (req, res) => {
     throw new ApiError(404, `"${resolved.relative}" was not found in this workspace.`, 'FILE_MISSING')
   }
 
+  const terminalsInside = stats.isDirectory()
+    ? await listTerminalsCwdInside(resolved.absolute)
+    : []
+  if (terminalsInside.length > 0) {
+    if (req.body?.closeTerminals !== true) {
+      throw new ApiError(
+        409,
+        'A terminal is running inside this folder. Close it and try again.',
+        'TERMINALS_IN_USE',
+      )
+    }
+    const closed = killTerminalsInside(terminalsInside)
+    console.log(
+      `[delete] ${resolved.relative}: closed ${closed} terminal session(s) inside the folder after confirmation`,
+    )
+    await waitForTerminalsExit(terminalsInside)
+  }
+
   const containerPath = getOwnerContainerPath(req.user.id)
 
   // Deleting a TOP-LEVEL folder removes the whole project (folder + record).
@@ -481,6 +504,7 @@ export const deleteContainerEntryAt = asyncHandler(async (req, res) => {
           () => deleteWorkspaceFolder(projectId),
           resolved.absolute,
           resolved.top,
+          { terminals: terminalsInside },
         )
       } catch (error) {
         await resumeContainerWatching(containerPath)
@@ -503,6 +527,7 @@ export const deleteContainerEntryAt = asyncHandler(async (req, res) => {
       () => removePathWithRetry(resolved.absolute),
       resolved.absolute,
       resolved.relative.split('/').pop(),
+      { terminals: terminalsInside },
     )
   } catch (error) {
     if (innerProjectId) await resumeWatching(innerProjectId)

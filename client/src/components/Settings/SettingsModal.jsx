@@ -996,11 +996,11 @@ export default function SettingsModal() {
 
                 <h3 className="settings-section-title settings-section-title-spaced">Explorer</h3>
                 <Row
-                  label="Ask before moving folders"
-                  hint="Show a confirmation dialog before a folder is moved in the Explorer, whether by drag and drop or by cut and paste."
+                  label="Ask before moving files and folders"
+                  hint="Show a confirmation dialog before a file or folder is moved in the Explorer, whether by drag and drop or by cut and paste."
                 >
                   <Toggle
-                    label="Ask before moving folders"
+                    label="Ask before moving files and folders"
                     checked={askBeforeMovingFolders !== false}
                     onChange={(value) => dispatch(setAskBeforeMovingFolders(value))}
                   />

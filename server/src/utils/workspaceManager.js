@@ -780,6 +780,47 @@ export async function deleteWorkspaceFolder(projectId) {
 
 const DELETE_RETRY_DELAYS_MS = [80, 160, 320, 640, 1000]
 const DELETE_RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'EMFILE', 'ENFILE'])
+const READ_ONLY_RETRY_CODES = new Set(['EPERM', 'EACCES'])
+const WINDOWS_LONG_PATH_LIMIT = 248
+
+function windowsLongPath(absolute) {
+  if (process.platform !== 'win32') return absolute
+  const native = path.resolve(absolute)
+  if (native.startsWith('\\\\?\\')) return native
+  if (native.length < WINDOWS_LONG_PATH_LIMIT) return native
+  if (native.startsWith('\\\\')) return `\\\\?\\UNC\\${native.slice(2)}`
+  return `\\\\?\\${native}`
+}
+
+async function clearReadOnlyAttributes(absolute) {
+  if (process.platform !== 'win32') return
+  const stack = [path.resolve(absolute)]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    let entries = null
+    try {
+      entries = await fsp.readdir(current, { withFileTypes: true })
+    } catch {
+      try {
+        await fsp.chmod(current, 0o777)
+      } catch {}
+      continue
+    }
+    try {
+      await fsp.chmod(current, 0o777)
+    } catch {}
+    for (const entry of entries) {
+      const child = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(child)
+        continue
+      }
+      try {
+        await fsp.chmod(child, 0o666)
+      } catch {}
+    }
+  }
+}
 
 /**
  * Recursive removal that survives Windows' transient lock errors: every attempt
@@ -791,11 +832,19 @@ export async function removePathWithRetry(absolute) {
   let lastError = null
   for (let attempt = 0; attempt < DELETE_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      await fsp.rm(absolute, { recursive: true, force: true, maxRetries: 3, retryDelay: 60 })
+      await fsp.rm(windowsLongPath(absolute), {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 60,
+      })
       return true
     } catch (error) {
       lastError = error
       if (!DELETE_RETRY_CODES.has(error?.code)) throw error
+      if (READ_ONLY_RETRY_CODES.has(error?.code)) {
+        await clearReadOnlyAttributes(absolute)
+      }
       if (attempt < DELETE_RETRY_DELAYS_MS.length - 1) {
         await sleep(DELETE_RETRY_DELAYS_MS[attempt])
       }

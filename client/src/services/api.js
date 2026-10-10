@@ -324,10 +324,12 @@ export const workspaceApi = {
     })
   },
 
-  deleteContainerPath(path) {
+  deleteContainerPath(path, options = {}) {
+    const body = { path }
+    if (options.closeTerminals) body.closeTerminals = true
     return request('/api/workspace/container/delete', {
       method: 'DELETE',
-      body: JSON.stringify({ path }),
+      body: JSON.stringify(body),
     })
   },
 

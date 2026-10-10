@@ -178,9 +178,9 @@ export const createWorkspaceEntry = createAsyncThunk(
 
 export const deleteWorkspaceEntry = createAsyncThunk(
   'workspace/deleteEntry',
-  async ({ path }, { dispatch }) => {
+  async ({ path, closeTerminals }, { dispatch }) => {
     try {
-      await workspaceApi.deleteContainerPath(path)
+      await workspaceApi.deleteContainerPath(path, { closeTerminals })
       // Optimistic UI removal: the node is dropped from Redux the instant the
       // DELETE API confirms, so the Explorer reflects the deletion immediately
       // — it does NOT wait on a full tree re-walk first. Deleting a folder

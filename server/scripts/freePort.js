@@ -1,42 +1,35 @@
-import {
-  describeProcess,
-  findListeningPid,
-  isCodeMatrixServer,
-  killProcess,
-} from '../src/utils/portOwner.js'
+import { resolvePortHolder, waitForPortFree } from '../src/utils/portOwner.js'
 
 const port = Number(process.env.PORT) || 4000
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const resolved = await resolvePortHolder(port)
 
-async function waitForPortFree(attempts = 24) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (!findListeningPid(port)) return true
-    await delay(150)
-  }
-  return !findListeningPid(port)
-}
-
-const pid = findListeningPid(port)
-
-if (!pid) {
+if (resolved.status === 'free') {
   console.log(`[predev] Port ${port} is free.`)
   process.exit(0)
 }
 
-if (!(await isCodeMatrixServer(port))) {
+if (resolved.status === 'held') {
   console.log(
-    `[predev] Port ${port} is held by PID ${pid} (${describeProcess(pid)}), which is not a CodeMatrix server. Leaving it alone.`,
+    `[predev] Port ${port} is held by PID ${resolved.pid} (${resolved.name}), which is not this project's CodeMatrix server. Stop that program yourself, then run npm run dev again.`,
   )
   process.exit(1)
 }
 
-console.log(`[predev] Stopping stale CodeMatrix server on port ${port} (PID ${pid}).`)
-killProcess(pid)
+if (resolved.status === 'failed') {
+  console.log(
+    `[predev] Port ${port} is held by PID ${resolved.pid} (${resolved.name}) and it could not be stopped.`,
+  )
+  process.exit(1)
+}
 
-if (await waitForPortFree()) {
+console.log(
+  `[predev] Stopping stale CodeMatrix server on port ${port} (PID ${resolved.pid}) — ${resolved.reason}.`,
+)
+
+if (await waitForPortFree(port)) {
   console.log(`[predev] Port ${port} is now free.`)
   process.exit(0)
 }
 
-console.log(`[predev] Port ${port} is still held after stopping PID ${pid}.`)
+console.log(`[predev] Port ${port} is still held after stopping PID ${resolved.pid}.`)
 process.exit(1)

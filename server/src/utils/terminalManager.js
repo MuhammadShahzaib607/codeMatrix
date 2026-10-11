@@ -3,7 +3,13 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 import ApiError from './ApiError.js'
 import { isProcessAlive, readProcessCwds } from './processCwd.js'
-import { WORKSPACE_MISSING_MESSAGE, getTerminalRootPath, getWorkspacePath, workspaceExists } from './workspaceManager.js'
+import {
+  WORKSPACE_MISSING_MESSAGE,
+  ensureOwnerContainer,
+  getOwnerContainerPath,
+  getWorkspacePath,
+  workspaceExists,
+} from './workspaceManager.js'
 
 let pty = null
 let ptyLoadError = null
@@ -23,7 +29,7 @@ const detachTimers = new Map()
 
 export const MAX_SCROLLBACK_LINES = 10000
 export const MAX_SESSIONS_PER_USER = 5
-export const SESSION_GRACE_MS = 30 * 60 * 1000
+export const SESSION_GRACE_MS = 60 * 1000
 
 function countNewlines(text) {
   let count = 0
@@ -158,7 +164,7 @@ function resolveShell(shellType) {
   )
 }
 
-export function createTerminalSession(terminalId, projectId, socket, options = {}) {
+export function createTerminalSession(terminalId, socket, options = {}) {
   if (!terminalId || typeof terminalId !== 'string') {
     throw new ApiError(400, 'A terminalId is required.', 'INVALID_TERMINAL_ID')
   }
@@ -168,14 +174,20 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
   if (sessions.has(terminalId)) {
     throw new ApiError(409, `Terminal "${terminalId}" already exists.`, 'TERMINAL_EXISTS')
   }
-  if (!workspaceExists(projectId)) {
-    throw new ApiError(404, WORKSPACE_MISSING_MESSAGE, 'WORKSPACE_MISSING')
-  }
 
-  // Terminals start ONE LEVEL ABOVE the project folder (the per-user container),
-  // so the project appears as a genuine, enterable subfolder whose name matches
-  // what the Explorer shows as its root — `cd <project name>` just works.
-  const cwd = getTerminalRootPath(projectId)
+  const ownerId = options.userId ?? null
+  const containerPath = getOwnerContainerPath(ownerId)
+  const containerMissing = !existsSync(containerPath)
+  let cwd
+  try {
+    cwd = ensureOwnerContainer(ownerId)
+  } catch (error) {
+    console.error(`[terminal] could not create the terminal root ${containerPath}: ${error.message}`)
+    throw new ApiError(500, 'Could not create the terminal folder on this server.', 'TERMINAL_ROOT_FAILED')
+  }
+  if (containerMissing) {
+    console.log(`[terminal] recreated the missing container ${cwd} for terminal ${terminalId}`)
+  }
   const shellInfo = resolveShell(options.shell)
 
   let ptyProcess
@@ -208,7 +220,6 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
 
   const session = {
     terminalId,
-    projectId,
     userId: options.userId ?? null,
     socket,
     socketId: socket.id,

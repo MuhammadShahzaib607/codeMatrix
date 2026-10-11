@@ -17,7 +17,7 @@ import TerminalView from './TerminalView'
  * in its small header. Closing the last-but-one pane makes the parent render a
  * plain full-width TerminalView instead (see TerminalPanel).
  */
-export default function SplitTerminalView({ group, projectId, activePaneId, isVisible }) {
+export default function SplitTerminalView({ group, activePaneId, isVisible }) {
   const dispatch = useDispatch()
   const containerRef = useRef(null)
   const sizes =
@@ -105,7 +105,6 @@ export default function SplitTerminalView({ group, projectId, activePaneId, isVi
             <div className="terminal-split-body">
               <TerminalView
                 terminalId={pane.terminalId}
-                projectId={projectId}
                 shell={pane.shell}
                 isActive={isVisible}
                 autoFocus={isVisible && pane.terminalId === activePaneId}

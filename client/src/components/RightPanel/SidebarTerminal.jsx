@@ -8,7 +8,6 @@ import {
   setSidebarTerminalShell,
 } from '../../features/sidebarTerminalSlice'
 import { getSocket } from '../../services/socket'
-import { scratchProjectIdFor } from '../../utils/workspace'
 import TerminalView from '../Terminal/TerminalView'
 import './SidebarTerminal.css'
 
@@ -25,8 +24,6 @@ const SHELL_LABELS = { powershell: 'PowerShell', cmd: 'CMD', bash: 'bash' }
 export default function SidebarTerminal() {
   const dispatch = useDispatch()
   const { terminalId, shell } = useSelector((state) => state.sidebarTerminal)
-  const projectId = useSelector((state) => state.fileSystem.workspace.projectId)
-  const userId = useSelector((state) => state.auth.user?.id)
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
   const isTerminalTab = useSelector(
     (state) => (state.ui.rightPanelTab ?? 'agent') === 'terminal',
@@ -38,9 +35,6 @@ export default function SidebarTerminal() {
   const shellMenuRef = useRef(null)
   const shellRetryRef = useRef(false)
 
-  // Same working-directory logic as the docked panel: the active project, or the
-  // per-user scratch workspace before anything is imported.
-  const effectiveProjectId = projectId || scratchProjectIdFor(userId)
   const isActive = isTerminalTab && isAIPanelOpen
   const fallbackShell = preferredShell ?? defaultShell ?? null
   const shellsSettled = shellStatus === 'ready' || shellStatus === 'failed'
@@ -171,7 +165,6 @@ export default function SidebarTerminal() {
         {terminalId ? (
           <TerminalView
             terminalId={terminalId}
-            projectId={effectiveProjectId}
             shell={shell}
             isActive={isActive}
             autoFocus={isActive}

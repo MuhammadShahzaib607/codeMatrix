@@ -14,7 +14,6 @@ import {
   toggleMinimize,
 } from '../../features/terminalSlice'
 import { getSocket } from '../../services/socket'
-import { scratchProjectIdFor } from '../../utils/workspace'
 import SplitTerminalView from './SplitTerminalView'
 import TerminalSessionList from './TerminalSessionList'
 import TerminalView from './TerminalView'
@@ -36,18 +35,11 @@ export default function TerminalPanel() {
     availableShells,
     defaultShell,
   } = useSelector((state) => state.terminal)
-  const projectId = useSelector((state) => state.fileSystem.workspace.projectId)
-  const userId = useSelector((state) => state.auth.user?.id)
   const preferredShell = useSelector((state) => state.settings.terminal.preferredShell)
   const shellMenuRef = useRef(null)
   const shellRetryRef = useRef(false)
   const [isShellMenuOpen, setIsShellMenuOpen] = useState(false)
 
-  // With no imported project, terminals run in the per-user scratch workspace
-  // (server/workspaces/scratch-<userId>/). Once a project is imported — or the
-  // Explorer starts the scratch workspace — `workspace.projectId` becomes that
-  // id, so the terminal and the Explorer always agree on one folder.
-  const effectiveProjectId = projectId || scratchProjectIdFor(userId)
   const activeGroup = groups.find((group) => group.groupId === activeGroupId) ?? groups[0] ?? null
 
   // App fetches the shell list once on load. If the API was not up yet (or was
@@ -308,7 +300,6 @@ export default function TerminalPanel() {
                 {group.panes.length === 1 ? (
                   <TerminalView
                     terminalId={group.panes[0].terminalId}
-                    projectId={effectiveProjectId}
                     shell={group.panes[0].shell}
                     isActive={isVisible}
                     autoFocus={isVisible}
@@ -316,7 +307,6 @@ export default function TerminalPanel() {
                 ) : (
                   <SplitTerminalView
                     group={group}
-                    projectId={effectiveProjectId}
                     activePaneId={activePaneId}
                     isVisible={isVisible}
                   />

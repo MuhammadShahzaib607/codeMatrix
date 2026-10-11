@@ -4,7 +4,6 @@ import { useDispatch, useSelector } from 'react-redux'
 import { setRightPanelTab } from '../../features/uiSlice'
 import AIPanel from '../AIPanel/AIPanel'
 import Tooltip from '../Common/Tooltip'
-import AgentPlaceholder from './AgentPlaceholder'
 import SidebarTerminal from './SidebarTerminal'
 import './RightPanel.css'
 
@@ -24,20 +23,18 @@ export default function RightPanel() {
   const dispatch = useDispatch()
   const storedTab = useSelector((state) => state.ui.rightPanelTab)
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
-  const user = useSelector((state) => state.auth.user)
   const isAuthResolved = useSelector((state) => state.auth.isAuthResolved)
   const hasSidebarTerminal = useSelector(
     (state) => Boolean(state.sidebarTerminal.terminalId),
   )
 
-  const isAdmin = user?.role === 'admin'
   const roleResolved = isAuthResolved
-  const activeTab = roleResolved ? (storedTab ?? (isAdmin ? 'agent' : 'terminal')) : null
+  const activeTab = roleResolved ? (storedTab ?? 'agent') : null
 
   useEffect(() => {
     if (storedTab || !roleResolved) return
-    dispatch(setRightPanelTab(isAdmin ? 'agent' : 'terminal'))
-  }, [storedTab, roleResolved, isAdmin, dispatch])
+    dispatch(setRightPanelTab('agent'))
+  }, [storedTab, roleResolved, dispatch])
 
   return (
     <div className="right-panel">
@@ -68,7 +65,7 @@ export default function RightPanel() {
           aria-hidden={activeTab !== 'agent'}
           className={`right-panel-view ${activeTab === 'agent' ? 'is-active' : ''}`}
         >
-          {isAdmin ? <AIPanel /> : <AgentPlaceholder />}
+          <AIPanel />
         </div>
 
         {(hasSidebarTerminal || (activeTab === 'terminal' && isAIPanelOpen)) && (

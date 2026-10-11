@@ -21,6 +21,45 @@ try {
 const sessions = new Map()
 const detachTimers = new Map()
 
+export const MAX_SCROLLBACK_LINES = 10000
+export const MAX_SESSIONS_PER_USER = 5
+export const SESSION_GRACE_MS = 30 * 60 * 1000
+
+function countNewlines(text) {
+  let count = 0
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) === 10) count += 1
+  }
+  return count
+}
+
+function appendToScrollback(session, data) {
+  if (!data) return
+  session.buffer.push(data)
+  session.bufferLines += countNewlines(data)
+  while (session.bufferLines > MAX_SCROLLBACK_LINES && session.buffer.length > 1) {
+    session.bufferLines -= countNewlines(session.buffer.shift())
+  }
+  if (session.bufferLines > MAX_SCROLLBACK_LINES && session.buffer.length === 1) {
+    const lines = session.buffer[0].split('\n')
+    session.buffer = [lines.slice(-MAX_SCROLLBACK_LINES).join('\n')]
+    session.bufferLines = countNewlines(session.buffer[0])
+  }
+}
+
+function enforceUserSessionLimit(userId) {
+  if (!userId) return
+  const owned = [...sessions.values()].filter((session) => session.userId === userId)
+  while (owned.length >= MAX_SESSIONS_PER_USER) {
+    owned.sort(
+      (a, b) => (a.lastActivityAt ?? a.createdAt) - (b.lastActivityAt ?? b.createdAt),
+    )
+    const oldest = owned.shift()
+    if (!oldest) break
+    killTerminal(oldest.terminalId)
+  }
+}
+
 export function isTerminalAvailable() {
   return pty !== null && typeof pty.spawn === 'function'
 }
@@ -165,21 +204,33 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
     throw new ApiError(500, `Could not start a shell process: ${error.message}`, 'SPAWN_FAILED')
   }
 
+  enforceUserSessionLimit(options.userId ?? null)
+
   const session = {
     terminalId,
     projectId,
+    userId: options.userId ?? null,
     socket,
     socketId: socket.id,
     cwd,
+    shell: shellInfo.label,
+    shellId: shellInfo.id,
     ptyProcess,
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+    buffer: [],
+    bufferLines: 0,
   }
   sessions.set(terminalId, session)
 
   // Output always goes to the session's CURRENT socket, which a reconnect can
   // swap (see attachTerminalSession) without touching the running pty.
   ptyProcess.onData((data) => {
-    const target = sessions.get(terminalId)?.socket
-    if (target?.connected) target.emit('terminal:output', { terminalId, data })
+    const current = sessions.get(terminalId)
+    if (!current) return
+    current.lastActivityAt = Date.now()
+    appendToScrollback(current, data)
+    if (current.socket?.connected) current.socket.emit('terminal:output', { terminalId, data })
   })
 
   ptyProcess.onExit(({ exitCode, signal }) => {
@@ -213,7 +264,7 @@ export function createTerminalSession(terminalId, projectId, socket, options = {
  */
 export function attachTerminalSession(terminalId, socket) {
   const session = sessions.get(terminalId)
-  if (!session) return false
+  if (!session) return null
   const timer = detachTimers.get(terminalId)
   if (timer) {
     clearTimeout(timer)
@@ -221,7 +272,28 @@ export function attachTerminalSession(terminalId, socket) {
   }
   session.socket = socket
   session.socketId = socket.id
-  return true
+  session.lastActivityAt = Date.now()
+  return session
+}
+
+export function getSessionScrollback(terminalId) {
+  const session = sessions.get(terminalId)
+  return session && session.buffer.length > 0 ? session.buffer.join('') : ''
+}
+
+export function getSessionMeta(terminalId) {
+  const session = sessions.get(terminalId)
+  if (!session) return null
+  return {
+    cwd: session.cwd,
+    shell: session.shell,
+    shellId: session.shellId,
+  }
+}
+
+export function touchSession(terminalId) {
+  const session = sessions.get(terminalId)
+  if (session) session.lastActivityAt = Date.now()
 }
 
 /**
@@ -229,7 +301,7 @@ export function attachTerminalSession(terminalId, socket) {
  * reconnect reattaches them with their scrollback intact, and only kill what
  * was never reclaimed.
  */
-export function detachTerminalsForSocket(socketId, graceMs = 120000) {
+export function detachTerminalsForSocket(socketId, graceMs = SESSION_GRACE_MS) {
   for (const [terminalId, session] of sessions) {
     if (session.socketId !== socketId) continue
     const existing = detachTimers.get(terminalId)

@@ -8613,8 +8613,6 @@ OPEN ITEMS
     edit mode and report requests + tokens.
   - Run the sidebar terminal against real freebuff and confirm its model-picker
     keys and scrolling (needs a freebuff login).
-  - Force a Socket.IO reconnect and confirm the same pty reattaches with its
-    scrollback.
 ================================================================================
 ================================================================================
 AI Code Editor — File & Image Upload in the Explorer, User Roles, Strict Rules
@@ -8886,523 +8884,278 @@ OPEN ITEMS
     spec only mentioned "the container root, or the selected folder".
 ================================================================================
 ================================================================================
-AI Code Editor — Port-4000 Shutdown Fix, Explorer Drag/Drop Move/Copy, 5 More
-               Terrible Themes
-        (2026-10-08)
+AI Code Editor — Terminal Session Persistence, a /health Cron Route, a Save-Work
+               Help Topic, PWA Install Support, and the Agent Opened to All
+               Users With the Vanilla Stack for Non-Admins
+        (2026-10-11)
 ================================================================================
 
-STATUS: complete. Client oxlint 0 warnings / 0 errors (89 files), vite build OK,
-        node --check OK on every changed server file. Verified live against the
-        real server on :4000 and headless Chrome on :5173.
+STATUS: complete for everything that can be exercised locally and VERIFIED by real
+        runs (the server on :4000, and headless Chrome driven over CDP against both
+        the production build and the dev app). NOT verified: the live Render and
+        Vercel deployments, and a real external cron pinger.
 
 --------------------------------------------------------------------------------
-TASK 1 — PORT 4000 CRASH LOOP
+TASK 1 — TERMINAL SESSIONS NO LONGER DIE
 --------------------------------------------------------------------------------
-DIAGNOSIS (measured, not guessed)
-  Port 4000 was held by PID 25428, an ORPHANED `node server.js` (parent: a
-  bash.exe one-liner from an earlier audit harness that ran
-  `(node server.js > ../tmp-audit-server.log 2>&1 &)` — a detached background
-  launch). The real dev runner is `npm run dev` = `node --watch server.js`
-  (started by npm, child of cmd.exe). Because the orphan never exited, the
-  watcher's child hit EADDRINUSE on every start and printed
-  "Failed running 'server.js'. Waiting for file changes before restarting...".
-  `predev` ran `kill-port 4000 || true` only at the START of `npm run dev`,
-  never on a watcher restart, and kill-port terminates ANY holder — including
-  unrelated programs — which the request forbids.
+DIAGNOSIS (from the code plus the local server log; no Render log exists in this
+checkout, so the Render-specific reading is reasoned from the code, not read)
+  - The pty is NOT killed on a tab switch: the right sidebar keeps the Agent and
+    Terminal views mounted, so switching tabs never unmounts the terminal.
+  - The pty WAS killed on component unmount: TerminalView's cleanup emitted
+    terminal:close. The docked panel's tab X and the sidebar's restart/shell change
+    also close a session on purpose.
+  - On a socket disconnect the previous server kept ptys for a 120s grace and then
+    killed anything not reclaimed. There was NO server-side scrollback, so a
+    reconnect to a live session replayed nothing, and a reconnect to a RESTARTED
+    instance spawned a brand-new shell with an empty screen.
+  - Socket.IO reconnects (autoConnect + reconnection true, websocket transport).
+  - The observed "[process exited with code 0]" + a fresh prompt + a CHANGED
+    HOSTNAME is the signature of the Render INSTANCE being replaced (a deploy or a
+    free-tier restart): the old instance shut down, its shutdown killed every pty
+    and emitted terminal:exit while the socket was still connected, the client then
+    auto-reconnected to the new instance, which had no such session, so a new shell
+    was spawned. That is the real cause. The cron ping avoids idle sleep but cannot
+    prevent a deploy, a restart or an out-of-memory kill.
 
-FIX
-  server/src/utils/portOwner.js (NEW) — findListeningPid(port) (netstat -ano on
-    Windows, lsof on POSIX), describeProcess(pid), killProcess(pid),
-    isCodeMatrixServer(port) (probes GET /api/health and requires the app's
-    { status:'ok', database, terminal } shape).
-  server/scripts/freePort.js (NEW) — the predev script. Frees port 4000 ONLY
-    when the holder answers the CodeMatrix health probe; when there is no
-    listener it reports the port free; otherwise it prints ONE clear line naming
-    the PID and the process and exits non-zero WITHOUT killing anything.
-  server/package.json — predev is now `node scripts/freePort.js` (kill-port left
-    as a dependency, unused, so the lockfile stays in sync).
-  server/server.js —
-    * graceful shutdown on SIGINT, SIGTERM and SIGBREAK: killAllTerminals(),
-      await closeAllWatchers(), server.closeAllConnections(), io.close(),
-      server.close(exitNow), plus a 3s force-exit fallback and a synchronous
-      killAllTerminals() on the 'exit' event. A re-entry guard stops a second
-      signal from running it twice.
-    * EADDRINUSE is now ONE clear line naming the holder PID and the suggestion
-      ("Run \"npm run predev\" in server/ ...") followed by process.exit(1).
-      An in-process retry was tried first and DROPPED after a measured failure:
-      on Windows, re-listen() after a failed bind never sets server.listening, so
-      the retry became a ~3s log storm (captured live).
+FIX (server — utils/terminalManager.js, socket/terminalSocket.js)
+  - Grace period after a socket disconnect: 120s -> 30 minutes (SESSION_GRACE_MS).
+    A pty is now closed only on an explicit close, on grace expiry, or on logout.
+  - Per-session scrollback ring buffer (MAX_SCROLLBACK_LINES = 10000). On a
+    (re)attach the server sends terminal:attach with the buffered output; the
+    client resets its xterm and redraws it, so nothing duplicates and nothing that
+    happened during the gap is missing.
+  - Per-user limits (MAX_SESSIONS_PER_USER = 5). The userId comes from the JWT the
+    client now sends with terminal:create; creating a 6th session closes that
+    user's least-recently-active one first.
+  - terminal:create reattaches an existing id; when the client says reattach:true
+    and the session is gone, the server answers terminal:lost instead of silently
+    spawning a second shell under the same id.
+  - New terminal:ping / terminal:pong heartbeat handled server-side; a ping also
+    refreshes the session's last-activity time.
+FIX (client — TerminalView.jsx, SidebarTerminal.jsx, App.jsx, services/socket.js)
+  - Unmount no longer sends terminal:close; an explicit tab X, a sidebar
+    restart/shell change, and logout still do.
+  - On mount and on reconnect the client reuses the SAME terminalId and asks to
+    reattach, replaying the buffer.
+  - A 22s heartbeat keeps the connection alive through the Render proxy; a small
+    "Reconnecting..." pill shows while detached and disappears once attached.
+  - A truly-lost session shows ONE line: "Session ended because the server
+    restarted. Start a new one." (never a bare exit code).
+NEW ROUTE
+  - GET /health (app level, not under /api): 200 + "ok" as text/plain, no auth, no
+    database call, no logging. POINT THE CRON JOB AT THIS URL.
+  - The existing GET / and GET /health-check are unchanged.
 
-NOTE ON PTY CHILDREN: terminal ptys are spawned by node-pty; Node marks its
-listening socket non-inheritable, and shutdown kills every pty (killAllTerminals)
-before closing the HTTP server, so a spawned shell cannot keep holding the
-listening handle.
+FILES TOUCHED (Task 1)
+  server/src/utils/terminalManager.js    scrollback buffer, 30min grace, per-user
+                                         limit, session meta/scrollback getters
+  server/src/socket/terminalSocket.js    token -> userId, reattach replay,
+                                         terminal:lost, terminal:ping
+  server/src/controllers/health.controller.js  getHealthPlain
+  server/src/routes/status.routes.js     GET /health
+  client/src/components/Terminal/TerminalView.jsx  detach-on-unmount, replay,
+                                         heartbeat, reconnect pill, lost message
+  client/src/components/Terminal/TerminalPanel.css  .terminal-reconnect
+  client/src/components/RightPanel/SidebarTerminal.jsx  close the old pty on restart
+  client/src/App.jsx                     close the user's sessions on logout
+  client/src/services/socket.js          window.__SOCKET__ debug hook (automation)
 
-VERIFICATION (live, Windows)
-  - Orphan case: `node scripts/freePort.js` identified PID 25428 via the health
-    probe, stopped it, and the watcher's next start reclaimed the port.
-  - Unrelated case: an unrelated HTTP server on 4001 -> predev printed
-    "[predev] Port 4001 is held by PID ... (node), which is not a CodeMatrix
-    server. Leaving it alone." and did NOT kill it (still answered after).
-  - Start while a CodeMatrix server is running: `npm run dev` printed
-    "[predev] Stopping stale CodeMatrix server on port 4000 (PID ...)." then
-    "[predev] Port 4000 is now free." then listened ONCE with no EADDRINUSE.
-  - Second server while one holds the port: one EADDRINUSE line naming the
-    holder, then a clean exit(1) — no crash loop.
-  - File-change restart: `node --watch` restarted cleanly ("Restarting
-    'server.js'") and bound once, no EADDRINUSE. Stopping the dev tree freed
-    port 4000.
+VERIFICATION (real, against the local server on :4000)
+  - Socket harness (client/tmp-terminal-verify.mjs, 7/7): a new session spawns, a
+    command's output streams, ping/pong answers, a reattach after a real disconnect
+    replays a scrollback that contains the earlier output, an unknown reattach
+    answers SESSION_LOST, and a 6th session for one user closes exactly one session.
+  - Real browser (tmp-harness/terminal-session-verify.mjs, 9/9, headless Chrome +
+    CDP on the dev app): the sidebar shell runs `sleep 300`; switching
+    Agent<->Terminal keeps the SAME pty and never emits an exit; a forced socket
+    disconnect shows the Reconnecting pill, reconnecting reattaches the SAME pty
+    with its scrollback intact, the pill disappears; killing the session and
+    reconnecting shows the exact restart line.
+  - GET /health answered 200, Content-Type text/plain, body "ok".
 
---------------------------------------------------------------------------------
-TASK 2 — DRAG-AND-DROP MOVE / COPY IN THE EXPLORER
---------------------------------------------------------------------------------
-SERVER
-  workspaceManager.js  movePathWithFallback(from, to, isDirectory) — atomic
-    fs.rename when possible; for folders it reuses renameFolderWithRetry (retry
-    ladder + copy fallback); across devices (EXDEV) it copies then removes.
-    renameFolderWithRetry now sends EXDEV straight to the copy fallback instead
-    of throwing.
-  safeDelete.js  transferFailureError(error, absolutePath, displayName) — the
-    SAME short readable messages the delete path uses, including
-    "A terminal is running inside this folder. Close it or run cd .. and try
-    again." for EBUSY/EPERM when a terminal cwd sits inside the moved folder.
-  workspace.controller.js  moveContainerEntryAt — authenticated, derives the
-    owner from the JWT, uses resolveContainerOwnerPath for path-traversal
-    protection, rejects moving a folder into itself/its own descendant, treats a
-    drop onto the current parent as a no-op, forbids moving a top-level project
-    folder into another folder, resolves name conflicts with uniqueNameInFolder
-    ("name (copy).ext", nothing overwritten), suppresses both the source and
-    target watchers to avoid an event flood, and uses async fs throughout.
-  workspace.routes.js  POST /api/workspace/container/move (inside protect).
-
-CLIENT
-  utils/dropFiles.js      EXPLORER_DRAG_TYPE, isExplorerDrag (distinguishes an
-    internal Explorer drag from an external OS file drag) and isCopyModifier
-    (Ctrl / Cmd / Alt).
-  utils/explorerTransfer.js (NEW)  transferTargetFolderPath, isTopLevelFolder,
-    isInvalidTransferTarget (self / descendant / top-level-folder rules) and
-    uniqueChildName (client-side conflict naming matching the server).
-  features/fileSystemSlice.js  moveNode and copyNode reducers (optimistic tree
-    relocation / clone).
-  features/workspaceThunks.js  transferWorkspaceEntry — optimistic UI first,
-    server call second, rollback (refreshWorkspaceTree + remapPaths) on failure;
-    a move remaps tabs/buffers only after success so unsaved edits survive.
-  components/Sidebar/FileTree.jsx  rows are draggable; row and root-area
-    dragover/drop handle internal drags; the dragged row is dimmed
-    (.is-dragging), the target folder highlights (.is-drop-target), the empty
-    area below the tree highlights (.file-tree.is-root-drop-target), a collapsed
-    folder auto-expands after ~700ms of hover, and invalid targets set
-    dropEffect 'none' (not-allowed cursor). External file drags take the
-    unchanged upload path.
-  components/Sidebar/Sidebar.jsx  handleTransferEntry — records undo/redo
-    ('move' / 'duplicate'), shows a toast, and skips a drop onto the current
-    parent.
-  services/api.js  moveContainerPath.
-  components/Sidebar/UploadDrop.css  dragged-row dim + root highlight styles.
-  Multi-selection note: the Explorer has a SINGLE selected row, so per the
-  request this is single-item drag only; no selection features were added.
-
-VERIFICATION (headless Chrome + real server; 21/21 checks)
-  - drag a file into a nested folder; from the nested folder to the root; a
-    folder into a sibling project folder; a folder into its own child is
-    rejected; each result appears exactly once, live, with no page reload;
-  - Ctrl+drop copies and a name conflict becomes "readme (copy).md" without
-    overwriting the original;
-  - an EXTERNAL file drop still uploads;
-  - an open editor tab follows a moved file without duplicating;
-  - Ctrl+Z (Explorer undo) restores a drag move;
-  - no uncaught page exceptions.
-  Server move suite (12/12): 401 without a token; file into a nested folder; to
-  the container root; into a sibling project; folder into a sibling; folder into
-  its own child rejected 400; current-parent no-op; top-level project folder move
-  rejected 400; conflict -> "(copy)"; traversal rejected 400; moved entries
-  appear exactly once.
+HONEST LIMITS (Task 1)
+  - The cron ping keeps the free instance awake; it cannot stop a deploy, a manual
+    restart, or an out-of-memory kill, and the free-tier disk still resets on a
+    restart. A lost pty after any of those is expected behavior and now says so.
+  - The Render/Vercel logs and hostnames were not reachable from this checkout, so
+    the instance-replacement reading is inferred from the code + local log.
 
 --------------------------------------------------------------------------------
-TASK 3 — FIVE MORE DELIBERATELY BAD THEMES
+TASK 2 — HELP TOPIC "SAVE YOUR WORK"
 --------------------------------------------------------------------------------
-client/src/utils/themes.js  five specs appended AFTER the existing 5 terrible
-  ones, same data-driven buildTheme path (full CSS palette, Monaco base +
-  monacoColors, 5 preview swatches, xterm via terminalThemes.js):
-    Expired Mustard (mustard / vomit-beige / rust),
-    Neon Hospital (sickly mint / surgical blue / hot orange),
-    Toxic Grape Soda (acid purple / slime green / rust red),
-    Disco Sunburn (burnt orange / magenta / electric blue),
-    Cartoon Overdose (childish primaries, candy/bubblegum).
-  Layout, spacing, fonts and component structure are untouched; only colours
-  differ. THEMES.length is now 58; index 47 is still high-contrast-light and the
-  previous 5 terrible themes keep their exact positions/order.
+  - New topic entry in client/src/components/Help/helpTopics.js (same data shape and
+    the same CommandBlock Copy buttons as the Freebuff topic): why the free-tier disk
+    is temporary, (1) Export ZIP from the Topbar, (2) Export to folder / Sync to
+    laptop, (3) push to your own repository with copyable `git init`, `git add .`,
+    `git commit -m "save"`, `git remote add origin <your-repo-url>`,
+    `git push -u origin main` and a note that git login or a token is needed, and
+    (4) `git clone <your-repo-url>` to come back later. It also states that the work
+    in the browser is not saved anywhere else. No commands beyond standard git.
+  - The Freebuff topic's intro now carries a one-line pointer: before you close the
+    editor, keep a copy — see the "Save your work" topic.
+VERIFICATION: headless Chrome confirmed the topic appears, all six commands render
+  in copyable blocks, a Copy button reports "Copied", and the Freebuff topic shows
+  the pointer.
+
+--------------------------------------------------------------------------------
+TASK 3 — PWA (INSTALLABLE DESKTOP AND MOBILE APP)
+--------------------------------------------------------------------------------
+  - Manifest (client/public/manifest.webmanifest): name/short_name CodeMatrix,
+    start_url "/", scope "/", display "standalone", background_color and theme_color
+    #1e1e1e (the default theme), icons 192, 512 and a maskable 512.
+  - Icons generated from the EXISTING logo (client/public/logo.png, 1254x1254 RGBA)
+    into client/public/icons/ by client/scripts/generateIcons.mjs: icon-192,
+    icon-512, icon-maskable-512 (logo on the theme background inside the safe zone),
+    apple-touch-icon 180, favicon-16/32. TO REPLACE WITH THE FINAL LOGO: overwrite
+    client/public/logo.png and rerun `node scripts/generateIcons.mjs` in client/.
+  - index.html: manifest link, theme-color, apple-touch-icon, the favicon set, and
+    the apple/mobile web-app meta tags.
+  - Service worker (client/public/sw.js, registered from src/main.jsx via
+    src/services/pwa.js): a versioned cache ("codematrix-static-v1") holding only
+    the static shell (index.html, manifest, icons, logo, favicon) plus same-origin
+    /assets and /icons at runtime. Navigations are network-first with the cached
+    shell as the offline fallback. Everything dynamic is left alone (returned
+    without respondWith), so /api/*, /socket.io/*, /preview/* and any upload or
+    project list are network-only and can never be served stale.
+  - Safe update flow: on activate the old caches are deleted; when a new worker
+    installs while a controller exists the app shows a "New version available,
+    reload" toast whose Reload button posts SKIP_WAITING and reloads on
+    controllerchange.
+  - Offline: the shell opens offline and client/src/components/Notices/OfflineNotice
+    shows "The editor needs a connection. You are offline — reconnect to keep
+    working."; nothing pretends to work.
+  - "Install app" button in Settings > General (src/hooks/useInstallPrompt.js),
+    shown ONLY when the browser fires beforeinstallprompt and hidden when already
+    installed (display-mode: standalone).
+  - Help topic "Install as app": Chrome/Edge steps (the install icon in the address
+    bar) and the Safari iOS note (Share, Add to Home Screen).
+  - client/vercel.json: the rewrite now keeps /sw.js, /manifest.webmanifest and
+    /icons/* from being swallowed by the SPA catch-all, and headers set
+    application/manifest+json for the manifest and application/javascript plus
+    no-cache/no-store/must-revalidate for the service worker.
+VERIFICATION: headless Chrome on the production build (tmp-harness/pwa-verify.mjs,
+  13/13): Chrome parses the manifest with the right name/scope/display/icons,
+  Page.getInstallabilityErrors returns no blocking errors, the theme-color matches,
+  the SW controls the page, the cache is versioned, NO /api, /socket.io or /preview
+  response is cached while the built shell is, the manifest and SW are served from
+  the root, and the app shell plus the offline notice both work with the network
+  offline. The update flow (tmp-harness/pwa-update-verify.mjs, 4/4) confirmed the
+  reload toast appears, the v1 cache is deleted and v2 becomes active.
+
+--------------------------------------------------------------------------------
+TASK 4 — THE AGENT IS OPEN TO ALL USERS; VANILLA ONLY FOR NON-ADMINS
+--------------------------------------------------------------------------------
+  - The "admin only Agent" restriction is removed. Every signed-in account (role
+    "user" or "admin") sees and can use the real AIPanel; the "Coming soon"
+    placeholder is no longer rendered (its file is left on disk, unused). Signed-out
+    visitors still get the sign-in prompt. The default right-panel tab is Agent.
+  - Stack rule enforced on the SERVER (socket/agentSocket.js): a non-admin that
+    names any stack other than "html" is rejected with a 403 and the message
+    "Non-administrator accounts can only use the HTML/CSS/JS (Vanilla) stack."
+    Because vanilla is the only allowed stack, a non-admin can never change the
+    stack mid-task either.
+  - Shell tool removed for non-admins (services/agentService.js): runAgent takes
+    allowShell (from the verified role); the tool schema sent to the model is
+    OPENAI_TOOLS_WITHOUT_SHELL when allowShell is false, and executeTool refuses
+    run_command outright as a second layer. Admin behavior is unchanged.
+  - The Vanilla pipeline does NOT depend on shell commands: compose_page,
+    scaffold_site, scaffold_app, the quality checks and the vanilla gate are all
+    server-side. A grep found runWorkspaceCommand used only by the run_command tool,
+    so no server-side alternative was needed.
+  - Settings restored for every signed-in user: the AI key section (Groq/Mistral
+    keys, encrypted, password-gated reveal) and Strict Rules are visible and usable
+    again, and App.jsx loads the masked key list for any signed-in account. The keys
+    API route is now protect-only (ownership still enforced per user in the service
+    layer), and Strict Rules still ride with that user's agent run.
+  - Client stack dropdown (AIPanel.jsx): React, Next, Vue, Nuxt, Angular, Express,
+    Nest are shown disabled with an "Admin only" tag for non-admins and cannot be
+    selected; the default is HTML/CSS/JS (Vanilla); a stored non-vanilla preference
+    is coerced to Vanilla for non-admins. Admins keep every stack.
+  - The role field and /me role are unchanged; role changes stay manual in the DB.
+    The terminal restriction is untouched. Per-user keys, usage and workspaces are
+    unchanged and ownership checks are untouched.
+
+FILES TOUCHED (Task 4)
+  server/src/socket/agentSocket.js        open to users, vanilla-only + allowShell
+  server/src/services/agentService.js     allowShell, NON-SHELL schema, executeTool
+  server/src/routes/apiKey.routes.js      protect only (all users)
+  client/src/components/RightPanel/RightPanel.jsx  real AIPanel for everyone
+  client/src/components/RightPanel/SidebarTerminal.jsx  default tab derivation
+  client/src/components/AIPanel/AIPanel.jsx  stack locking ("Admin only")
+  client/src/components/AIPanel/AIPanel.css   locked-item styles
+  client/src/components/Settings/SettingsModal.jsx  all sections + Install app row
+  client/src/App.jsx                      load keys for any signed-in user
 
 VERIFICATION
-  - contrast checks mirroring server/tmp-theme-verify.mjs: every one of the 10
-    terrible themes keeps primary text >= 4.5:1, secondary text >= 3:1, accent
-    button text >= 3:1, Monaco selection visible, cursor != background, folder/
-    file icons differ from the sidebar background (all pass);
-  - headless Chrome: Settings renders 58 swatches, the last five are the new
-    names in order, clicking Cartoon Overdose sets <html data-theme> and
-    --accent (#ff0066) and the choice survives a reload.
+  - server/tmp-agent-tool-verify.mjs (2/2): executeTool('run_command', ...,
+    { allowShell: false }) is rejected; with allowShell true it still runs.
+  - Live socket (client/tmp-agent-enforce-verify.mjs, 3/3): a non-admin can
+    agent:attach; agent:run with framework "react" is 403 FORBIDDEN with the stack
+    message; the same run with "html" passes the stack gate and reaches key
+    resolution (code NO_KEYS), proving it was not blocked.
+  - Real browser (tmp-harness/agent-ui-verify.mjs, 13/13, production build): a
+    non-admin defaults to the Agent tab with the real panel, sees HTML/CSS/JS
+    (Vanilla), and all 7 other stacks disabled with "Admin only" while Vanilla
+    stays selectable; Settings shows AI Assistant and Strict Rules; Help shows
+    Save your work; then, acting as an admin, every stack is enabled.
 
 --------------------------------------------------------------------------------
-FILES TOUCHED
+WHAT COULD NOT BE VERIFIED (honest list)
 --------------------------------------------------------------------------------
-SERVER  server.js
-        src/utils/portOwner.js (NEW)
-        scripts/freePort.js (NEW)
-        package.json (predev)
-        src/utils/workspaceManager.js (movePathWithFallback, EXDEV fallback)
-        src/utils/safeDelete.js (transferFailureError)
-        src/controllers/workspace.controller.js (moveContainerEntryAt)
-        src/routes/workspace.routes.js (POST /container/move)
-CLIENT  src/utils/themes.js
-        src/utils/dropFiles.js
-        src/utils/explorerTransfer.js (NEW)
-        src/features/fileSystemSlice.js
-        src/features/workspaceThunks.js
-        src/services/api.js
-        src/components/Sidebar/FileTree.jsx
-        src/components/Sidebar/Sidebar.jsx
-        src/components/Sidebar/UploadDrop.css
-
---------------------------------------------------------------------------------
-LEFTOVER TEMPORARY SCRIPTS / FOLDERS (NOT deleted)
---------------------------------------------------------------------------------
-server/  tmp-audit-preview.mjs, tmp-audit-upload.mjs, tmp-ebusy-diagnose.mjs,
-         tmp-theme-tune.mjs, tmp-theme-verify.mjs, tmp-ui-verify.mjs,
-         tmp-vanilla-agent-test.mjs
-Also at the project root (unchanged): tmp-acceptance/, tmp-harness/,
-tmp-agent-server.log, tmp-editmode-inline.txt, tmp-mock-groq.log,
-tmp-sidebar-client.log, tmp-sidebar-server.log.
-Two temporary audit scripts created for THIS change (server/tmp-move-verify.mjs
-and server/tmp-dnd-verify.mjs) were removed after the runs.
+  - The live Render (Linux) and Vercel deployments, the real external cron pinger,
+    and the real Render restart/deploy behavior. Everything PWA was verified on the
+    production build served locally over http://localhost (a secure context).
+  - The standalone install window itself (beforeinstallprompt cannot be triggered
+    in headless Chrome); installability was verified with Chrome's own
+    Page.getInstallabilityErrors (no blocking errors) and a parsed manifest.
+  - MongoDB-backed multi-user paths beyond the socket role check: a real
+    admin/non-admin pair from the database and a real cross-user workspace attempt
+    were not driven (roles are changed manually in the DB, and no admin row was
+    created here). The non-admin role was injected at /api/auth/me for the UI run.
 
 --------------------------------------------------------------------------------
 OPEN ITEMS
 --------------------------------------------------------------------------------
-  - Move/copy of a TOP-LEVEL project folder into another folder is still
-    rejected (it would nest a project). Dragging such a row shows the
-    not-allowed cursor; the existing "A project folder can only be renamed, not
-    moved inside another folder." message is returned if called directly.
-  - Moving a folder to the container root makes it a new project only when the
-    tree is next read (listContainerEntries auto-registers it); no MongoDB
-    Project row is created for it on that path.
-  - Multi-item drag is not supported (the Explorer has no multi-selection).
-  - The EBUSY "terminal running inside this folder" message path was shared with
-    the delete helper and code-reviewed, but was not forced by an actual locked
-    folder in this run.
-  - Existing items still open: the freebuff 1-second thinking flicker;
-    server/tmp-ebusy-diagnose.mjs can be deleted; a loose top-level HTML file has
-    no preview watcher.
+  - Point the external cron service at GET /health (plain-text 200) instead of the
+    JSON route; the JSON routes are unchanged if the monitor prefers them.
+  - Replace client/public/logo.png with the final logo when it is ready, then rerun
+    client/scripts/generateIcons.mjs to refresh the PWA/favicon set.
+  - Verify the install prompt and the standalone window on the real
+    render.com/vercel.app HTTPS deployment (a secure-context requirement).
+  - Confirm on Render that a real instance restart shows the restart line (the
+    client half is verified by forcing a reconnect after the session was removed).
+  - Still open from earlier phases: the freebuff 1-second "thinking" flicker; a
+    loose top-level HTML file has no preview watcher; server/tmp-ebusy-diagnose.mjs
+    and other tmp-audit scripts can be deleted.
 
 --------------------------------------------------------------------------------
 STATUS SUMMARY (WHERE THINGS STAND)
 --------------------------------------------------------------------------------
-  - TASK 1 (port 4000): complete and VERIFIED live — predev frees only a stale
-    CodeMatrix server, leaves unrelated holders alone with a clear one-line
-    message, the server reports EADDRINUSE once and exits, and a watcher restart
-    rebinds cleanly with the port free after stopping.
-  - TASK 2 (drag/drop move+copy): complete and VERIFIED — 12/12 server move
-    checks and 21/21 headless-Chrome UI checks (move, root, sibling project,
-    self-child rejection, conflict naming, Ctrl copy, external upload, tab
-    follow, undo, live tree with no reload).
-  - TASK 3 (5 more terrible themes): complete and VERIFIED — 58 themes, the new
-    five last, all readable, applied to the UI and persisted across reload.
-  - NOT verified: a real OS-level drag from the desktop (drags were synthesized
-    with DragEvent + DataTransfer in the page); a forced EBUSY from a real
-    terminal cwd inside the moved folder; and MongoDB-backed project metadata for
-    a folder moved to the container root.
+  - TASK 1 (terminal persistence): complete and VERIFIED — 30-minute grace, a
+    10000-line server replay buffer, reattach by id with replay, a 22s heartbeat
+    and a Reconnecting pill, a per-user limit of 5, close only on explicit close,
+    grace expiry or logout, a clear restart message for a lost session, and a
+    plain-text GET /health for the cron pinger. VERIFIED by a 7/7 socket harness and
+    a 9/9 headless-Chrome run. NOT verified: the real Render restart path.
+  - TASK 2 (Save your work Help topic): complete and VERIFIED in a real browser
+    (topic, copyable git commands, Copy button feedback, and the Freebuff pointer).
+  - TASK 3 (PWA): complete and VERIFIED — manifest, generated icons from the
+    existing logo, meta tags, a versioned static-shell service worker with a safe
+    update toast and old-cache cleanup, an offline shell + notice, an install
+    button gated on beforeinstallprompt, an "Install as app" Help topic, and
+    Vercel rewrites/headers. VERIFIED 13/13 installability + caching and 4/4 update
+    flow on the production build. NOT verified: the real Vercel headers and the
+    standalone window.
+  - TASK 4 (agent open, vanilla for non-admins): complete and VERIFIED — the real
+    Agent panel for every signed-in user, non-vanilla stacks disabled in the UI with
+    "Admin only" and rejected with 403 on the server, the shell tool removed for
+    non-admins, admin behavior unchanged, and AI keys + Strict Rules restored for
+    all users. VERIFIED by 2/2 tool checks, 3/3 live socket checks and 13/13
+    browser checks. NOT verified: a real DB admin/non-admin pair and the deployed
+    environment.
+  - Lint and build: oxlint 0 warnings / 0 errors (98 files) and vite build OK after
+    all changes; node --check OK on every changed server file. (The single
+    pre-existing oxlint warning in HelpModal.jsx was removed, so lint is clean.)
 ================================================================================
 
-================================================================================
-AI Code Editor — Root + Health-Check Routes for Deployment Verification
-        (2026-10-10)
-================================================================================
-
-STATUS: complete. node --check OK on every changed server file. Both new routes
-        verified live against the real server on :4000 with real curl output.
-
-WHAT THIS IS FOR
-  A deployment is live now (backend on Render, frontend on Vercel). Two plain,
-  app-level reachability routes were added so the deployed backend URL can be
-  confirmed from a browser, an uptime monitor, or curl — deliberately OUTSIDE
-  /api and with NO auth and NO database access.
-
-ROUTES ADDED (app level, not under /api)
-  GET /             liveness only. Returns status/message/timestamp. Never
-                    touches MongoDB, so it answers even when the DB is down.
-  GET /health-check slightly richer. Reuses the EXISTING health logic — it does
-                    not duplicate the /api/health route. Returns status, uptime,
-                    timestamp, database state, and a terminal block with
-                    availability + platform + default shell + shell list (the
-                    same data GET /api/terminal/shells returns, summarized).
-
-FILES TOUCHED
-SERVER
-  src/controllers/health.controller.js  added getRootStatus and getHealthCheck;
-    extracted the existing db-state string into a small databaseState() helper
-    that BOTH /api/health and /health-check use. getHealth's JSON is byte-for-
-    byte unchanged (isCodeMatrixServer in utils/portOwner.js depends on
-    status/database/terminal being present as strings).
-  src/routes/status.routes.js            NEW. Router: GET / and GET /health-check.
-  src/app.js                             imports statusRoutes and mounts it with
-    app.use(statusRoutes) (app level, before /api), after cors + express.json.
-  No other route, middleware, socket (terminal/workspace/agent/preview), or
-  CORS flow was changed. No comments in any .js file. No sync fs, no DB writes,
-  no workspace scans on either route.
-
-LIVE VERIFICATION (real curl against the local server on :4000)
-  GET /                 -> 200
-    {"status":"ok","message":"CodeMatrix API is running",
-     "timestamp":"2026-10-10T05:47:06.855Z"}
-  GET /health-check     -> 200
-    {"status":"ok","uptime":10,"timestamp":"2026-10-10T05:47:06.957Z",
-     "database":"connected","terminal":{"available":true,"platform":"win32",
-     "defaultShell":"powershell","shells":[{"id":"powershell","label":
-     "PowerShell"},{"id":"cmd","label":"CMD"},{"id":"bash","label":"bash"}]}}
-  GET /api/health       -> unchanged (still string database/terminal fields).
-  The deployed Render/Vercel URLs were not present anywhere in the repo (.env,
-  client/.env, git config, summary, no render.yaml/Procfile/README), so the
-  hosted URL could not be curled from here — the local run proves the routes.
-
-CORS FINDING (FLAGGED — needs a dashboard change, not a code change)
-  server/.env has:  CLIENT_ORIGIN=http://localhost:5173
-  server/.env.example also only ships http://localhost:5173.
-  resolveCorsOrigin() treats a non-'*' value as an exact allow-list, and the
-  cors package only echoes Access-Control-Allow-Origin when the request Origin
-  matches. Measured with the real origin header:
-    Origin: http://localhost:5173        -> Access-Control-Allow-Origin returned
-    Origin: https://<anything>.vercel.app -> NO Access-Control-Allow-Origin
-  So unless Render's dashboard sets CLIENT_ORIGIN to the EXACT Vercel origin
-  (scheme + host, no trailing slash, e.g. https://your-app.vercel.app), the
-  deployed frontend is CORS-blocked from the deployed backend for auth,
-  workspace, projects — everything. This is NOT a code bug; the code default is
-  '*' when the var is unset, but the local .env pins it to localhost. ACTION:
-  set CLIENT_ORIGIN on Render to the real Vercel origin (comma-separate multiple
-  origins if previews should work; a trailing slash is stripped by the code).
-  The real Vercel domain could not be derived from this checkout.
-
-TEMPORARY FILES: none created for this task (verification used inline curl), so
-  nothing to delete.
-================================================================================
-
-================================================================================
-AI Code Editor — Terminal Auto-Create Race on First Load Fixed
-        (2026-10-10)
-================================================================================
-
-STATUS: complete and VERIFIED in a real browser (headless Chrome via CDP) against
-        the real local server + MongoDB. Exactly ONE terminal spawn on a fresh
-        first load and on reload, in the correct per-user workspace; the
-        guest-then-real respawn cycle is gone. vite build OK.
-
-ROOT CAUSE (from the real code, then confirmed by captured socket frames)
-  The right sidebar auto-creates its terminal when the Terminal tab is active,
-  and a non-admin with no stored tab defaults to that tab. Three compounding
-  bugs produced the cycle:
-
-  1) RightPanel.jsx computed `activeTab = storedTab ?? (isAdmin ? 'agent' :
-     'terminal')` WITHOUT consulting its own `roleResolved` gate, so on the very
-     first paint (user still null) a non-admin was treated as "Terminal" and
-     SidebarTerminal mounted immediately. The `roleResolved` effect that sets the
-     tab only ran afterwards, so it never prevented the early mount.
-
-  2) SidebarTerminal.jsx's open effect fired as soon as terminalId was null,
-     with `effectiveProjectId = projectId || scratchProjectIdFor(userId)`. Before
-     fetchCurrentUser() fulfilled, `userId` is undefined, so it spawned in
-     `scratch-guest` (server container workspaces/u-guest) — the "guest" attempt.
-
-  3) TerminalView's creation effect depends on [terminalId, projectId, shell].
-     Every time one changed it tore the current pty down
-     (`terminal:close` -> killTerminal -> xterm prints "[process exited with code
-     0]") and respawned under the SAME terminalId. Two separate changes arrived
-     after the first paint: fetchAvailableShells() set defaultShell (shell null ->
-     powershell) and fetchCurrentUser() set the real userId (scratch-guest ->
-     scratch-<userId>). Hence 2-3 spawns, the first one/two in u-guest.
-
-  On Render the guest pty exits with code 0 (Linux); on Windows the same kill
-  path reports the Ctrl-C exit code -1073741510. Same teardown either way.
-
-FIX (client only)
-  src/features/authSlice.js       NEW state flag `isAuthResolved`: false while a
-    stored token still has to be validated, true otherwise. Initialised to
-    !storedToken (a signed-out visitor is resolved immediately), set false on
-    fetchCurrentUser.pending, true on fulfilled AND on rejected (a failed restore
-    must not leave the UI gated forever), and true in applySession (login/
-    register) and logout.
-  src/components/RightPanel/RightPanel.jsx   `roleResolved` now comes from
-    `isAuthResolved`, and `activeTab = roleResolved ? (storedTab ?? (isAdmin ?
-    'agent' : 'terminal')) : null`. The terminal view is not mounted (and so no
-    pty is spawned) until the session is resolved.
-  src/components/RightPanel/SidebarTerminal.jsx   the auto-create effect now
-    waits for `isAuthResolved` AND for the server shell list to settle
-    (shellStatus 'ready'|'failed'), so the single spawn already uses the final
-    shell and cannot be respawned by the later defaultShell correction.
-
-  Guest/signed-out flow is preserved: with no token, isAuthResolved is true from
-  the start, so the scratch-guest terminal still appears immediately (verified).
-
-VERIFICATION (headless Chrome + CDP WebSocket frame capture, real server, fresh
-  temp Chrome profile; the ONLY localStorage entry is the auth token, so the user
-  id really is unresolved at first paint)
-  BEFORE (captured against the pre-fix build):
-    fresh first load:
-      terminal:create  projectId=scratch-guest                 shell=(none)
-      terminal:close
-      terminal:create  projectId=scratch-6ac9d5d8…  shell=powershell
-      terminal:create  projectId=scratch-6ac9d5d8…  shell=powershell
-    reload:
-      terminal:create  projectId=scratch-guest                 shell=(none)
-      terminal:close
-      terminal:create  projectId=scratch-guest     shell=powershell
-      terminal:close
-      terminal:create  projectId=scratch-6ac9d5d8…  shell=powershell
-    xterm buffer ended with "[process exited with code -1073741510]" — the exact
-    guest-then-respawn flicker reported.
-  AFTER (same harness, post-fix build):
-    fresh first load:
-      terminal:create  projectId=scratch-6ac9d664…  shell=powershell   (ONE)
-      xterm: "Windows PowerShell … PS D:\…\server\workspaces\u-6ac9d664…>"
-    reload:
-      terminal:create  projectId=scratch-6ac9d664…  shell=powershell   (ONE)
-      xterm: same live prompt, cwd u-<userId>, no exit line
-    signed-out guest:
-      one live scratch-guest session in workspaces/u-guest (unchanged behavior)
-  No page exceptions, no console errors in any run.
-
-TEMPORARY FILES: server/tmp-firstload-race.mjs (+ its before/after logs) were
-  removed after the runs.
-
-NOTE: client `oxlint` could NOT be run in this environment — the OS blocks the
-  native binding ("An Application Control policy has blocked this file",
-  @oxlint/binding-win32-x64-msvc), and no WASI fallback is installed. `vite
-  build` (oxc-based) passed on the final code; no server source file was changed
-  for this fix, so node --check had nothing new to validate.
-================================================================================
-
-================================================================================
-AI Code Editor — Instant Project Delete (No Reload)
-        (2026-10-10)
-================================================================================
-
-STATUS: complete and VERIFIED in a real browser (headless Chrome via CDP) against
-        the real local server + MongoDB. 18/18 delete-flow checks and 4/4
-        rollback checks. vite build OK; node --check OK on the changed server
-        file.
-
-ROOT CAUSE (from the real code, then confirmed by driving the UI)
-  Deleting a project updated only PART of the client state, and the entry points
-  disagreed on what they updated:
-
-  1) RECENT PROJECTS trash (components/Projects/RecentProjects.jsx) branched:
-     - ACTIVE project -> deleteWorkspaceProject(), which cleared the workspace
-       but did NOT remove the item from projects.items, and cleared state.tree
-       wholesale (clearWorkspace) so sibling projects vanished from the Explorer;
-     - NON-ACTIVE project -> removeRecentProject(), which removed the list item
-       but never touched the Explorer tree row, projects.trees, focusedProjectId
-       or the active workspace.
-     Neither path cleared the persisted last-opened ref
-     (localStorage 'code-matrix:workspace') when it pointed at the deleted
-     project.
-
-  2) Explorer TOP-LEVEL folder delete (per-row trash / context menu) went through
-     deleteExplorerEntry -> deleteWorkspaceEntry, which only did removeNode(path)
-     plus a background tree refetch. It never touched projects.items, the active
-     workspace / Topbar chip, the persisted ref, focusedProjectId or the editor's
-     unsaved buffers — so the folder vanished but RECENT PROJECTS and the Topbar
-     kept showing the project.
-
-  3) Settings > General "Delete this project" dispatched
-     uiSlice.openDeleteProjectModal(), but NO component rendered a modal for
-     isDeleteProjectModalOpen, so that entry point did nothing at all.
-
-  4) GET /api/projects returned plain JSON with an ETag and no Cache-Control, so
-     a stale (or cached) list could keep a deleted item on the deployed build.
-
-WHAT CHANGED (files)
-SERVER
-  src/controllers/project.controller.js  listProjectsHandler now sets
-    Cache-Control: no-store, no-cache, must-revalidate, max-age=0 and
-    Pragma: no-cache, so a deleted project can never be served from a cache.
-
-CLIENT
-  services/workspaceStorage.js  clearWorkspaceRefIfMatches(projectId) — clears
-    the remembered last-opened project ONLY when it is the deleted one.
-  features/fileSystemSlice.js  new removeProject({ projectId, path }) reducer:
-    drops the matching top-level project folder from the tree AND from
-    state.container.entries, prunes its open tabs, and when it was the active
-    (or focused) project falls back to the NEXT remaining project — or the
-    "No project imported" empty state when none is left.
-  features/projectsSlice.js  removeRecentProjectItem also clears a matching
-    pendingDelete.
-  features/workspaceThunks.js  new forgetDeletedProject({ projectId, path })
-    thunk — the single cleanup used by every delete path: dispatches
-    removeRecentProjectItem + removeProject + removeContent (the project's file
-    ids) + clearWorkspaceRefIfMatches, and stops a running agent task when the
-    deleted project was the active one (socket 'agent:stop'). deleteWorkspaceProject
-    is now: optimistically dispatch forgetDeletedProject -> await
-    DELETE /api/projects/:projectId -> on FAILURE refetch the recent list and the
-    container tree, re-focus the project if it still exists (rollback) and
-    rethrow; on SUCCESS clear the file-content cache when it was active and
-    background-refetch the list + tree. No navigation/redirect anywhere.
-  features/explorerHistoryThunks.js  deleteExplorerEntry: after a successful
-    delete of a TOP-LEVEL project folder it also dispatches forgetDeletedProject
-    + fetchRecentProjects, so the Explorer delete updates RECENT PROJECTS, the
-    Topbar chip and the persisted ref too.
-  components/Projects/RecentProjects.jsx  the RECENT PROJECTS trash now always
-    goes through deleteWorkspaceProject (active or not) — one code path, instant
-    and complete. The typed-name ConfirmModal is kept.
-  components/Sidebar/Sidebar.jsx  renders the Delete Project ConfirmModal for
-    ui.isDeleteProjectModalOpen (confirmPhrase = the project name), so the
-    Settings "Delete this project" button finally opens a working typed-name
-    confirmation.
-
-VERIFICATION
-  - 18/18 headless-Chrome (CDP) checks against the real local server + MongoDB:
-      * non-active delete from RECENT PROJECTS: row gone 94ms, Explorer row gone,
-        Topbar chip untouched, still gone after a reload;
-      * active project delete (Explorer top-level folder trash, with an open
-        editor tab): Explorer row gone, Topbar chip cleared (fell back to the
-        next project), open tab closed, RECENT row removed, still gone after a
-        reload (server confirmed the folder + record were removed);
-      * Settings Delete Project typed modal: same instant result, chip cleared,
-        row gone, still gone after a reload;
-      * GET /api/projects returns Cache-Control: no-store, no-cache,
-        must-revalidate, max-age=0.
-  - 4/4 rollback checks: with the DELETE failed at the network layer
-    (CDP Fetch.failRequest), the row was removed optimistically, then RESTORED,
-    a readable "Could not delete …" toast appeared, and the project was still on
-    the server.
-  - A late container watcher refresh after a successful delete did NOT bring the
-    row back (the client refetch returned the server's post-delete tree).
-  - vite build succeeds; node --check passes on the changed server file.
-
-OPEN ITEMS
-  - client oxlint could NOT be run in this environment: the OS blocks the native
-    binding (@oxlint/binding-win32-x64-msvc, "Application Control policy"), and
-    no WASI fallback package exists on npm. Reported as not-run, not as a pass.
-  - Verified on local Windows only. The deployed Render (Linux) + Vercel path and
-    MongoDB-backed multi-user ownership were not exercised (those URLs are not
-    reachable from this checkout).
-  - An UNSAVED Monaco buffer specifically was not simulated; open tabs were
-    verified to close, and the same pruneTabs/removeContent path clears the
-    unsaved/saving flags for the project's files.
-  - The Explorer top-level folder delete is optimistic the moment the server
-    confirms (the recursive folder removal is the slow part) — consistent with
-    the existing "row gone when the API confirms" design; measured ~2.2s for a
-    local Windows folder, instant on the deployed Linux.
-  - Live preview opens in a separate browser tab, so the app cannot close it; it
-    simply 404s once the project is gone.
-  - No previously-recorded OPEN ITEM was solved by this change, so none was
-    removed.
-
-STATUS SUMMARY (WHERE THINGS STAND)
-  - Instant, on-the-spot project delete: complete and VERIFIED (18/18 flow +
-    4/4 rollback): removed at once from RECENT PROJECTS, the Explorer tree, the
-    Topbar chip/workspace label and open tabs, with no reload and no redirect,
-    and it does not come back after a reload; the server failing rolls back with
-    a short readable message; both the Explorer top-level folder delete and the
-    RECENT PROJECTS trash use the same path; the projects list endpoint is
-    no-store; Delete Project still requires typing the project name.
-  - NOT verified: the deployed Render/Vercel build, a real 403 ownership
-    rollback driven from the UI, an unsaved (dirty) Monaco buffer delete, and
-    client oxlint (blocked by the OS policy).
-================================================================================

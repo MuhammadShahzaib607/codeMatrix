@@ -7,6 +7,7 @@ import {
   restartSidebarTerminal,
   setSidebarTerminalShell,
 } from '../../features/sidebarTerminalSlice'
+import { getSocket } from '../../services/socket'
 import { scratchProjectIdFor } from '../../utils/workspace'
 import TerminalView from '../Terminal/TerminalView'
 import './SidebarTerminal.css'
@@ -27,11 +28,9 @@ export default function SidebarTerminal() {
   const projectId = useSelector((state) => state.fileSystem.workspace.projectId)
   const userId = useSelector((state) => state.auth.user?.id)
   const isAIPanelOpen = useSelector((state) => state.ui.isAIPanelOpen)
-  const isTerminalTab = useSelector((state) => {
-    const stored = state.ui.rightPanelTab
-    const isAdmin = state.auth.user?.role === 'admin'
-    return (stored ?? (isAdmin ? 'agent' : 'terminal')) === 'terminal'
-  })
+  const isTerminalTab = useSelector(
+    (state) => (state.ui.rightPanelTab ?? 'agent') === 'terminal',
+  )
   const isAuthResolved = useSelector((state) => state.auth.isAuthResolved)
   const { availableShells, defaultShell, shellStatus } = useSelector((state) => state.terminal)
   const preferredShell = useSelector((state) => state.settings.terminal.preferredShell)
@@ -98,13 +97,18 @@ export default function SidebarTerminal() {
     if (next && availableShells.length === 0) dispatch(fetchAvailableShells())
   }
 
-  function chooseShell(shellId) {
+  function replaceTerminal(shellId) {
+    if (terminalId) getSocket().emit('terminal:close', { terminalId })
     dispatch(restartSidebarTerminal({ shell: shellId }))
+  }
+
+  function chooseShell(shellId) {
+    replaceTerminal(shellId)
     setIsShellMenuOpen(false)
   }
 
   function newTerminal() {
-    dispatch(restartSidebarTerminal({ shell: shell ?? fallbackShell }))
+    replaceTerminal(shell ?? fallbackShell)
   }
 
   return (

@@ -194,7 +194,7 @@ function StreamBubble({ entry }) {
 }
 
 /** Custom dropdown: colored dot + label per stack (lucide has no logos). */
-function FrameworkMenu({ value, onChange, disabled }) {
+function FrameworkMenu({ value, onChange, disabled, lockedToVanilla = false }) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef(null)
   const current = FRAMEWORKS.find((framework) => framework.id === value) ?? FRAMEWORKS[0]
@@ -232,23 +232,35 @@ function FrameworkMenu({ value, onChange, disabled }) {
       </button>
       {open && (
         <div className="ai-framework-menu" role="listbox" aria-label="Target framework">
-          {FRAMEWORKS.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              role="option"
-              aria-selected={option.id === value}
-              className={`ai-framework-item ${option.id === value ? 'is-active' : ''}`}
-              onClick={() => {
-                onChange(option.id)
-                setOpen(false)
-              }}
-            >
-              <span className="ai-framework-dot" style={{ background: option.color }} />
-              <span>{option.label}</span>
-              {option.id === value && <Check size={13} />}
-            </button>
-          ))}
+          {FRAMEWORKS.map((option) => {
+            const isLocked = lockedToVanilla && option.id !== 'html'
+            return (
+              <button
+                key={option.id}
+                type="button"
+                role="option"
+                aria-selected={option.id === value}
+                disabled={isLocked}
+                title={isLocked ? 'Admin only' : option.label}
+                className={`ai-framework-item ${option.id === value ? 'is-active' : ''}${
+                  isLocked ? ' is-locked' : ''
+                }`}
+                onClick={() => {
+                  if (isLocked) return
+                  onChange(option.id)
+                  setOpen(false)
+                }}
+              >
+                <span className="ai-framework-dot" style={{ background: option.color }} />
+                <span>{option.label}</span>
+                {isLocked ? (
+                  <span className="ai-framework-locked">Admin only</span>
+                ) : (
+                  option.id === value && <Check size={13} />
+                )}
+              </button>
+            )
+          })}
         </div>
       )}
     </div>
@@ -421,6 +433,7 @@ export default function AIPanel() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
   const userId = useSelector((state) => state.auth.user?.id ?? null)
+  const isAdmin = useSelector((state) => state.auth.user?.role === 'admin')
   const strictRules = useSelector((state) => state.settings.agent?.strictRules ?? [])
   const activeRules = strictRules.filter((rule) => rule.enabled)
 
@@ -496,8 +509,9 @@ export default function AIPanel() {
   // When the active project changes (or is restored), load ITS last-used
   // stack — the selector remembers the choice per project.
   useEffect(() => {
-    dispatch(setFramework(frameworkFor(projectId)))
-  }, [projectId, dispatch])
+    const storedFramework = frameworkFor(projectId)
+    dispatch(setFramework(isAdmin ? storedFramework : 'html'))
+  }, [projectId, isAdmin, dispatch])
 
   // Each user keeps their own model preference; load it once the account is known.
   useEffect(() => {
@@ -519,6 +533,7 @@ export default function AIPanel() {
   }, [modelChoice, providerPreference, dispatch, userId])
 
   function handleFrameworkChange(frameworkId) {
+    if (!isAdmin && frameworkId !== 'html') return
     dispatch(setFramework(frameworkId))
     saveFrameworkFor(projectId, frameworkId)
   }
@@ -981,7 +996,12 @@ export default function AIPanel() {
       {!showSignedOutCard && !keysLoading && !keysFailed && (
         <div className="ai-controls">
           <div className="ai-dropdown-row">
-            <FrameworkMenu value={framework} onChange={handleFrameworkChange} disabled={running} />
+            <FrameworkMenu
+              value={framework}
+              onChange={handleFrameworkChange}
+              disabled={running}
+              lockedToVanilla={!isAdmin}
+            />
             <PanelDropdown
               value={providerPreference}
               options={PREFERRED_PROVIDERS}

@@ -13,11 +13,6 @@ import {
   touchSession,
   writeToTerminal,
 } from '../utils/terminalManager.js'
-import {
-  ensureScratchWorkspace,
-  isScratchProjectId,
-  isValidProjectId,
-} from '../utils/workspaceManager.js'
 
 function verifyUser(token) {
   try {
@@ -31,7 +26,7 @@ function verifyUser(token) {
 export default function registerTerminalSocket(io) {
   io.on('connection', (socket) => {
     socket.on('terminal:create', (payload, acknowledge) => {
-      const { terminalId, projectId, shell, cols, rows } = payload ?? {}
+      const { terminalId, shell, cols, rows } = payload ?? {}
       const userId = verifyUser(payload?.token)
       try {
         if (!terminalId) throw new Error('terminalId is required.')
@@ -64,17 +59,7 @@ export default function registerTerminalSocket(io) {
           return
         }
 
-        // No project imported -> spawn in a throwaway scratch workspace so the
-        // terminal works even before any folder is imported. Real projectIds
-        // keep the existing behaviour (404 if the workspace folder is gone).
-        let resolvedProjectId = projectId || 'scratch-guest'
-        if (isScratchProjectId(resolvedProjectId)) {
-          ensureScratchWorkspace(resolvedProjectId)
-        } else if (!isValidProjectId(resolvedProjectId)) {
-          throw new Error('A valid projectId is required.')
-        }
-
-        createTerminalSession(terminalId, resolvedProjectId, socket, {
+        createTerminalSession(terminalId, socket, {
           cols,
           rows,
           shell,

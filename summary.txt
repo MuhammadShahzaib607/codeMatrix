@@ -9159,3 +9159,144 @@ STATUS SUMMARY (WHERE THINGS STAND)
     pre-existing oxlint warning in HelpModal.jsx was removed, so lint is clean.)
 ================================================================================
 
+================================================================================
+================================================================================
+Terminal: always the per-user container root, no remembered project, 60s grace
+================================================================================
+
+STATUS: complete. Everything below was verified locally (server on Windows,
+production client build in headless Chrome); the live Render/Vercel deployment
+was not exercised.
+
+WHAT CHANGED
+
+  SERVER
+  - utils/terminalManager.js
+    * SESSION_GRACE_MS: 30 minutes -> 60 SECONDS. After the last socket
+      disconnect the pty stays alive for 60s (long enough for a page reload to
+      reattach it), then the pty is killed and its scrollback buffer dropped
+      with it. Explicit close, sign-out and the per-user cap are unchanged.
+    * createTerminalSession(terminalId, socket, options) takes NO projectId any
+      more. The cwd is ALWAYS the per-user container
+      (ensureOwnerContainer(userId) -> workspaces/u-<owner>), and when that
+      folder is missing it is created on the spot and the shell starts
+      normally. The recreation is written to the SERVER LOG ONLY
+      ("[terminal] recreated the missing container <path> for terminal <id>"),
+      so the client can never show "[terminal error] This workspace is no
+      longer on the server..." for this case. Only a genuine mkdir failure
+      (permissions/full disk) fails that spawn, as TERMINAL_ROOT_FAILED, and it
+      is logged to the server console too.
+    * the session object no longer stores projectId — a terminal session now
+      carries no project reference at all.
+  - socket/terminalSocket.js: terminal:create ignores any projectId sent in the
+    payload; the scratch-workspace branch and the "A valid projectId is
+    required" branch are deleted, so there is no code path left that can start
+    a terminal inside a remembered project folder.
+  - utils/workspaceManager.js: getTerminalRootPath(projectId) removed — it was
+    the "one level above the remembered project" path builder. Auth, token
+    verification, ownership checks and every other workspace API are untouched.
+
+  CLIENT
+  - TerminalView.jsx, SplitTerminalView.jsx, TerminalPanel.jsx,
+    SidebarTerminal.jsx: the projectId prop/selector, effectiveProjectId and
+    the scratchProjectIdFor import are gone. Neither the sidebar terminal nor
+    the floating/docked panel selects, sends or remembers a project or cwd.
+  - NEW services/terminalSessionStorage.js: stores TERMINAL IDS ONLY (the
+    sidebar id, the panel's groups/active ids/panel-open flag) in
+    sessionStorage — never a project, cwd or folder reference. sessionStorage
+    is per-tab and dies with the tab, so a closed tab never tries to reattach;
+    a reload inside the grace window restores the ids and reattaches the SAME
+    ptys with their scrollback. Records are also ignored when the auth session
+    that reads them differs from the one that wrote them (a guest's ids are not
+    reused after sign-in, or vice versa), so a signed-in user's terminal can
+    never keep running in the guest container.
+  - App.jsx: the signed-out teardown now closes/resets terminals only after a
+    REAL sign-out (a ref remembers whether this page session was ever
+    authenticated). It used to run on every page load, which would have wiped
+    the restored ids on reload; before this change it was a no-op only because
+    the state was empty. Its workspace/tree/cache cleanup is unchanged.
+  - terminalSlice.js / sidebarTerminalSlice.js: read the stored ids at startup
+    and write them on structural change (add/split/remove/shell/panel
+    open+close); resetTerminals / resetSidebarTerminal clear them.
+
+  LIFECYCLE NOW
+    explicit close | sign-out | 60s after the last socket disconnect
+      -> pty killed, buffer dropped.
+    Agent <-> Terminal tab switches and panel minimize never drop the socket,
+    so they still never end a session (unchanged).
+    A terminal opened after the grace period is always fresh at the container
+    root with no old output.
+
+VERIFICATION (all local; the browser runs use the production build)
+  - tmp-harness/terminal-root-verify.mjs — socket level, 19/19:
+      container folder deleted -> terminal:create (payload still carries a
+      projectId, proving it is ignored) is accepted, pty cwd is
+      workspaces/u-termrootverify (container root, not a project/scratch
+      folder), the folder is created, no terminal:error is emitted, and the
+      recreation line is present in the server log; disconnect + 5s -> the same
+      session reattaches with its scrollback replayed; after a real 66s wait the
+      pty PID is gone (kill(pid, 0) -> ESRCH) and reattach answers
+      SESSION_LOST; the next terminal starts at the container root with no old
+      output; a second wipe + open works the same.
+  - tmp-harness/terminal-root-ui-verify.mjs — headless Chrome, 34/34:
+      sidebar terminal starts in workspaces/u-guest with no "[terminal error]";
+      marker command runs; Agent -> Terminal -> Agent keeps the same session and
+      process; Page.reload inside 60s reattaches the SAME terminalId with its
+      scrollback; the container folder is deleted while the app is open and the
+      next terminal starts at the recreated root with no error and no old
+      output; the floating panel terminal also starts at the container root;
+      after the window is closed the pty is still alive 3s later (grace), gone
+      after 66s, and the server reports SESSION_LOST; reopening the window
+      starts a fresh terminal at the root with no old output; then, as a
+      signed-in user, the terminal starts in u-<userId>, a guest terminal id is
+      NOT reused after sign-in, and a signed-in reload reattaches the same
+      session with its scrollback.
+  - regressions: client/tmp-terminal-verify.mjs 7/7 (spawn, output, ping/pong,
+      reattach + replay, SESSION_LOST, per-user cap) and
+      tmp-harness/sidebar-verify.mjs 36/36 (tab switch, scrollback round trip,
+      split sessions, shell restart, resize/refit, reload, signed-in terminal in
+      u-<userId> creating a folder the Explorer sees live, no page errors).
+  - oxlint 0 warnings / 0 errors (101 files); vite build OK; node --check OK on
+      every changed server file. No comments were added.
+
+WHAT COULD NOT BE VERIFIED (honest list)
+  - The live Render deployment: a real restart/deploy wiping the disk, and the
+      60s timeout against a production socket. The 60s window itself WAS
+      measured locally with real waits (66s) and a real PID liveness check.
+  - The "shell - cwd" header line xterm prints on terminal:ready is wiped on
+      this Windows/ConPTY dev setup by the shell's repaint, so the harness reads
+      cwd from the terminal:ready / terminal:attach payload instead of from the
+      buffer. That is pre-existing (not introduced here) and was not fixed.
+  - Only one real signed-in account (created by the harness) was exercised; role
+      differences are irrelevant to terminal start/cleanup, and no admin/non-admin
+      pair was needed for this task.
+
+OPEN ITEMS (current — supersedes the list above)
+  - Point the external cron service at GET /health (plain-text 200); the JSON
+    routes are unchanged if the monitor prefers them.
+  - Replace client/public/logo.png with the final logo when it is ready, then
+    rerun client/scripts/generateIcons.mjs to refresh the PWA/favicon set.
+  - Verify the PWA install prompt and the standalone window on the real
+    render.com/vercel.app HTTPS deployment, and confirm on Render that a real
+    instance restart shows the terminal restart line.
+  - Still open from earlier phases: the freebuff 1-second "thinking" flicker; a
+    loose top-level HTML file has no preview watcher; server/tmp-*.mjs and other
+    tmp-audit scripts can be deleted.
+
+STATUS SUMMARY (WHERE THINGS STAND)
+  - Terminal start: ALWAYS the per-user container root (workspaces/u-<owner>),
+    created on demand; no project, cwd or project reference is stored or reused
+    for a terminal on the client or the server; a missing container is logged to
+    the server console only and never shown as a terminal error.
+  - Terminal cleanup: explicit close, sign-out, or 60 SECONDS after the last
+    socket disconnect (replacing the earlier 30-minute grace), with the buffer
+    dropped together with the pty. A reload inside 60s reattaches the same
+    sessions (ids kept in sessionStorage, ids only); Agent/Terminal tab switches
+    never end a session; a terminal opened after the grace period is always
+    fresh at the container root.
+  - Unchanged and still verified from the previous phase: agent open to all
+    users with Vanilla-only for non-admins, the PWA, the "Save your work" Help
+    topic, and GET /health.
+  - Lint and build: oxlint 0 warnings / 0 errors (101 files), vite build OK,
+    node --check OK on every changed server file.
+================================================================================

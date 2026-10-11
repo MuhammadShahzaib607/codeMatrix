@@ -54,6 +54,7 @@ export default function App() {
   const terminalGroups = useSelector((state) => state.terminal.groups)
   const sidebarTerminalId = useSelector((state) => state.sidebarTerminal.terminalId)
   const openTerminalIdsRef = useRef([])
+  const wasAuthenticatedRef = useRef(false)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
   const settings = useSelector((state) => state.settings)
 
@@ -151,15 +152,21 @@ export default function App() {
   }, [workspace.projectId, dispatch])
 
   useEffect(() => {
-    if (isAuthenticated) return
+    if (isAuthenticated) {
+      wasAuthenticatedRef.current = true
+      return
+    }
     const socket = getSocket()
-    for (const terminalId of openTerminalIdsRef.current) {
-      socket.emit('terminal:close', { terminalId })
+    if (wasAuthenticatedRef.current) {
+      wasAuthenticatedRef.current = false
+      for (const terminalId of openTerminalIdsRef.current) {
+        socket.emit('terminal:close', { terminalId })
+      }
+      dispatch(resetTerminals())
+      dispatch(resetSidebarTerminal())
     }
     dispatch(clearWorkspace())
     dispatch(clearProjectTrees())
-    dispatch(resetTerminals())
-    dispatch(resetSidebarTerminal())
     clearWorkspaceRef()
     clearFileContentCache()
   }, [isAuthenticated, dispatch])

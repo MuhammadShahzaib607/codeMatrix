@@ -1,5 +1,10 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit'
 import { terminalApi } from '../services/api'
+import {
+  clearStoredTerminalGroups,
+  readStoredTerminalGroups,
+  writeStoredTerminalGroups,
+} from '../services/terminalSessionStorage'
 
 export const TERMINAL_MIN_HEIGHT = 120
 export const TERMINAL_MAX_HEIGHT_RATIO = 0.75
@@ -31,11 +36,13 @@ export const TERMINAL_PANE_MIN_SHARE = 0.15
  * unique `terminalId` (used for React keys, xterm instances and socket
  * messages) — nothing in the UI derives a number from it.
  */
+const restoredSessions = readStoredTerminalGroups()
+
 const initialState = {
-  groups: [],
-  activeGroupId: null,
-  activePaneId: null,
-  isTerminalPanelOpen: false,
+  groups: restoredSessions?.groups ?? [],
+  activeGroupId: restoredSessions?.activeGroupId ?? null,
+  activePaneId: restoredSessions?.activePaneId ?? null,
+  isTerminalPanelOpen: restoredSessions?.isTerminalPanelOpen ?? false,
   isMinimized: false,
   panelHeight: TERMINAL_DEFAULT_HEIGHT,
   lastExpandedHeight: TERMINAL_DEFAULT_HEIGHT,
@@ -84,6 +91,7 @@ const terminalSlice = createSlice({
       })
       state.activeGroupId = id
       state.activePaneId = id
+      writeStoredTerminalGroups(state)
     },
 
     /** Adds another pane to an existing group (the "Split Terminal" action). */
@@ -96,6 +104,7 @@ const terminalSlice = createSlice({
       group.sizes.push(group.sizes[group.sizes.length - 1] ?? 1)
       state.activeGroupId = group.groupId
       state.activePaneId = terminalId
+      writeStoredTerminalGroups(state)
     },
 
     /**
@@ -115,6 +124,7 @@ const terminalSlice = createSlice({
 
       if (shellId) pane.shell = shellId
       if (label) pane.title = label
+      writeStoredTerminalGroups(state)
     },
 
     /**
@@ -148,6 +158,7 @@ const terminalSlice = createSlice({
       if (!activeGroup?.panes.some((pane) => pane.terminalId === state.activePaneId)) {
         state.activePaneId = activeGroup?.panes[0]?.terminalId ?? null
       }
+      writeStoredTerminalGroups(state)
     },
 
     setActiveGroup(state, action) {
@@ -175,10 +186,12 @@ const terminalSlice = createSlice({
 
     togglePanel(state) {
       state.isTerminalPanelOpen = !state.isTerminalPanelOpen
+      writeStoredTerminalGroups(state)
     },
 
     setTerminalPanelOpen(state, action) {
       state.isTerminalPanelOpen = Boolean(action.payload)
+      writeStoredTerminalGroups(state)
     },
 
     setPanelHeight(state, action) {
@@ -202,6 +215,7 @@ const terminalSlice = createSlice({
       state.activeGroupId = null
       state.activePaneId = null
       state.isMinimized = false
+      clearStoredTerminalGroups()
     },
   },
   extraReducers: (builder) => {

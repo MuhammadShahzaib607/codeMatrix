@@ -718,23 +718,6 @@ export function getWorkspacePath(projectId) {
   return path.join(WORKSPACES_ROOT, projectId)
 }
 
-/**
- * Where a terminal for this workspace starts: ONE LEVEL ABOVE the project
- * folder, so the project shows up as a real, enterable subfolder of the
- * terminal's start directory (matching the Explorer's root node). For a
- * registered workspace that is the per-user container; for an unregistered or
- * legacy workspace it is the workspaces root.
- */
-export function getTerminalRootPath(projectId) {
-  assertValidProjectId(projectId)
-  const record = getWorkspaceRecord(projectId)
-  const root = record?.container
-    ? path.join(WORKSPACES_ROOT, record.container)
-    : WORKSPACES_ROOT
-  fs.mkdirSync(root, { recursive: true })
-  return root
-}
-
 export function workspaceExists(projectId) {
   if (!isValidProjectId(projectId)) return false
   try {

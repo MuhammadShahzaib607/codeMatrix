@@ -22,7 +22,7 @@ const HEARTBEAT_MS = 22000
 
 const knownTerminalIds = new Set()
 
-export default function TerminalView({ terminalId, projectId, shell, isActive, autoFocus = true }) {
+export default function TerminalView({ terminalId, shell, isActive, autoFocus = true }) {
   const dispatch = useDispatch()
   const appTheme = useSelector((state) => state.settings.theme)
   const terminalFontSize = useSelector((state) => state.settings.terminal.fontSize)
@@ -87,7 +87,6 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       knownTerminalIds.add(terminalId)
       socket.emit('terminal:create', {
         terminalId,
-        projectId,
         shell,
         token: getAuthToken(),
         reattach,
@@ -317,7 +316,7 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       actionsRef.current = null
       setContextMenu(null)
     }
-  }, [terminalId, projectId, shell, dispatch])
+  }, [terminalId, shell, dispatch])
 
   useEffect(() => {
     if (!contextMenu) return undefined

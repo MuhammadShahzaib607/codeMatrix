@@ -1,4 +1,9 @@
 import { createSlice } from '@reduxjs/toolkit'
+import {
+  clearStoredSidebarTerminal,
+  readStoredSidebarTerminal,
+  writeStoredSidebarTerminal,
+} from '../services/terminalSessionStorage'
 
 /**
  * The right sidebar shows either the AI agent or ONE terminal. That terminal is
@@ -12,9 +17,11 @@ import { createSlice } from '@reduxjs/toolkit'
  * new id, which is how the shell selector and the "new terminal" button reuse
  * the same session slot.
  */
+const restoredSidebarTerminal = readStoredSidebarTerminal()
+
 const initialState = {
-  terminalId: null,
-  shell: null,
+  terminalId: restoredSidebarTerminal?.terminalId ?? null,
+  shell: restoredSidebarTerminal?.shell ?? null,
 }
 
 const sidebarTerminalSlice = createSlice({
@@ -27,6 +34,7 @@ const sidebarTerminalSlice = createSlice({
         if (state.terminalId) return
         state.terminalId = action.payload.terminalId
         if (action.payload.shell) state.shell = action.payload.shell
+        writeStoredSidebarTerminal(state)
       },
       prepare({ shell = null } = {}) {
         return { payload: { terminalId: crypto.randomUUID(), shell } }
@@ -38,6 +46,7 @@ const sidebarTerminalSlice = createSlice({
       reducer(state, action) {
         state.terminalId = action.payload.terminalId
         if (action.payload.shell) state.shell = action.payload.shell
+        writeStoredSidebarTerminal(state)
       },
       prepare({ shell = null } = {}) {
         return { payload: { terminalId: crypto.randomUUID(), shell } }
@@ -46,11 +55,13 @@ const sidebarTerminalSlice = createSlice({
 
     setSidebarTerminalShell(state, action) {
       if (action.payload) state.shell = action.payload
+      writeStoredSidebarTerminal(state)
     },
 
     resetSidebarTerminal(state) {
       state.terminalId = null
       state.shell = null
+      clearStoredSidebarTerminal()
     },
   },
 })

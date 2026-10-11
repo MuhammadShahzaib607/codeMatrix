@@ -23,6 +23,10 @@ export function getRootStatus(req, res) {
   })
 }
 
+export function getHealthPlain(req, res) {
+  res.status(200).type('text/plain').send('ok')
+}
+
 export function getHealthCheck(req, res) {
   const shell = getShellOptions()
   res.json({

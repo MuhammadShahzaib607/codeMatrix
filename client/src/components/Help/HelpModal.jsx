@@ -53,7 +53,6 @@ export default function HelpModal() {
 
   useEffect(() => {
     if (!isOpen) return undefined
-    setCopiedKey(null)
     const previousFocus = document.activeElement
     const card = cardRef.current
     const focusables = () =>

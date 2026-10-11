@@ -2,6 +2,7 @@ import { AlertTriangle, CheckCircle2, Info, X } from 'lucide-react'
 import { useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { hideToast } from '../../features/uiSlice'
+import { applyServiceWorkerUpdate } from '../../services/pwa'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import './Toast.css'
 
@@ -33,6 +34,10 @@ export default function Toast() {
   async function runAction() {
     if (action?.kind === 'copy-path') {
       await copyTextToClipboard(String(action.value ?? ''))
+    } else if (action?.kind === 'reload') {
+      dispatch(hideToast())
+      applyServiceWorkerUpdate()
+      return
     }
     dispatch(hideToast())
   }

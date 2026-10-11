@@ -1,14 +1,13 @@
 import { Router } from 'express'
 import * as apiKeyController from '../controllers/apiKey.controller.js'
 import protect from '../middlewares/authMiddleware.js'
-import requireAdmin from '../middlewares/requireAdmin.js'
 
 const router = Router()
 
 // Every key route is part of the AI agent's settings surface, so all of them
 // are admin-only. Ownership is still enforced in the service layer (every
 // query is filtered by req.user.id).
-router.use(protect, requireAdmin)
+router.use(protect)
 
 router.get('/providers', apiKeyController.listProviders)
 router.get('/', apiKeyController.listKeys)

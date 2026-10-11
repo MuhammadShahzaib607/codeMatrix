@@ -76,3 +76,20 @@
   margin: 0;
   line-height: 1.5;
 }
+
+.offline-notice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  background: var(--warning-bg);
+  border-bottom: 1px solid var(--warning-border);
+  color: var(--warning-text);
+  font-size: 12.5px;
+}
+
+.offline-notice svg {
+  flex: 0 0 auto;
+  color: var(--warning);
+}

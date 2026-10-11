@@ -446,6 +446,22 @@ body.is-resizing-cols * {
   user-select: none;
 }
 
+.terminal-reconnect {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 6;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  font-size: 11px;
+  box-shadow: 0 6px 18px var(--shadow);
+  pointer-events: none;
+  user-select: none;
+}
+
 .terminal-context-menu {
   position: fixed;
   z-index: 30;

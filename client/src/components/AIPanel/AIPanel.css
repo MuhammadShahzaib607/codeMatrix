@@ -830,6 +830,25 @@
   color: var(--accent);
 }
 
+.ai-framework-item.is-locked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ai-framework-item.is-locked:hover {
+  background: transparent;
+}
+
+.ai-framework-locked {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 /* ---------- Model selector (next to the framework selector) ---------- */
 
 .ai-model-select {

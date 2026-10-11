@@ -15,8 +15,12 @@ import {
   appendAgentMemoryEntry,
   buildRunMemoryEntry,
 } from '../services/agentMemory.js'
-import { ADMIN_REQUIRED_MESSAGE, isAdminUser } from '../middlewares/requireAdmin.js'
+import { isAdminUser } from '../middlewares/requireAdmin.js'
+import { VANILLA_FRAMEWORK_ID } from '../agent/prompts/index.js'
 import { roomFor } from './workspaceSocket.js'
+
+const STACK_RESTRICTED_MESSAGE =
+  'Non-administrator accounts can only use the HTML/CSS/JS (Vanilla) stack.'
 
 // ---------------------------------------------------------------------------
 // The agent's real-time channel.
@@ -67,10 +71,6 @@ export default function registerAgentSocket(io) {
         ack({ ok: false, code: 'UNAUTHORIZED' })
         return
       }
-      if (!(await isAdminUser(userId))) {
-        ack({ ok: false, status: 403, code: 'FORBIDDEN', message: ADMIN_REQUIRED_MESSAGE })
-        return
-      }
       socket.join(userRoom(userId))
       const run = activeRuns.get(userId)
       ack({
@@ -86,10 +86,6 @@ export default function registerAgentSocket(io) {
       const userId = verifyUser(payload?.token)
       if (!userId) {
         ack({ ok: false, code: 'UNAUTHORIZED' })
-        return
-      }
-      if (!(await isAdminUser(userId))) {
-        ack({ ok: false, status: 403, code: 'FORBIDDEN', message: ADMIN_REQUIRED_MESSAGE })
         return
       }
       if (activeRuns.has(userId)) stopRequests.add(userId)
@@ -115,12 +111,13 @@ export default function registerAgentSocket(io) {
           return
         }
 
-        // Administrator-only, verified against the database for every run: a
-        // non-admin never reaches key resolution, scratch adoption or runAgent.
-        if (!(await isAdminUser(userId))) {
-          ack({ ok: false, status: 403, message: ADMIN_REQUIRED_MESSAGE, code: 'FORBIDDEN' })
+        const isAdmin = await isAdminUser(userId)
+        const requestedFramework = String(payload?.framework ?? '').trim()
+        if (!isAdmin && requestedFramework && requestedFramework !== VANILLA_FRAMEWORK_ID) {
+          ack({ ok: false, status: 403, message: STACK_RESTRICTED_MESSAGE, code: 'FORBIDDEN' })
           return
         }
+        const framework = isAdmin ? requestedFramework || null : VANILLA_FRAMEWORK_ID
 
         if (activeRuns.has(userId)) {
           ack({
@@ -198,7 +195,7 @@ export default function registerAgentSocket(io) {
         const startedAt = Date.now()
         socket.join(userRoom(userId))
         stopRequests.delete(userId)
-        activeRuns.set(userId, { runId, startedAt, task, projectId })
+        activeRuns.set(userId, { runId, startedAt, task, projectId, framework })
         ack({ ok: true, started: true, runId, startedAt })
 
         const room = io.to(userRoom(userId))
@@ -266,7 +263,7 @@ export default function registerAgentSocket(io) {
               userId,
               emit,
               modelSuggestedName: suggestedName,
-              framework: payload?.framework,
+              framework,
               fresh: !wantsResume,
             })
             if (result?.adopted) scratchAdopted = true
@@ -284,7 +281,8 @@ export default function registerAgentSocket(io) {
           const result = await runAgent({
             projectId,
             task,
-            framework: payload?.framework,
+            framework,
+            allowShell: isAdmin,
             apiKeys: keys,
             emit,
             emitUsage,
@@ -343,7 +341,7 @@ export default function registerAgentSocket(io) {
                   path: file,
                   type,
                 })),
-                framework: payload?.framework ?? null,
+                framework: framework ?? null,
                 outcome: runOutcome,
               }),
             )

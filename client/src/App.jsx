@@ -1,9 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import ActivityBar from './components/ActivityBar/ActivityBar'
 import AuthModal from './components/Auth/AuthModal'
 import EditorArea from './components/Editor/EditorArea'
 import HelpModal from './components/Help/HelpModal'
+import OfflineNotice from './components/Notices/OfflineNotice'
 import StorageNotice from './components/Notices/StorageNotice'
 import WorkspaceMissingNotice from './components/Notices/WorkspaceMissingNotice'
 import SettingsModal from './components/Settings/SettingsModal'
@@ -34,6 +35,7 @@ import useGlobalShortcuts from './hooks/useGlobalShortcuts'
 import useRestoreWorkspace from './hooks/useRestoreWorkspace'
 import useWorkspaceWatcher from './hooks/useWorkspaceWatcher'
 import { clearFileContentCache } from './services/fileContentCache'
+import { getSocket } from './services/socket'
 import { writeSettings } from './services/settingsStorage'
 import { clearWorkspaceRef } from './services/workspaceStorage'
 import { getTheme } from './utils/themes'
@@ -49,9 +51,20 @@ export default function App() {
   const rightPanelTab = useSelector((state) => state.ui.rightPanelTab)
   const isTerminalOpen = useSelector((state) => state.terminal.isTerminalPanelOpen)
   const workspace = useSelector((state) => state.fileSystem.workspace)
+  const terminalGroups = useSelector((state) => state.terminal.groups)
+  const sidebarTerminalId = useSelector((state) => state.sidebarTerminal.terminalId)
+  const openTerminalIdsRef = useRef([])
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
-  const isAdmin = useSelector((state) => state.auth.user?.role === 'admin')
   const settings = useSelector((state) => state.settings)
+
+  useEffect(() => {
+    const ids = []
+    for (const group of terminalGroups) {
+      for (const pane of group.panes) ids.push(pane.terminalId)
+    }
+    if (sidebarTerminalId) ids.push(sidebarTerminalId)
+    openTerminalIdsRef.current = ids
+  }, [terminalGroups, sidebarTerminalId])
 
   useGlobalShortcuts()
   useRestoreWorkspace()
@@ -114,9 +127,10 @@ export default function App() {
   // an ADMIN signs in (the panel needs it to show the zero-key prompt). The
   // keys API is admin-only, so a non-admin never receives a 403 here.
   useEffect(() => {
-    if (isAuthenticated && isAdmin) dispatch(fetchApiKeys())
-    if (isAuthenticated && isAdmin) dispatch(fetchKeyUsage())
-  }, [isAuthenticated, isAdmin, dispatch])
+    if (!isAuthenticated) return
+    dispatch(fetchApiKeys())
+    dispatch(fetchKeyUsage())
+  }, [isAuthenticated, dispatch])
 
   // The content cache is keyed by workspace id, so drop it whenever the active
   // workspace changes (scratch included).
@@ -138,6 +152,10 @@ export default function App() {
 
   useEffect(() => {
     if (isAuthenticated) return
+    const socket = getSocket()
+    for (const terminalId of openTerminalIdsRef.current) {
+      socket.emit('terminal:close', { terminalId })
+    }
     dispatch(clearWorkspace())
     dispatch(clearProjectTrees())
     dispatch(resetTerminals())
@@ -216,6 +234,7 @@ export default function App() {
   return (
     <div className="app">
       <Topbar />
+      <OfflineNotice />
       <StorageNotice />
       <WorkspaceMissingNotice />
 

@@ -902,6 +902,10 @@ const OPENAI_TOOLS = [
   },
 ]
 
+const OPENAI_TOOLS_WITHOUT_SHELL = OPENAI_TOOLS.filter(
+  (tool) => tool?.function?.name !== 'run_command',
+)
+
 const TOOL_LABELS = {
   create_file: 'create_file',
   append_to_file: 'append_to_file',
@@ -1714,7 +1718,13 @@ function sliceLines(text, startLine, endLine, filePath = '') {
   return `${filePath} lines ${from}-${to} of ${total}\n${body}`
 }
 
-async function executeTool(name, rawArgs, projectId) {
+async function executeTool(name, rawArgs, projectId, { allowShell = true } = {}) {
+  if (name === 'run_command' && !allowShell) {
+    return {
+      text: 'Error: the shell tool is not available for this account. Build the project with the file tools only.',
+      rejected: true,
+    }
+  }
   const args = normalizeToolArgs(projectId, name, rawArgs)
   switch (name) {
     case 'create_file':
@@ -2512,6 +2522,7 @@ export async function runAgent({
   strictRules = [],
   projectHistory = false,
   images = [],
+  allowShell = true,
 }) {
   const startedAt = Number.isFinite(runStartedAt) ? runStartedAt : Date.now()
   let toolCalls = 0
@@ -2535,6 +2546,8 @@ export async function runAgent({
       at: Date.now(),
     })
   }
+
+  const agentTools = allowShell ? OPENAI_TOOLS : OPENAI_TOOLS_WITHOUT_SHELL
 
   const keys = (Array.isArray(apiKeys) ? apiKeys : [])
     .map((key) => ({
@@ -2986,7 +2999,10 @@ export async function runAgent({
       try {
         const allowStream = !forceNonStreamOnce
         forceNonStreamOnce = false
-        const response = await sendCompletion(wireMessages, maxCompletionTokens, temperature, { allowStream })
+        const response = await sendCompletion(wireMessages, maxCompletionTokens, temperature, {
+          allowStream,
+          tools: agentTools,
+        })
         return { response, maxCompletionTokens, estimatedInput }
       } catch (error) {
         if (error.status === 413) {
@@ -3947,7 +3963,7 @@ export async function runAgent({
         outcome = { text: rejection }
       } else {
         try {
-          outcome = await executeTool(name, args, projectId)
+          outcome = await executeTool(name, args, projectId, { allowShell })
         } catch (error) {
           outcome = { text: toolErrorMessage(name, args, error) }
         }

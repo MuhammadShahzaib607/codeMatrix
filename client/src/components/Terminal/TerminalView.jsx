@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { setTerminalShell } from '../../features/terminalSlice'
+import { getAuthToken } from '../../services/api'
 import { getSocket } from '../../services/socket'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { TERMINAL_FONT_FAMILY, terminalThemeFor } from '../../utils/terminalThemes'
@@ -15,6 +16,11 @@ const CLIPBOARD_DENIED_MESSAGE = 'Clipboard access denied — check browser perm
 const COPIED_MESSAGE = 'Copied'
 const NOTICE_TIMEOUT_MS = 4000
 const MENU_EDGE_MARGIN = 150
+const SESSION_LOST_MESSAGE = 'Session ended because the server restarted. Start a new one.'
+const RECONNECTING_MESSAGE = 'Reconnecting...'
+const HEARTBEAT_MS = 22000
+
+const knownTerminalIds = new Set()
 
 export default function TerminalView({ terminalId, projectId, shell, isActive, autoFocus = true }) {
   const dispatch = useDispatch()
@@ -33,6 +39,7 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
   const [notice, setNotice] = useState(null)
   const noticeTimerRef = useRef(null)
   const [contextMenu, setContextMenu] = useState(null)
+  const [isReconnecting, setIsReconnecting] = useState(false)
 
   useEffect(
     () => () => {
@@ -72,6 +79,22 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
 
     const socket = getSocket()
     let created = false
+    let lost = false
+    let heartbeatTimer = null
+
+    function attachTerminal() {
+      const reattach = knownTerminalIds.has(terminalId)
+      knownTerminalIds.add(terminalId)
+      socket.emit('terminal:create', {
+        terminalId,
+        projectId,
+        shell,
+        token: getAuthToken(),
+        reattach,
+        cols: term.cols,
+        rows: term.rows,
+      })
+    }
 
     function showNotice(message) {
       setNotice(message)
@@ -145,14 +168,11 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
     }
     container.addEventListener('contextmenu', handleContextMenu)
 
-    const handleOutput = (payload) => {
-      if (payload?.terminalId === terminalId) term.write(payload.data)
-    }
-    const handleReady = (payload) => {
-      if (payload?.terminalId !== terminalId) return
+    function writeShellHeader(payload) {
       term.write(`\r\n\x1b[90m${payload.shell} · ${payload.cwd}\x1b[0m\r\n`)
-      // Trust the server over the request: label the tab with what actually
-      // got spawned (it may differ if the requested shell was unavailable).
+    }
+
+    function labelFromServer(payload) {
       dispatch(
         setTerminalShell({
           terminalId,
@@ -161,8 +181,38 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
         }),
       )
     }
-    const handleExit = (payload) => {
+
+    const handleOutput = (payload) => {
+      if (payload?.terminalId !== terminalId || lost) return
+      term.write(payload.data)
+    }
+    const handleReady = (payload) => {
       if (payload?.terminalId !== terminalId) return
+      lost = false
+      setIsReconnecting(false)
+      writeShellHeader(payload)
+      // Trust the server over the request: label the tab with what actually
+      // got spawned (it may differ if the requested shell was unavailable).
+      labelFromServer(payload)
+    }
+    const handleAttach = (payload) => {
+      if (payload?.terminalId !== terminalId) return
+      lost = false
+      setIsReconnecting(false)
+      term.reset()
+      writeShellHeader(payload)
+      if (payload.data) term.write(payload.data)
+      labelFromServer(payload)
+    }
+    const handleLost = (payload) => {
+      if (payload?.terminalId !== terminalId) return
+      lost = true
+      setIsReconnecting(false)
+      term.reset()
+      term.write(`\r\n\x1b[33m${SESSION_LOST_MESSAGE}\x1b[0m\r\n`)
+    }
+    const handleExit = (payload) => {
+      if (payload?.terminalId !== terminalId || lost) return
       const detail = payload.exitCode === undefined ? '' : ` with code ${payload.exitCode}`
       term.write(`\r\n\x1b[90m[process exited${detail}]\x1b[0m\r\n`)
     }
@@ -174,6 +224,8 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
 
     socket.on('terminal:output', handleOutput)
     socket.on('terminal:ready', handleReady)
+    socket.on('terminal:attach', handleAttach)
+    socket.on('terminal:lost', handleLost)
     socket.on('terminal:exit', handleExit)
     socket.on('terminal:error', handleError)
 
@@ -184,19 +236,18 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       if (seenConnected) return
       seenConnected = true
       if (!created) return
-      socket.emit('terminal:create', {
-        terminalId,
-        projectId,
-        shell,
-        cols: term.cols,
-        rows: term.rows,
-      })
+      attachTerminal()
     }
     function handleDisconnect() {
       seenConnected = false
+      if (created) setIsReconnecting(true)
     }
     socket.on('connect', handleReconnect)
     socket.on('disconnect', handleDisconnect)
+
+    heartbeatTimer = setInterval(() => {
+      if (created && socket.connected) socket.emit('terminal:ping', { terminalId })
+    }, HEARTBEAT_MS)
 
     const dataSubscription = term.onData((data) => {
       socket.emit('terminal:input', { terminalId, data })
@@ -206,13 +257,7 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       try {
         fitAddon.fit()
       } catch {}
-      socket.emit('terminal:create', {
-        terminalId,
-        projectId,
-        shell,
-        cols: term.cols,
-        rows: term.rows,
-      })
+      attachTerminal()
       created = true
       term.focus()
     })
@@ -258,11 +303,13 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
       dataSubscription.dispose()
       socket.off('terminal:output', handleOutput)
       socket.off('terminal:ready', handleReady)
+      socket.off('terminal:attach', handleAttach)
+      socket.off('terminal:lost', handleLost)
       socket.off('terminal:exit', handleExit)
       socket.off('terminal:error', handleError)
       socket.off('connect', handleReconnect)
       socket.off('disconnect', handleDisconnect)
-      if (created) socket.emit('terminal:close', { terminalId })
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
       window.__TERMINAL_VIEWS__?.delete(terminalId)
       term.dispose()
       termRef.current = null
@@ -351,6 +398,11 @@ export default function TerminalView({ terminalId, projectId, shell, isActive, a
   return (
     <>
       <div className="terminal-view" ref={containerRef} />
+      {isReconnecting && (
+        <div className="terminal-reconnect" role="status">
+          {RECONNECTING_MESSAGE}
+        </div>
+      )}
       {notice && (
         <div className="terminal-notice" role="status">
           {notice}

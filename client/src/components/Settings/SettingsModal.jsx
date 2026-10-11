@@ -6,6 +6,7 @@ import {
   EyeOff,
   KeyRound,
   LogOut,
+  MonitorSmartphone,
   Palette,
   Pencil,
   Plus,
@@ -43,6 +44,7 @@ import {
   updateTerminalSetting,
 } from '../../features/settingsSlice'
 import { openDeleteProjectModal, showToast } from '../../features/uiSlice'
+import useInstallPrompt from '../../hooks/useInstallPrompt'
 import { saveSelectedKeyId } from '../../services/aiStorage'
 import {
   STRICT_RULE_MAX_COUNT,
@@ -212,10 +214,8 @@ export default function SettingsModal() {
   const workspace = useSelector((state) => state.fileSystem.workspace)
   const user = useSelector((state) => state.auth.user)
   const isAuthenticated = useSelector((state) => state.auth.isAuthenticated)
-  const isAdmin = user?.role === 'admin'
-  const sections = SECTIONS.filter(
-    (section) => isAdmin || (section.id !== 'ai' && section.id !== 'strict'),
-  )
+  const { canInstall, promptInstall } = useInstallPrompt()
+  const sections = SECTIONS
   // A stored/deep-linked section a non-admin is not allowed to see always falls
   // back to Appearance, so Strict Rules can never be rendered for them.
   const shownSection = sections.some((section) => section.id === activeSection)
@@ -238,10 +238,10 @@ export default function SettingsModal() {
   // Refresh the masked key list AND the captured usage every time Settings opens.
   // The keys API is admin-only, so a non-admin never triggers it.
   useEffect(() => {
-    if (!isOpen || !isAuthenticated || !isAdmin) return
+    if (!isOpen || !isAuthenticated) return
     dispatch(fetchApiKeys())
     dispatch(fetchKeyUsage())
-  }, [isOpen, isAuthenticated, isAdmin, dispatch])
+  }, [isOpen, isAuthenticated, dispatch])
 
   // Re-mask a revealed key shortly after it is shown.
   useEffect(() => {
@@ -1005,6 +1005,21 @@ export default function SettingsModal() {
                     onChange={(value) => dispatch(setAskBeforeMovingFolders(value))}
                   />
                 </Row>
+
+                {canInstall && (
+                  <>
+                    <h3 className="settings-section-title settings-section-title-spaced">App</h3>
+                    <Row
+                      label="Install app"
+                      hint="Install CodeMatrix as a desktop or mobile app and open it in its own window."
+                    >
+                      <button type="button" className="settings-btn" onClick={promptInstall}>
+                        <MonitorSmartphone size={14} />
+                        <span>Install app</span>
+                      </button>
+                    </Row>
+                  </>
+                )}
 
                 <h3 className="settings-section-title settings-section-title-spaced">Agent</h3>
                 <Row

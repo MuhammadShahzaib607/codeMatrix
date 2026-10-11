@@ -14,6 +14,7 @@ export function getSocket() {
       autoConnect: true,
       reconnection: true,
     })
+    if (typeof window !== 'undefined') window.__SOCKET__ = socket
   }
   return socket
 }
